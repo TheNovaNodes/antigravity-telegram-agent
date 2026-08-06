@@ -37,27 +37,35 @@ class AgySession:
         if self.model_name != new_model:
             self.model_name = new_model
             logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name}")
-            self.close()  # Restart PTY process with new model flag on next turn
+            self.close()
         return True
 
-    def start(self):
-        if self.child and self.child.isalive():
-            return
-        logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} with model={self.model_name}")
-        self.child = pexpect.spawn(
-            AGY_BINARY_PATH,
-            ["--model", self.model_name, "--dangerously-skip-permissions"],
-            encoding="utf-8",
-            echo=False,
-            timeout=300
-        )
+    async def _ensure_started(self):
+        """Spawns process and drains startup banner to ensure it is ready for input."""
+        if not self.child or not self.child.isalive():
+            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} with model={self.model_name}")
+            self.child = pexpect.spawn(
+                AGY_BINARY_PATH,
+                ["--model", self.model_name, "--dangerously-skip-permissions"],
+                encoding="utf-8",
+                echo=False,
+                timeout=300
+            )
+            # Drain startup output until process settles (idle for 1.5s)
+            idle_count = 0
+            while idle_count < 3:
+                try:
+                    await asyncio.to_thread(self.child.read_nonblocking, size=512, timeout=0.5)
+                    idle_count = 0
+                except pexpect.TIMEOUT:
+                    idle_count += 1
+                except pexpect.EOF:
+                    break
 
     async def stream_chat(self, prompt: str):
         """Sends a prompt to agy and yields chunks of text response."""
         async with self._lock:
-            if not self.child or not self.child.isalive():
-                self.start()
-                await asyncio.sleep(1.5)
+            await self._ensure_started()
 
             clean_prompt = prompt.replace("\n", " ").strip()
             self.child.sendline(clean_prompt)
@@ -77,10 +85,12 @@ class AgySession:
                         idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
+                    # Turn finished if we received output and 2.5s passed
                     if accumulated and idle_count >= 5:
                         break
+                    # Hard timeout if no output at all for 40s
                     if idle_count >= 80:
-                        yield "\n⚠️ [Таймаут ответа от агента / возможен рейтлимит]"
+                        yield "\n⚠️ [Таймаут ответа от агента]"
                         break
                 except pexpect.EOF:
                     logger.warning(f"Session for chat_id={self.chat_id} reached EOF.")

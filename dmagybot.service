@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/LabDoctorM/projects/DMagyBOT
+Environment="PYTHONPATH=/root/LabDoctorM/projects/DMagyBOT"
 # Предполагается использование виртуального окружения (uv или venv)
 ExecStart=/root/LabDoctorM/projects/DMagyBOT/.venv/bin/python src/main.py
 Restart=always

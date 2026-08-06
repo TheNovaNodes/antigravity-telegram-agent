@@ -1,7 +1,12 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher
+import os
+import sys
 
+# Ensure project root is in sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from aiogram import Bot, Dispatcher
 from src.config import BOT_TOKEN, LOG_LEVEL
 from src.handlers import router
 
