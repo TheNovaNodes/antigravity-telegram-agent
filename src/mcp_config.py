@@ -17,7 +17,7 @@ DEFAULT_MCP_CONFIG = {
             "name": "AnythingLLM Semantic Memory",
             "type": "memory",
             "enabled": True,
-            "url": os.getenv("ANYTHINGLLM_URL", "http://localhost:3001"),
+            "url": os.getenv("ANYTHINGLLM_URL", "http://127.0.0.1:3002"),
             "api_key": os.getenv("ANYTHINGLLM_API_KEY", ""),
             "workspace": os.getenv("ANYTHINGLLM_WORKSPACE", "default")
         },
@@ -25,14 +25,14 @@ DEFAULT_MCP_CONFIG = {
             "name": "SearXNG Web Search",
             "type": "search",
             "enabled": True,
-            "url": os.getenv("SEARXNG_URL", "http://localhost:8080"),
+            "url": os.getenv("SEARXNG_URL", "http://127.0.0.1:8889"),
             "engines": os.getenv("SEARXNG_ENGINES", "google,bing,duckduckgo")
         },
         "nextcloud": {
             "name": "Nextcloud User CRM",
             "type": "crm",
             "enabled": True,
-            "url": os.getenv("NEXTCLOUD_URL", "https://cloud.example.com"),
+            "url": os.getenv("NEXTCLOUD_URL", "http://127.0.0.1:8000"),
             "username": os.getenv("NEXTCLOUD_USER", ""),
             "app_password": os.getenv("NEXTCLOUD_PASS", "")
         }
@@ -53,7 +53,6 @@ class MCPConfigManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # Merge with default structure to prevent missing keys
                     merged = DEFAULT_MCP_CONFIG.copy()
                     if "servers" in data:
                         for key, server in data["servers"].items():
@@ -103,9 +102,9 @@ class MCPConfigManager:
                 "command": "npx",
                 "args": ["-y", "@anythingllm/mcp-server"],
                 "env": {
-                    "ANYTHINGLLM_URL": cfg.get("url", ""),
+                    "ANYTHINGLLM_URL": cfg.get("url", "http://127.0.0.1:3002"),
                     "ANYTHINGLLM_API_KEY": cfg.get("api_key", ""),
-                    "ANYTHINGLLM_WORKSPACE": cfg.get("workspace", "")
+                    "ANYTHINGLLM_WORKSPACE": cfg.get("workspace", "default")
                 }
             }
 
@@ -116,7 +115,7 @@ class MCPConfigManager:
                 "command": "npx",
                 "args": ["-y", "searxng-mcp-server"],
                 "env": {
-                    "SEARXNG_URL": cfg.get("url", "")
+                    "SEARXNG_URL": cfg.get("url", "http://127.0.0.1:8889")
                 }
             }
 
@@ -127,7 +126,7 @@ class MCPConfigManager:
                 "command": "npx",
                 "args": ["-y", "nextcloud-mcp-server"],
                 "env": {
-                    "NEXTCLOUD_URL": cfg.get("url", ""),
+                    "NEXTCLOUD_URL": cfg.get("url", "http://127.0.0.1:8000"),
                     "NEXTCLOUD_USERNAME": cfg.get("username", ""),
                     "NEXTCLOUD_PASSWORD": cfg.get("app_password", "")
                 }
@@ -137,3 +136,6 @@ class MCPConfigManager:
 
 
 mcp_config = MCPConfigManager()
+# Create default mcp_config.json if not present
+if not DEFAULT_MCP_CONFIG_PATH.exists():
+    mcp_config.save_config()

@@ -1,0 +1,28 @@
+{
+  "enabled": true,
+  "servers": {
+    "anythingllm": {
+      "name": "AnythingLLM Semantic Memory",
+      "type": "memory",
+      "enabled": true,
+      "url": "http://127.0.0.1:3002",
+      "api_key": "",
+      "workspace": "default"
+    },
+    "searxng": {
+      "name": "SearXNG Web Search",
+      "type": "search",
+      "enabled": true,
+      "url": "http://127.0.0.1:8889",
+      "engines": "google,bing,duckduckgo"
+    },
+    "nextcloud": {
+      "name": "Nextcloud User CRM",
+      "type": "crm",
+      "enabled": true,
+      "url": "http://127.0.0.1:8000",
+      "username": "",
+      "app_password": ""
+    }
+  }
+}
