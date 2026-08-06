@@ -35,17 +35,17 @@ class TestMCPIntegration(unittest.TestCase):
         settings = manager.generate_agy_mcp_settings()
         self.assertIn("mcpServers", settings)
         mcp_servers = settings["mcpServers"]
-        self.assertIn("anythingllm-memory", mcp_servers)
-        self.assertIn("searxng-search", mcp_servers)
+        self.assertIn("nova-anythingllm-mcp", mcp_servers)
+        self.assertIn("nova-searxng-mcp", mcp_servers)
         self.assertIn("nextcloud-crm", mcp_servers)
 
     def test_mcp_manager_status_report(self):
         config_manager = MCPConfigManager(config_path=self.config_file)
         manager = MCPManager(manager=config_manager)
         report = manager.get_status_report()
-        self.assertIn("AnythingLLM Semantic Memory", report)
-        self.assertIn("SearXNG Web Search", report)
-        self.assertIn("Nextcloud User CRM", report)
+        self.assertIn("AnythingLLM", report)
+        self.assertIn("SearXNG", report)
+        self.assertIn("Nextcloud", report)
 
 
 if __name__ == "__main__":

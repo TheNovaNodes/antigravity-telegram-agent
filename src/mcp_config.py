@@ -1,6 +1,6 @@
 """
 MCP (Model Context Protocol) Configuration Manager for DMagyBOT.
-Manages AnythingLLM (Semantic Memory), SearXNG (Web Search), and Nextcloud (User CRM).
+Integrates custom high-performance MCP gateways from TheNovaNodes (nova-anythingllm-mcp, nova-searxng-mcp) and Nextcloud.
 Supports dual-plane separation: Control Plane (Management) vs Data Plane (Operations).
 """
 
@@ -15,7 +15,7 @@ DEFAULT_MCP_CONFIG = {
     "enabled": True,
     "servers": {
         "anythingllm": {
-            "name": "AnythingLLM Semantic Memory",
+            "name": "TheNovaNodes AnythingLLM Hybrid Gateway",
             "type": "memory",
             "plane": "data",
             "enabled": True,
@@ -24,7 +24,7 @@ DEFAULT_MCP_CONFIG = {
             "workspace": os.getenv("ANYTHINGLLM_WORKSPACE", "default")
         },
         "anythingllm-control": {
-            "name": "AnythingLLM Management",
+            "name": "TheNovaNodes AnythingLLM Control Plane",
             "type": "admin",
             "plane": "control",
             "enabled": False,
@@ -32,7 +32,7 @@ DEFAULT_MCP_CONFIG = {
             "api_key": os.getenv("ANYTHINGLLM_API_KEY", "")
         },
         "searxng": {
-            "name": "SearXNG Web Search",
+            "name": "TheNovaNodes SearXNG Deep Search Gateway",
             "type": "search",
             "plane": "data",
             "enabled": True,
@@ -40,7 +40,7 @@ DEFAULT_MCP_CONFIG = {
             "engines": os.getenv("SEARXNG_ENGINES", "google,bing,duckduckgo")
         },
         "nextcloud": {
-            "name": "Nextcloud User CRM",
+            "name": "Nextcloud User CRM Gateway",
             "type": "crm",
             "plane": "data",
             "enabled": True,
@@ -49,7 +49,7 @@ DEFAULT_MCP_CONFIG = {
             "app_password": os.getenv("NEXTCLOUD_PASS", "")
         },
         "nextcloud-control": {
-            "name": "Nextcloud Admin Management",
+            "name": "Nextcloud Admin Control Plane",
             "type": "admin",
             "plane": "control",
             "enabled": False,
@@ -125,19 +125,19 @@ class MCPConfigManager:
                 continue
 
             if key == "anythingllm":
-                mcp_servers["anythingllm-memory"] = {
-                    "command": "npx",
-                    "args": ["-y", "@anythingllm/mcp-server"],
+                mcp_servers["nova-anythingllm-mcp"] = {
+                    "command": "python",
+                    "args": ["-m", "memory_gateway.server"],
                     "env": {
-                        "ANYTHINGLLM_URL": cfg.get("url", "http://127.0.0.1:3002"),
-                        "ANYTHINGLLM_API_KEY": cfg.get("api_key", ""),
-                        "ANYTHINGLLM_WORKSPACE": cfg.get("workspace", "default")
+                        "MG_ALM_BASE": cfg.get("url", "http://127.0.0.1:3002/api/v1"),
+                        "MG_API_KEY": cfg.get("api_key", ""),
+                        "MG_WORKSPACE": cfg.get("workspace", "default")
                     }
                 }
             elif key == "searxng":
-                mcp_servers["searxng-search"] = {
-                    "command": "npx",
-                    "args": ["-y", "searxng-mcp-server"],
+                mcp_servers["nova-searxng-mcp"] = {
+                    "command": "python",
+                    "args": ["-m", "searxng_gateway.server"],
                     "env": {
                         "SEARXNG_URL": cfg.get("url", "http://127.0.0.1:8889")
                     }
@@ -157,5 +157,4 @@ class MCPConfigManager:
 
 
 mcp_config = MCPConfigManager()
-if not DEFAULT_MCP_CONFIG_PATH.exists():
-    mcp_config.save_config()
+mcp_config.save_config()
