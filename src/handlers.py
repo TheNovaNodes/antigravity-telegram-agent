@@ -3,10 +3,13 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.enums import ChatAction
 
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
 from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES
+from src.mcp_manager import mcp_manager
+from src.audit import log_audit_event
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -24,7 +27,10 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
         ],
         [
-            InlineKeyboardButton(text="🔄 Сбросить сессию", callback_data="menu:reset"),
+            InlineKeyboardButton(text="🔌 MCP Серверы", callback_data="menu:mcp"),
+            InlineKeyboardButton(text="🔄 Сбросить сессию", callback_data="menu:reset")
+        ],
+        [
             InlineKeyboardButton(text="📊 Статус", callback_data="menu:status")
         ]
     ]
@@ -57,6 +63,20 @@ def get_mode_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def get_mcp_keyboard() -> InlineKeyboardMarkup:
+    servers = mcp_manager.config_manager.config.get("servers", {})
+    buttons = []
+    
+    anythingllm_st = "✅ On" if servers.get("anythingllm", {}).get("enabled") else "⚪ Off"
+    searxng_st = "✅ On" if servers.get("searxng", {}).get("enabled") else "⚪ Off"
+    nextcloud_st = "✅ On" if servers.get("nextcloud", {}).get("enabled") else "⚪ Off"
+
+    buttons.append([InlineKeyboardButton(text=f"🧠 AnythingLLM (Память): {anythingllm_st}", callback_data="toggle_mcp:anythingllm")])
+    buttons.append([InlineKeyboardButton(text=f"🔍 SearXNG (Поиск): {searxng_st}", callback_data="toggle_mcp:searxng")])
+    buttons.append([InlineKeyboardButton(text=f"💼 Nextcloud (CRM): {nextcloud_st}", callback_data="toggle_mcp:nextcloud")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 @router.message(Command("start"))
 @router.message(Command("menu"))
 @router.message(Command("settings"))
@@ -73,6 +93,13 @@ async def cmd_menu(message: Message):
         reply_markup=get_main_menu_keyboard(session),
         parse_mode="Markdown"
     )
+
+@router.message(Command("mcp"))
+async def cmd_mcp(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    report = mcp_manager.get_status_report()
+    await message.answer(report, reply_markup=get_mcp_keyboard(), parse_mode="Markdown")
 
 @router.message(Command("models"))
 async def cmd_models(message: Message):
@@ -133,11 +160,25 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         await callback_query.message.edit_text("⚡ **Выбор глубинного уровня рассуждений (Effort):**", reply_markup=get_effort_keyboard(), parse_mode="Markdown")
     elif action == "mode":
         await callback_query.message.edit_text("🎯 **Выбор режима выполнения (Execution Mode):**", reply_markup=get_mode_keyboard(), parse_mode="Markdown")
+    elif action == "mcp":
+        report = mcp_manager.get_status_report()
+        await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="Markdown")
     elif action == "reset":
         session_manager.reset_session(callback_query.message.chat.id)
         await callback_query.message.edit_text("🔄 **Сессия сброшена!** Следующий запрос начнет новый диалог.", parse_mode="Markdown")
     elif action == "status":
         await callback_query.answer(f"Status: OK | Model: {session.model_name} | Effort: {session.effort}", show_alert=True)
+
+@router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
+async def process_mcp_toggle_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    key = callback_query.data.split(":")[1]
+    new_state = mcp_manager.toggle_server(key)
+    state_str = "включен ✅" if new_state else "отключен ⚪"
+    await callback_query.answer(f"MCP сервер {key} {state_str}")
+    report = mcp_manager.get_status_report()
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="Markdown")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_model:"))
 async def process_model_callback(callback_query: CallbackQuery):
@@ -187,9 +228,6 @@ async def cmd_reset(message: Message):
         await message.answer("🔄 **Сессия сброшена!**")
     else:
         await message.answer("ℹ️ Активной сессии не найдено.")
-
-from aiogram.enums import ChatAction
-from src.audit import log_audit_event
 
 async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3900):
     """Splits response into safe Telegram chunks (<= 4000 chars) to prevent 4096-character limit crash."""
