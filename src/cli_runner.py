@@ -68,7 +68,7 @@ class AgySession:
             await self._ensure_started()
 
             clean_prompt = prompt.replace("\n", " ").strip()
-            self.child.sendline(clean_prompt)
+            self.child.send(clean_prompt + "\r\n")
 
             accumulated = ""
             idle_count = 0
