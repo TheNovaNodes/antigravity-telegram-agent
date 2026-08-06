@@ -22,12 +22,15 @@ async def main():
 
     # Register Telegram native slash command menu
     await bot.set_my_commands([
-        BotCommand(command="start", description="Справка и запуск"),
-        BotCommand(command="models", description="Выбор нейросети (Gemini, Claude, GPT)"),
-        BotCommand(command="reset", description="Сбросить текущую сессию"),
+        BotCommand(command="menu", description="🎛️ Главный центр управления DMagyBOT"),
+        BotCommand(command="models", description="🤖 Выбор нейросети (Gemini, Claude, GPT)"),
+        BotCommand(command="effort", description="⚡ Глубина рассуждений (low/medium/high)"),
+        BotCommand(command="mode", description="🎯 Режим работы (Plan / Auto-Edits / Standard)"),
+        BotCommand(command="reset", description="🔄 Сбросить сессию агента"),
+        BotCommand(command="start", description="👋 Справка и старт"),
     ])
 
-    logger.info("🚀 Starting DMagyBOT (Modular Pyte PTY Architecture)...")
+    logger.info("🚀 Starting DMagyBOT (Control Center & Pyte PTY Architecture)...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -18,12 +18,17 @@ AVAILABLE_MODELS = {
     "gpt-oss": "gpt-oss-120b-medium"
 }
 
+AVAILABLE_EFFORTS = ["low", "medium", "high"]
+AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-edits": "Auto-Edits Mode"}
+
 class AgySession:
-    """Manages an interactive PTY session for a single chat with model switching and Pyte virtual terminal cleaning."""
+    """Manages an interactive PTY session for a single chat with model, effort, and mode controls."""
     def __init__(self, chat_id: int):
         self.chat_id = chat_id
         self.child = None
         self.model_name = "gemini-3.1-pro-high"
+        self.effort = "high"
+        self.mode = "default"
         self._lock = asyncio.Lock()
 
     def set_model(self, model_key: str) -> bool:
@@ -40,15 +45,41 @@ class AgySession:
             self.close()
         return True
 
+    def set_effort(self, effort_level: str) -> bool:
+        if effort_level in AVAILABLE_EFFORTS:
+            if self.effort != effort_level:
+                self.effort = effort_level
+                logger.info(f"Switching effort for chat_id={self.chat_id} to {self.effort}")
+                self.close()
+            return True
+        return False
+
+    def set_mode(self, mode_key: str) -> bool:
+        if mode_key in AVAILABLE_MODES:
+            if self.mode != mode_key:
+                self.mode = mode_key
+                logger.info(f"Switching mode for chat_id={self.chat_id} to {self.mode}")
+                self.close()
+            return True
+        return False
+
     async def _ensure_started(self):
-        """Spawns process and drains startup banner."""
+        """Spawns process with configured flags and drains startup banner."""
         if not self.child or not self.child.isalive():
-            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} with model={self.model_name}")
+            args = [
+                "--model", self.model_name,
+                "--effort", self.effort,
+                "--dangerously-skip-permissions"
+            ]
+            if self.mode != "default":
+                args.extend(["--mode", self.mode])
+
+            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args}")
             env = os.environ.copy()
             env["TERM"] = "xterm"
             self.child = pexpect.spawn(
                 AGY_BINARY_PATH,
-                ["--model", self.model_name, "--dangerously-skip-permissions"],
+                args,
                 env=env,
                 echo=False,
                 timeout=300
@@ -65,7 +96,7 @@ class AgySession:
                     break
 
     async def get_response(self, prompt: str) -> str:
-        """Sends prompt to agy, uses pyte Virtual Terminal to render perfect screen output, and extracts clean text."""
+        """Sends prompt to agy, uses pyte Virtual Terminal to render clean screen output."""
         async with self._lock:
             await self._ensure_started()
 
@@ -89,29 +120,25 @@ class AgySession:
                         idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
-                    # Turn finished if we received output and 3s passed
                     if received_bytes and idle_count >= 6:
                         break
-                    # Hard timeout if no output at all for 40s
                     if idle_count >= 80:
                         return "⚠️ [Таймаут ответа от агента]"
                 except pexpect.EOF:
                     logger.warning(f"Session for chat_id={self.chat_id} reached EOF.")
                     break
 
-            # Filter clean lines from pyte virtual terminal screen
             clean_lines = []
             for line in screen.display:
                 l = line.rstrip()
                 if not l.strip():
                     continue
-                # Strip ASCII logo, headers, status footers, horizontal rules
                 if "────" in l or "esc to cancel" in l or "Generating..." in l or "Antigravity CLI" in l:
                     continue
                 if l.strip().startswith(">") or l.strip().startswith("Gemini") or l.strip().startswith("Claude") or l.strip().startswith("GPT-OSS"):
                     continue
                 
-                # Strip TUI leading margin spaces (up to 4 spaces)
+                # Strip leading TUI margins
                 if l.startswith("    "):
                     l = l[4:]
                 elif l.startswith("   "):
