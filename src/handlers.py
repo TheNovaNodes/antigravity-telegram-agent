@@ -2,10 +2,11 @@ import asyncio
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
+from src.cli_runner import AVAILABLE_MODELS
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -13,25 +14,72 @@ router = Router()
 def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
+def get_models_keyboard() -> InlineKeyboardMarkup:
+    buttons = []
+    for alias, full_name in AVAILABLE_MODELS.items():
+        buttons.append([InlineKeyboardButton(text=f"🤖 {alias} ({full_name})", callback_data=f"set_model:{alias}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     if not is_allowed(message.from_user.id):
         return
     await message.answer(
         "👋 **Привет! Я DMagyBOT** (Interactive PTY Wrapper).\n\n"
-        "Я работаю напрямую с CLI `agy` в изолированном PTY-контексте, сохраняя контекст разговора!\n\n"
         "Команды:\n"
-        "/reset — Сбросить текущую сессию и начать заново."
+        "• `/models` — Показать и переключить активную нейросеть.\n"
+        "• `/reset` — Сбросить текущую сессию диалога.\n"
+        "• `/model <имя>` — Быстрое переключение модели."
     )
+
+@router.message(Command("models"))
+async def cmd_models(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    session = session_manager.get_session(message.chat.id)
+    await message.answer(
+        f"🎯 **Текущая модель:** `{session.model_name}`\n\n"
+        "Выбери модель для переключения при рейтлимитах:",
+        reply_markup=get_models_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@router.callback_query(lambda c: c.data and c.data.startswith("set_model:"))
+async def process_model_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    alias = callback_query.data.split(":")[1]
+    session = session_manager.get_session(callback_query.message.chat.id)
+    if session.set_model(alias):
+        await callback_query.message.edit_text(
+            f"✅ **Модель успешно изменена!**\nНовая модель: `{session.model_name}`",
+            parse_mode="Markdown"
+        )
+    else:
+        await callback_query.answer("❌ Ошибка при выборе модели", show_alert=True)
+
+@router.message(Command("model"))
+async def cmd_model(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Использование: `/model <gemini-flash-high|claude-sonnet|gpt-oss|...>`")
+        return
+    model_alias = args[1].strip()
+    session = session_manager.get_session(message.chat.id)
+    if session.set_model(model_alias):
+        await message.answer(f"✅ **Модель изменена на:** `{session.model_name}`", parse_mode="Markdown")
+    else:
+        await message.answer(f"❌ Неизвестная модель `{model_alias}`. Используй `/models` для списка.", parse_mode="Markdown")
 
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    
     chat_id = message.chat.id
     if session_manager.reset_session(chat_id):
-        await message.answer("🔄 **Сессия сброшена!** Следующее сообщение начнет новый диалог.")
+        await message.answer("🔄 **Сессия сброшена!**")
     else:
         await message.answer("ℹ️ Активной сессии не найдено.")
 
