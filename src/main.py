@@ -12,6 +12,7 @@ from aiogram.types import BotCommand
 from src.config import BOT_TOKEN, LOG_LEVEL
 from src.db import init_db
 from src.handlers import router
+from src.session_manager import session_manager
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL))
 logger = logging.getLogger(__name__)
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 async def main():
     # Initialize SQLite DB for persistent session state across deployments
     init_db()
+
+    # Start background idle session cleanup loop (every 5 mins, 30 min TTL)
+    asyncio.create_task(session_manager.start_cleanup_loop())
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()

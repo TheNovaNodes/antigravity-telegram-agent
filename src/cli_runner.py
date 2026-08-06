@@ -124,9 +124,9 @@ class AgySession:
                         idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
-                    if received_bytes and idle_count >= 6:
+                    if received_bytes and idle_count >= 12:
                         break
-                    if idle_count >= 80:
+                    if idle_count >= 160:
                         return "⚠️ [Таймаут ответа от агента]"
                 except pexpect.EOF:
                     logger.warning(f"Session for chat_id={self.chat_id} reached EOF.")
@@ -137,11 +137,15 @@ class AgySession:
                 l = line.rstrip()
                 if not l.strip():
                     continue
-                if "────" in l or "esc to cancel" in l or "Generating..." in l or "Antigravity CLI" in l:
+                # Strip TUI headers, status lines, and prompt echos
+                lower_l = l.lower()
+                if "────" in l or "esc to cancel" in lower_l or "generating..." in lower_l or "antigravity cli" in lower_l:
                     continue
-                if l.strip().startswith(">") or l.strip().startswith("Gemini") or l.strip().startswith("Claude") or l.strip().startswith("GPT-OSS"):
+                if l.strip().startswith(">") or "gemini 3" in lower_l or "claude" in lower_l or "gpt-oss" in lower_l:
                     continue
-                
+                if "~/" in l and ("projects" in lower_l or "labdoctorm" in lower_l):
+                    continue
+
                 # Strip leading TUI margins
                 if l.startswith("    "):
                     l = l[4:]

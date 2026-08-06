@@ -188,6 +188,37 @@ async def cmd_reset(message: Message):
     else:
         await message.answer("ℹ️ Активной сессии не найдено.")
 
+from aiogram.enums import ChatAction
+from src.audit import log_audit_event
+
+async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3900):
+    """Splits response into safe Telegram chunks (<= 4000 chars) to prevent 4096-character limit crash."""
+    if len(text) <= max_chunk_size:
+        await placeholder.edit_text(text)
+        return
+
+    chunks = []
+    current_chunk = []
+    current_length = 0
+
+    for line in text.split("\n"):
+        if current_length + len(line) + 1 > max_chunk_size:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [line]
+            current_length = len(line)
+        else:
+            current_chunk.append(line)
+            current_length += len(line) + 1
+
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+
+    await placeholder.edit_text(chunks[0])
+    for chunk in chunks[1:]:
+        if chunk.strip():
+            await message.answer(chunk)
+
+
 @router.message()
 async def handle_message(message: Message):
     if not is_allowed(message.from_user.id):
@@ -195,13 +226,27 @@ async def handle_message(message: Message):
     if not message.text:
         return
 
+    # Trigger Telegram typing action
+    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     placeholder = await message.answer("🤔 Думаю...")
     session = session_manager.get_session(message.chat.id)
 
     try:
         response_text = await session.get_response(message.text)
+        
+        # Log structured execution audit log
+        log_audit_event(
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            model_name=session.model_name,
+            effort=session.effort,
+            mode=session.mode,
+            prompt=message.text,
+            response_length=len(response_text)
+        )
+
         if response_text.strip():
-            await placeholder.edit_text(response_text)
+            await send_response_chunks(message, placeholder, response_text)
         else:
             await placeholder.edit_text("⚠️ Агент отработал молча или не вернул текста.")
 

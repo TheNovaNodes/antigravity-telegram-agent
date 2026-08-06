@@ -1,3 +1,5 @@
+import asyncio
+import time
 import logging
 from typing import Dict
 from src.cli_runner import AgySession
@@ -6,11 +8,15 @@ from src.db import load_user_session, delete_user_session, save_user_session
 logger = logging.getLogger(__name__)
 
 class SessionManager:
-    """Singleton-like manager for active chat sessions with SQLite persistence."""
-    def __init__(self):
+    """Singleton-like manager for active chat sessions with SQLite persistence and idle cleanup."""
+    def __init__(self, idle_ttl_seconds: int = 1800):
         self.sessions: Dict[int, AgySession] = {}
+        self.last_accessed: Dict[int, float] = {}
+        self.idle_ttl_seconds = idle_ttl_seconds
+        self._cleanup_task = None
 
     def get_session(self, chat_id: int) -> AgySession:
+        self.last_accessed[chat_id] = time.time()
         if chat_id not in self.sessions:
             # Check SQLite DB for previously saved user settings across deployments
             saved = load_user_session(chat_id)
@@ -32,11 +38,39 @@ class SessionManager:
 
     def reset_session(self, chat_id: int) -> bool:
         delete_user_session(chat_id)
+        self.last_accessed.pop(chat_id, None)
         if chat_id in self.sessions:
             session = self.sessions.pop(chat_id)
             session.close()
             return True
         return False
 
+    def cleanup_idle_sessions(self):
+        """Close PTY processes for sessions idle longer than idle_ttl_seconds."""
+        now = time.time()
+        expired_chats = [
+            chat_id for chat_id, last_time in self.last_accessed.items()
+            if now - last_time > self.idle_ttl_seconds
+        ]
+        for chat_id in expired_chats:
+            logger.info(f"Closing idle session for chat_id={chat_id} (idle > {self.idle_ttl_seconds}s)")
+            self.last_accessed.pop(chat_id, None)
+            session = self.sessions.pop(chat_id, None)
+            if session:
+                session.close()
+
+    async def start_cleanup_loop(self, check_interval_seconds: int = 300):
+        """Background loop to periodically cleanup idle PTY sessions."""
+        logger.info("Starting background idle session cleanup loop...")
+        while True:
+            try:
+                await asyncio.sleep(check_interval_seconds)
+                self.cleanup_idle_sessions()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in idle session cleanup loop: {e}", exc_info=True)
+
 session_manager = SessionManager()
+
 
