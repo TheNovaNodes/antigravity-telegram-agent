@@ -1,6 +1,7 @@
 """
 MCP (Model Context Protocol) Configuration Manager for DMagyBOT.
 Manages AnythingLLM (Semantic Memory), SearXNG (Web Search), and Nextcloud (User CRM).
+Supports dual-plane separation: Control Plane (Management) vs Data Plane (Operations).
 """
 
 import json
@@ -16,14 +17,24 @@ DEFAULT_MCP_CONFIG = {
         "anythingllm": {
             "name": "AnythingLLM Semantic Memory",
             "type": "memory",
+            "plane": "data",
             "enabled": True,
             "url": os.getenv("ANYTHINGLLM_URL", "http://127.0.0.1:3002"),
             "api_key": os.getenv("ANYTHINGLLM_API_KEY", ""),
             "workspace": os.getenv("ANYTHINGLLM_WORKSPACE", "default")
         },
+        "anythingllm-control": {
+            "name": "AnythingLLM Management",
+            "type": "admin",
+            "plane": "control",
+            "enabled": False,
+            "url": os.getenv("ANYTHINGLLM_URL", "http://127.0.0.1:3002"),
+            "api_key": os.getenv("ANYTHINGLLM_API_KEY", "")
+        },
         "searxng": {
             "name": "SearXNG Web Search",
             "type": "search",
+            "plane": "data",
             "enabled": True,
             "url": os.getenv("SEARXNG_URL", "http://127.0.0.1:8889"),
             "engines": os.getenv("SEARXNG_ENGINES", "google,bing,duckduckgo")
@@ -31,7 +42,17 @@ DEFAULT_MCP_CONFIG = {
         "nextcloud": {
             "name": "Nextcloud User CRM",
             "type": "crm",
+            "plane": "data",
             "enabled": True,
+            "url": os.getenv("NEXTCLOUD_URL", "http://127.0.0.1:8000"),
+            "username": os.getenv("NEXTCLOUD_USER", ""),
+            "app_password": os.getenv("NEXTCLOUD_PASS", "")
+        },
+        "nextcloud-control": {
+            "name": "Nextcloud Admin Management",
+            "type": "admin",
+            "plane": "control",
+            "enabled": False,
             "url": os.getenv("NEXTCLOUD_URL", "http://127.0.0.1:8000"),
             "username": os.getenv("NEXTCLOUD_USER", ""),
             "app_password": os.getenv("NEXTCLOUD_PASS", "")
@@ -41,7 +62,7 @@ DEFAULT_MCP_CONFIG = {
 
 
 class MCPConfigManager:
-    """Manages reading, writing, and formatting MCP server configs."""
+    """Manages reading, writing, and formatting MCP server configs for Control/Data Planes."""
 
     def __init__(self, config_path: Path = DEFAULT_MCP_CONFIG_PATH):
         self.config_path = config_path
@@ -87,55 +108,54 @@ class MCPConfigManager:
             return not curr
         return False
 
-    def generate_agy_mcp_settings(self) -> Dict[str, Any]:
+    def generate_agy_mcp_settings(self, include_control_plane: bool = False) -> Dict[str, Any]:
         """
-        Formats active servers into the standard MCP configuration format
-        expected by Antigravity CLI (agy).
+        Formats active servers into the standard MCP configuration format.
+        By default, only Data Plane (operational) tools are passed to limit context and prevent unauthorized admin actions.
         """
         mcp_servers = {}
         servers = self.config.get("servers", {})
 
-        # AnythingLLM Memory MCP
-        if servers.get("anythingllm", {}).get("enabled"):
-            cfg = servers["anythingllm"]
-            mcp_servers["anythingllm-memory"] = {
-                "command": "npx",
-                "args": ["-y", "@anythingllm/mcp-server"],
-                "env": {
-                    "ANYTHINGLLM_URL": cfg.get("url", "http://127.0.0.1:3002"),
-                    "ANYTHINGLLM_API_KEY": cfg.get("api_key", ""),
-                    "ANYTHINGLLM_WORKSPACE": cfg.get("workspace", "default")
-                }
-            }
+        for key, cfg in servers.items():
+            if not cfg.get("enabled"):
+                continue
 
-        # SearXNG Web Search MCP
-        if servers.get("searxng", {}).get("enabled"):
-            cfg = servers["searxng"]
-            mcp_servers["searxng-search"] = {
-                "command": "npx",
-                "args": ["-y", "searxng-mcp-server"],
-                "env": {
-                    "SEARXNG_URL": cfg.get("url", "http://127.0.0.1:8889")
-                }
-            }
+            plane = cfg.get("plane", "data")
+            if plane == "control" and not include_control_plane:
+                continue
 
-        # Nextcloud CRM MCP
-        if servers.get("nextcloud", {}).get("enabled"):
-            cfg = servers["nextcloud"]
-            mcp_servers["nextcloud-crm"] = {
-                "command": "npx",
-                "args": ["-y", "nextcloud-mcp-server"],
-                "env": {
-                    "NEXTCLOUD_URL": cfg.get("url", "http://127.0.0.1:8000"),
-                    "NEXTCLOUD_USERNAME": cfg.get("username", ""),
-                    "NEXTCLOUD_PASSWORD": cfg.get("app_password", "")
+            if key == "anythingllm":
+                mcp_servers["anythingllm-memory"] = {
+                    "command": "npx",
+                    "args": ["-y", "@anythingllm/mcp-server"],
+                    "env": {
+                        "ANYTHINGLLM_URL": cfg.get("url", "http://127.0.0.1:3002"),
+                        "ANYTHINGLLM_API_KEY": cfg.get("api_key", ""),
+                        "ANYTHINGLLM_WORKSPACE": cfg.get("workspace", "default")
+                    }
                 }
-            }
+            elif key == "searxng":
+                mcp_servers["searxng-search"] = {
+                    "command": "npx",
+                    "args": ["-y", "searxng-mcp-server"],
+                    "env": {
+                        "SEARXNG_URL": cfg.get("url", "http://127.0.0.1:8889")
+                    }
+                }
+            elif key == "nextcloud":
+                mcp_servers["nextcloud-crm"] = {
+                    "command": "npx",
+                    "args": ["-y", "nextcloud-mcp-server"],
+                    "env": {
+                        "NEXTCLOUD_URL": cfg.get("url", "http://127.0.0.1:8000"),
+                        "NEXTCLOUD_USERNAME": cfg.get("username", ""),
+                        "NEXTCLOUD_PASSWORD": cfg.get("app_password", "")
+                    }
+                }
 
         return {"mcpServers": mcp_servers}
 
 
 mcp_config = MCPConfigManager()
-# Create default mcp_config.json if not present
 if not DEFAULT_MCP_CONFIG_PATH.exists():
     mcp_config.save_config()
