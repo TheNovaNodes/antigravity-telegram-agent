@@ -7,6 +7,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
+
 from src.config import BOT_TOKEN, LOG_LEVEL
 from src.handlers import router
 
@@ -18,7 +20,14 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
-    logger.info("🚀 Starting DMagyBOT (Modular PTY Architecture)...")
+    # Register Telegram native slash command menu
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Справка и запуск"),
+        BotCommand(command="models", description="Выбор нейросети (Gemini, Claude, GPT)"),
+        BotCommand(command="reset", description="Сбросить текущую сессию"),
+    ])
+
+    logger.info("🚀 Starting DMagyBOT (Modular Pyte PTY Architecture)...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
