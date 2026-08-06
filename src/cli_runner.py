@@ -110,6 +110,15 @@ class AgySession:
                     continue
                 if l.strip().startswith(">") or l.strip().startswith("Gemini") or l.strip().startswith("Claude") or l.strip().startswith("GPT-OSS"):
                     continue
+                
+                # Strip TUI leading margin spaces (up to 4 spaces)
+                if l.startswith("    "):
+                    l = l[4:]
+                elif l.startswith("   "):
+                    l = l[3:]
+                elif l.startswith("  "):
+                    l = l[2:]
+
                 clean_lines.append(l)
 
             return "\n".join(clean_lines).strip()
