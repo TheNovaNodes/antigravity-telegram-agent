@@ -90,28 +90,13 @@ async def handle_message(message: Message):
     if not message.text:
         return
 
-    placeholder = await message.answer("🤔 Запускаю агента...")
+    placeholder = await message.answer("🤔 Думаю...")
     session = session_manager.get_session(message.chat.id)
 
-    full_response = ""
-    last_update_time = asyncio.get_event_loop().time()
-    update_interval = 1.5
-
     try:
-        async for chunk in session.stream_chat(message.text):
-            full_response += chunk
-            current_time = asyncio.get_event_loop().time()
-            if current_time - last_update_time > update_interval:
-                if full_response.strip():
-                    try:
-                        await placeholder.edit_text(full_response + " ⏳")
-                        last_update_time = current_time
-                    except Exception:
-                        pass
-
-        final_text = full_response.strip()
-        if final_text:
-            await placeholder.edit_text(final_text)
+        response_text = await session.get_response(message.text)
+        if response_text.strip():
+            await placeholder.edit_text(response_text)
         else:
             await placeholder.edit_text("⚠️ Агент отработал молча или не вернул текста.")
 

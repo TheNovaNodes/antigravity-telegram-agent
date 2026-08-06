@@ -62,8 +62,8 @@ class AgySession:
                 except pexpect.EOF:
                     break
 
-    async def stream_chat(self, prompt: str):
-        """Sends a prompt to agy and yields chunks of text response."""
+    async def get_response(self, prompt: str) -> str:
+        """Sends a prompt to agy and returns the final cleaned response text."""
         async with self._lock:
             await self._ensure_started()
 
@@ -76,12 +76,11 @@ class AgySession:
             while True:
                 try:
                     chunk = await asyncio.to_thread(
-                        self.child.read_nonblocking, size=512, timeout=0.5
+                        self.child.read_nonblocking, size=1024, timeout=0.5
                     )
                     if chunk:
                         clean_chunk = ansi_escape.sub('', chunk)
                         accumulated += clean_chunk
-                        yield clean_chunk
                         idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
@@ -90,11 +89,17 @@ class AgySession:
                         break
                     # Hard timeout if no output at all for 40s
                     if idle_count >= 80:
-                        yield "\n⚠️ [Таймаут ответа от агента]"
-                        break
+                        return "⚠️ [Таймаут ответа от агента]"
                 except pexpect.EOF:
                     logger.warning(f"Session for chat_id={self.chat_id} reached EOF.")
                     break
+
+            text = accumulated.strip()
+            # Clean up prompt echo if present at start
+            if text.startswith(clean_prompt):
+                text = text[len(clean_prompt):].strip()
+
+            return text
 
     def close(self):
         if self.child and self.child.isalive():
