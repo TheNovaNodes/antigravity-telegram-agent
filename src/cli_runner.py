@@ -5,6 +5,7 @@ import pexpect
 import pyte
 from src.config import AGY_BINARY_PATH
 from src.db import save_user_session
+from src.mcp_config import mcp_config
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class AgySession:
         return False
 
     async def _ensure_started(self):
-        """Spawns process with configured flags and drains startup banner."""
+        """Spawns process with configured flags and MCP environment bindings."""
         if not self.child or not self.child.isalive():
             args = [
                 "--model", self.model_name,
@@ -81,6 +82,17 @@ class AgySession:
             logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args}")
             env = os.environ.copy()
             env["TERM"] = "xterm"
+
+            # Inject active MCP server environment variables into agy CLI process
+            servers = mcp_config.config.get("servers", {})
+            if servers.get("searxng", {}).get("enabled"):
+                env["SEARXNG_URL"] = servers["searxng"].get("url", "http://127.0.0.1:8889")
+            if servers.get("anythingllm", {}).get("enabled"):
+                env["ANYTHINGLLM_URL"] = servers["anythingllm"].get("url", "http://127.0.0.1:3002")
+                env["ANYTHINGLLM_API_KEY"] = servers["anythingllm"].get("api_key", "")
+            if servers.get("nextcloud", {}).get("enabled"):
+                env["NEXTCLOUD_URL"] = servers["nextcloud"].get("url", "http://127.0.0.1:8000")
+
             self.child = pexpect.spawn(
                 AGY_BINARY_PATH,
                 args,
@@ -119,49 +131,31 @@ class AgySession:
                         self.child.read_nonblocking, size=1024, timeout=0.5
                     )
                     if chunk:
-                        stream.feed(chunk)
                         received_bytes = True
+                        stream.feed(chunk)
                         idle_count = 0
                 except pexpect.TIMEOUT:
-                    idle_count += 1
-                    if received_bytes and idle_count >= 12:
-                        break
-                    if idle_count >= 160:
-                        return "⚠️ [Таймаут ответа от агента]"
+                    if received_bytes:
+                        idle_count += 1
+                        if idle_count >= 12:
+                            break
                 except pexpect.EOF:
-                    logger.warning(f"Session for chat_id={self.chat_id} reached EOF.")
                     break
 
-            clean_lines = []
-            for line in screen.display:
-                l = line.rstrip()
-                if not l.strip():
-                    continue
-                # Strip TUI headers, status lines, and prompt echos
-                lower_l = l.lower()
-                if "────" in l or "esc to cancel" in lower_l or "generating..." in lower_l or "antigravity cli" in lower_l:
-                    continue
-                if l.strip().startswith(">") or "gemini 3" in lower_l or "claude" in lower_l or "gpt-oss" in lower_l:
-                    continue
-                if "~/" in l and ("projects" in lower_l or "labdoctorm" in lower_l):
-                    continue
-
-                # Strip leading TUI margins
-                if l.startswith("    "):
-                    l = l[4:]
-                elif l.startswith("   "):
-                    l = l[3:]
-                elif l.startswith("  "):
-                    l = l[2:]
-
-                clean_lines.append(l)
-
-            return "\n".join(clean_lines).strip()
+            lines = [line.rstrip() for line in screen.display if line.strip()]
+            filtered = [
+                line for line in lines
+                if not any(header in line for header in ["Antigravity CLI", "Gemini 3.", "Claude", "GPT-"])
+            ]
+            return "\n".join(filtered)
 
     def close(self):
+        """Terminates active agy process cleanly."""
         if self.child and self.child.isalive():
             try:
                 self.child.close(force=True)
             except Exception as e:
-                logger.error(f"Error closing session for chat_id={self.chat_id}: {e}")
-            logger.info(f"Closed agy session for chat_id={self.chat_id}")
+                logger.warning(f"Error closing agy session for chat_id={self.chat_id}: {e}")
+            finally:
+                self.child = None
+
