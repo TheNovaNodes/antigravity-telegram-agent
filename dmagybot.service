@@ -1,0 +1,15 @@
+[Unit]
+Description=DMagyBOT - Telegram Bridge for Antigravity AGY
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/LabDoctorM/projects/DMagyBOT
+# Предполагается использование виртуального окружения (uv или venv)
+ExecStart=/root/LabDoctorM/projects/DMagyBOT/.venv/bin/python src/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

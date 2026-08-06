@@ -1,0 +1,15 @@
+[project]
+name = "dmagybot"
+version = "0.1.0"
+description = "Telegram Bot Bridge for Google Antigravity (AGY)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiogram>=3.4.1",
+    "google-antigravity",
+    "python-dotenv>=1.0.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
