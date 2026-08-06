@@ -1,11 +1,11 @@
 import asyncio
 import logging
-import re
+import os
 import pexpect
+import pyte
 from src.config import AGY_BINARY_PATH
 
 logger = logging.getLogger(__name__)
-ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 AVAILABLE_MODELS = {
     "gemini-flash-high": "gemini-3.6-flash-high",
@@ -19,7 +19,7 @@ AVAILABLE_MODELS = {
 }
 
 class AgySession:
-    """Manages an interactive PTY session for a single chat with model switching."""
+    """Manages an interactive PTY session for a single chat with model switching and Pyte virtual terminal cleaning."""
     def __init__(self, chat_id: int):
         self.chat_id = chat_id
         self.child = None
@@ -41,21 +41,23 @@ class AgySession:
         return True
 
     async def _ensure_started(self):
-        """Spawns process and drains startup banner to ensure it is ready for input."""
+        """Spawns process and drains startup banner."""
         if not self.child or not self.child.isalive():
             logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} with model={self.model_name}")
+            env = os.environ.copy()
+            env["TERM"] = "xterm"
             self.child = pexpect.spawn(
                 AGY_BINARY_PATH,
                 ["--model", self.model_name, "--dangerously-skip-permissions"],
-                encoding="utf-8",
+                env=env,
                 echo=False,
                 timeout=300
             )
-            # Drain startup output until process settles (idle for 1.5s)
+            # Drain startup banner
             idle_count = 0
             while idle_count < 3:
                 try:
-                    await asyncio.to_thread(self.child.read_nonblocking, size=512, timeout=0.5)
+                    await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
                     idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
@@ -63,15 +65,18 @@ class AgySession:
                     break
 
     async def get_response(self, prompt: str) -> str:
-        """Sends a prompt to agy and returns the final cleaned response text."""
+        """Sends prompt to agy, uses pyte Virtual Terminal to render perfect screen output, and extracts clean text."""
         async with self._lock:
             await self._ensure_started()
 
             clean_prompt = prompt.replace("\n", " ").strip()
-            self.child.send(clean_prompt + "\r\n")
+            self.child.send((clean_prompt + "\r\n").encode("utf-8"))
 
-            accumulated = ""
+            screen = pyte.Screen(120, 60)
+            stream = pyte.ByteStream(screen)
+
             idle_count = 0
+            received_bytes = False
 
             while True:
                 try:
@@ -79,13 +84,13 @@ class AgySession:
                         self.child.read_nonblocking, size=1024, timeout=0.5
                     )
                     if chunk:
-                        clean_chunk = ansi_escape.sub('', chunk)
-                        accumulated += clean_chunk
+                        stream.feed(chunk)
+                        received_bytes = True
                         idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
-                    # Turn finished if we received output and 2.5s passed
-                    if accumulated and idle_count >= 5:
+                    # Turn finished if we received output and 3s passed
+                    if received_bytes and idle_count >= 6:
                         break
                     # Hard timeout if no output at all for 40s
                     if idle_count >= 80:
@@ -94,12 +99,20 @@ class AgySession:
                     logger.warning(f"Session for chat_id={self.chat_id} reached EOF.")
                     break
 
-            text = accumulated.strip()
-            # Clean up prompt echo if present at start
-            if text.startswith(clean_prompt):
-                text = text[len(clean_prompt):].strip()
+            # Filter clean lines from pyte virtual terminal screen
+            clean_lines = []
+            for line in screen.display:
+                l = line.rstrip()
+                if not l.strip():
+                    continue
+                # Strip ASCII logo, headers, status footers, horizontal rules
+                if "────" in l or "esc to cancel" in l or "Generating..." in l or "Antigravity CLI" in l:
+                    continue
+                if l.strip().startswith(">") or l.strip().startswith("Gemini") or l.strip().startswith("Claude") or l.strip().startswith("GPT-OSS"):
+                    continue
+                clean_lines.append(l)
 
-            return text
+            return "\n".join(clean_lines).strip()
 
     def close(self):
         if self.child and self.child.isalive():
