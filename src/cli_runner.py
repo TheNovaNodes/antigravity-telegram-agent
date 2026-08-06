@@ -4,6 +4,7 @@ import os
 import pexpect
 import pyte
 from src.config import AGY_BINARY_PATH
+from src.db import save_user_session
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,12 @@ AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-
 
 class AgySession:
     """Manages an interactive PTY session for a single chat with model, effort, and mode controls."""
-    def __init__(self, chat_id: int):
+    def __init__(self, chat_id: int, model_name: str = "gemini-3.1-pro-high", effort: str = "high", mode: str = "default"):
         self.chat_id = chat_id
         self.child = None
-        self.model_name = "gemini-3.1-pro-high"
-        self.effort = "high"
-        self.mode = "default"
+        self.model_name = model_name
+        self.effort = effort
+        self.mode = mode
         self._lock = asyncio.Lock()
 
     def set_model(self, model_key: str) -> bool:
@@ -43,6 +44,7 @@ class AgySession:
             self.model_name = new_model
             logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name}")
             self.close()
+            save_user_session(self.chat_id, self.model_name, self.effort, self.mode)
         return True
 
     def set_effort(self, effort_level: str) -> bool:
@@ -51,6 +53,7 @@ class AgySession:
                 self.effort = effort_level
                 logger.info(f"Switching effort for chat_id={self.chat_id} to {self.effort}")
                 self.close()
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode)
             return True
         return False
 
@@ -60,6 +63,7 @@ class AgySession:
                 self.mode = mode_key
                 logger.info(f"Switching mode for chat_id={self.chat_id} to {self.mode}")
                 self.close()
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode)
             return True
         return False
 

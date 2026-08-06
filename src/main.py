@@ -10,12 +10,16 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
 from src.config import BOT_TOKEN, LOG_LEVEL
+from src.db import init_db
 from src.handlers import router
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL))
 logger = logging.getLogger(__name__)
 
 async def main():
+    # Initialize SQLite DB for persistent session state across deployments
+    init_db()
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
