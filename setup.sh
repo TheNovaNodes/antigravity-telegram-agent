@@ -187,8 +187,12 @@ else
     info "Виртуальное окружение уже существует"
 fi
 
-"${VENV_DIR}/bin/pip" install --quiet --upgrade pip
-"${VENV_DIR}/bin/pip" install --quiet aiogram pexpect pyte python-dotenv
+"${VENV_DIR}/bin/pip" install --upgrade pip
+echo ""
+echo -e "${YELLOW}  Устанавливаю зависимости (это может занять 1-2 минуты)...${RESET}"
+echo ""
+"${VENV_DIR}/bin/pip" install aiogram pexpect pyte python-dotenv
+echo ""
 info "Все зависимости установлены"
 
 # ─────────────────── Step 5: Systemd Service ──────────────────────────────
