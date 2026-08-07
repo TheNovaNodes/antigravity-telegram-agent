@@ -298,10 +298,28 @@ async def process_resume_callback(callback_query: CallbackQuery):
     await callback_query.answer("Сессия переключена!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
 
+from aiogram.exceptions import TelegramBadRequest
+
+async def safe_edit_text(target: Message, text: str):
+    """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text."""
+    try:
+        await target.edit_text(text, parse_mode="HTML")
+    except TelegramBadRequest as e:
+        logger.warning(f"HTML parse mode failed for edit_text, falling back to plain text: {e}")
+        await target.edit_text(text, parse_mode=None)
+
+async def safe_answer(target: Message, text: str):
+    """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text."""
+    try:
+        await target.answer(text, parse_mode="HTML")
+    except TelegramBadRequest as e:
+        logger.warning(f"HTML parse mode failed for answer, falling back to plain text: {e}")
+        await target.answer(text, parse_mode=None)
+
 async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3900):
     """Splits response into safe Telegram chunks (<= 4000 chars) to prevent 4096-character limit crash."""
     if len(text) <= max_chunk_size:
-        await placeholder.edit_text(text, parse_mode="HTML")
+        await safe_edit_text(placeholder, text)
         return
 
     chunks = []
@@ -320,10 +338,10 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
     if current_chunk:
         chunks.append("\n".join(current_chunk))
 
-    await placeholder.edit_text(chunks[0], parse_mode="HTML")
+    await safe_edit_text(placeholder, chunks[0])
     for chunk in chunks[1:]:
         if chunk.strip():
-            await message.answer(chunk, parse_mode="HTML")
+            await safe_answer(message, chunk)
 
 
 @router.message()

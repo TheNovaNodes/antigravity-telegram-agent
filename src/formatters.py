@@ -58,10 +58,12 @@ def check_known_errors(text: str) -> str | None:
 
 
 def markdown_to_html(text: str) -> str:
-    """Convert standard markdown formatting to Telegram-compatible HTML tags."""
+    """Convert standard markdown formatting to Telegram-compatible HTML tags with safe character escaping."""
     if not text:
         return ""
-    lines = text.split("\n")
+    # Safe HTML escaping to prevent Telegram entity parsing errors
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    lines = escaped.split("\n")
     processed_lines = []
     for line in lines:
         if line.strip() in ("---", "***", "___"):
