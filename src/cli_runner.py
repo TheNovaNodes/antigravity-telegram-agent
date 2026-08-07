@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import logging
 import os
+from pathlib import Path
 import pexpect
 import pyte
 from src.config import AGY_BINARY_PATH
@@ -23,6 +25,33 @@ AVAILABLE_MODELS = {
 AVAILABLE_EFFORTS = ["low", "medium", "high"]
 AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-edits": "Auto-Edits Mode"}
 
+
+def get_auth_state_signature() -> str:
+    """Compute a signature representing current agy CLI authentication state.
+
+    Checks token & settings files in ~/.gemini/antigravity-cli/.
+    Returns string signature (mtime + hash) to detect hot-reload account switches.
+    """
+    home = Path.home()
+    token_file = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    settings_file = home / ".gemini" / "antigravity-cli" / "settings.json"
+
+    parts = []
+    for fpath in (token_file, settings_file):
+        if fpath.exists():
+            try:
+                st = fpath.stat()
+                content = fpath.read_bytes()
+                h = hashlib.md5(content).hexdigest()[:8]
+                parts.append(f"{fpath.name}:{st.st_mtime}:{st.st_size}:{h}")
+            except Exception:
+                parts.append(f"{fpath.name}:err")
+        else:
+            parts.append(f"{fpath.name}:missing")
+
+    return "|".join(parts)
+
+
 class AgySession:
     """Manages an interactive PTY session for a single chat with model, effort, and mode controls."""
     def __init__(self, chat_id: int, model_name: str = "gemini-3.1-pro-high", effort: str = "high", mode: str = "default"):
@@ -31,6 +60,7 @@ class AgySession:
         self.model_name = model_name
         self.effort = effort
         self.mode = mode
+        self.spawn_auth_signature = None
         self._lock = asyncio.Lock()
 
     def set_model(self, model_key: str) -> bool:
@@ -69,7 +99,21 @@ class AgySession:
         return False
 
     async def _ensure_started(self):
-        """Spawns process with configured flags and MCP environment bindings."""
+        """Spawns process with configured flags and MCP environment bindings.
+        
+        Hot-reloads PTY process if host agy CLI credentials or account changed.
+        """
+        current_auth_sig = get_auth_state_signature()
+
+        # Hot reload check: if process is running but auth credentials/account changed on host
+        if self.child and self.child.isalive():
+            if self.spawn_auth_signature and self.spawn_auth_signature != current_auth_sig:
+                logger.info(
+                    f"⚡ HOT RELOAD DETECTED: Account credentials changed on host server! "
+                    f"Terminating old PTY session for chat_id={self.chat_id} to reload new account credentials."
+                )
+                self.close()
+
         if not self.child or not self.child.isalive():
             args = [
                 "--model", self.model_name,
@@ -100,6 +144,8 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
+            self.spawn_auth_signature = current_auth_sig
+
             # Drain startup banner
             idle_count = 0
             while idle_count < 3:
