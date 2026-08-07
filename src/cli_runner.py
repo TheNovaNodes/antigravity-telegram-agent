@@ -8,6 +8,7 @@ import pyte
 from src.config import AGY_BINARY_PATH
 from src.db import save_user_session
 from src.mcp_config import mcp_config
+from src.formatters import format_dyslexia_friendly_text
 
 logger = logging.getLogger(__name__)
 
@@ -188,12 +189,9 @@ class AgySession:
                 except pexpect.EOF:
                     break
 
-            lines = [line.rstrip() for line in screen.display if line.strip()]
-            filtered = [
-                line for line in lines
-                if not any(header in line for header in ["Antigravity CLI", "Gemini 3.", "Claude", "GPT-"])
-            ]
-            return "\n".join(filtered)
+            lines = list(screen.display)
+            formatted_response = format_dyslexia_friendly_text(lines)
+            return formatted_response
 
     def close(self):
         """Terminates active agy process cleanly."""
