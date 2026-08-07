@@ -147,6 +147,9 @@ def get_auth_state_signature() -> str:
     Returns string signature (mtime + hash) to detect hot-reload account switches.
     """
     base_dir = _get_gemini_dir()
+    token_file = base_dir / "antigravity-oauth-token"
+    settings_file = base_dir / "settings.json"
+    jetski_file = base_dir / "jetski_state.pbtxt"
     cli_log = base_dir / "cli.log"
     log_dir = base_dir / "log"
     latest_log = None
