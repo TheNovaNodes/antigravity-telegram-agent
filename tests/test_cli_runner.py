@@ -58,7 +58,51 @@ class TestCliRunner(unittest.TestCase):
 
         session.close()
         mock_child.close.assert_called_once_with(force=True)
+        self.assertIsNone(session.child)
+
+    def test_close_session_with_exception(self):
+        session = AgySession(12345)
+        mock_child = MagicMock()
+        mock_child.isalive.return_value = True
+        mock_child.close.side_effect = Exception("Process exit error")
+        session.child = mock_child
+
+        session.close()
+        self.assertIsNone(session.child)
+
+    @patch("src.cli_runner.AgySession._ensure_started")
+    @patch("src.cli_runner.pyte")
+    def test_get_response_handles_send_error_and_restarts(self, mock_pyte, mock_ensure_started):
+        import asyncio
+        import pexpect
+
+        session = AgySession(12345)
+        mock_child1 = MagicMock()
+        mock_child1.send.side_effect = pexpect.EOF("Process dead")
+
+        mock_child2 = MagicMock()
+        mock_child2.send.return_value = None
+        mock_child2.expect.side_effect = pexpect.TIMEOUT("Timeout")
+
+        async def fake_ensure():
+            if session.child is None:
+                session.child = mock_child1
+            else:
+                session.child = mock_child2
+
+        mock_ensure_started.side_effect = fake_ensure
+
+        mock_screen = MagicMock()
+        mock_screen.display = ["Response line 1"]
+        mock_pyte.Screen.return_value = mock_screen
+
+        response = asyncio.run(session.get_response("hello"))
+        self.assertEqual(mock_child1.send.call_count, 1)
+        self.assertEqual(mock_child2.send.call_count, 1)
+        self.assertEqual(response, "Response line 1")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+

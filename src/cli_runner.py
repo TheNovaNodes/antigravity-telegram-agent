@@ -172,7 +172,7 @@ class AgySession:
                     idle_count = 0
                 except pexpect.TIMEOUT:
                     idle_count += 1
-                except pexpect.EOF:
+                except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
     async def get_response(self, prompt: str) -> str:
@@ -181,7 +181,13 @@ class AgySession:
             await self._ensure_started()
 
             clean_prompt = prompt.replace("\n", " ").strip()
-            self.child.send((clean_prompt + "\r\n").encode("utf-8"))
+            try:
+                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
+            except (pexpect.EOF, pexpect.ExceptionPexpect, OSError) as e:
+                logger.warning(f"Failed to send prompt to agy process for chat_id={self.chat_id}: {e}")
+                self.close()
+                await self._ensure_started()
+                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
 
             screen = pyte.Screen(120, 60)
             stream = pyte.ByteStream(screen)
@@ -203,7 +209,7 @@ class AgySession:
                         idle_count += 1
                         if idle_count >= 12:
                             break
-                except pexpect.EOF:
+                except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
             lines = list(screen.display)
@@ -212,11 +218,12 @@ class AgySession:
 
     def close(self):
         """Terminates active agy process cleanly."""
-        if self.child and self.child.isalive():
+        child = self.child
+        self.child = None
+        if child:
             try:
-                self.child.close(force=True)
+                if child.isalive():
+                    child.close(force=True)
             except Exception as e:
                 logger.warning(f"Error closing agy session for chat_id={self.chat_id}: {e}")
-            finally:
-                self.child = None
 
