@@ -28,18 +28,22 @@ header()  { echo -e "\n${CYAN}${BOLD}$1${RESET}\n"; }
 # ─────────────────── Parse CLI Arguments ───────────────────────────────────
 BOT_TOKEN=""
 USER_IDS=""
+AGY_PATH_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --token=*)    BOT_TOKEN="${1#*=}"; shift ;;
-        --token)      BOT_TOKEN="$2"; shift 2 ;;
-        --user-id=*)  USER_IDS="${1#*=}"; shift ;;
-        --user-id)    USER_IDS="$2"; shift 2 ;;
+        --token=*)      BOT_TOKEN="${1#*=}"; shift ;;
+        --token)        BOT_TOKEN="$2"; shift 2 ;;
+        --user-id=*)    USER_IDS="${1#*=}"; shift ;;
+        --user-id)      USER_IDS="$2"; shift 2 ;;
+        --agy-path=*)   AGY_PATH_ARG="${1#*=}"; shift ;;
+        --agy-path)     AGY_PATH_ARG="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: ./setup.sh [--token=BOT_TOKEN] [--user-id=TELEGRAM_USER_ID]"
+            echo "Usage: ./setup.sh [--token=BOT_TOKEN] [--user-id=TELEGRAM_USER_ID] [--agy-path=/path/to/agy]"
             echo ""
-            echo "  --token     Telegram Bot Token from @BotFather"
-            echo "  --user-id   Comma-separated list of allowed Telegram user IDs"
+            echo "  --token      Telegram Bot Token from @BotFather"
+            echo "  --user-id    Comma-separated list of allowed Telegram user IDs"
+            echo "  --agy-path   Path to agy binary (auto-detected if omitted)"
             echo ""
             echo "If arguments are omitted, the installer will ask interactively."
             exit 0
@@ -80,21 +84,31 @@ info "Python ${PY_VERSION} найден"
 REAL_USER="${SUDO_USER:-$(whoami)}"
 REAL_HOME=$(eval echo "~${REAL_USER}")
 
-AGY_PATH=""
-for candidate in \
-    "$(command -v agy 2>/dev/null)" \
-    "${REAL_HOME}/.local/bin/agy" \
-    "$HOME/.local/bin/agy" \
-    "/usr/local/bin/agy" \
-    "/root/.local/bin/agy"; do
-    if [[ -n "$candidate" && -f "$candidate" ]]; then
-        AGY_PATH="$candidate"
-        break
-    fi
-done
+AGY_PATH="${AGY_PATH_ARG:-""}"
 
 if [[ -z "$AGY_PATH" ]]; then
-    error "Antigravity CLI (agy) не найден!\n\n   Сначала установите agy и авторизуйтесь:\n   curl -sS https://dl.google.com/agy/install.sh | bash\n   agy auth login"
+    for candidate in \
+        "$(command -v agy 2>/dev/null)" \
+        "${REAL_HOME}/.local/bin/agy" \
+        "$HOME/.local/bin/agy" \
+        "/usr/local/bin/agy" \
+        "/root/.local/bin/agy" \
+        "/home/${REAL_USER}/.local/bin/agy"; do
+        if [[ -n "$candidate" && -f "$candidate" ]]; then
+            AGY_PATH="$candidate"
+            break
+        fi
+    done
+fi
+
+# Fallback: search the entire system
+if [[ -z "$AGY_PATH" ]]; then
+    warn "agy не найден в стандартных путях, ищу по всей системе..."
+    AGY_PATH="$(find / -name agy -type f -executable 2>/dev/null | head -1 || true)"
+fi
+
+if [[ -z "$AGY_PATH" ]]; then
+    error "Antigravity CLI (agy) не найден!\n\n   Сначала установите agy и авторизуйтесь:\n   curl -sS https://dl.google.com/agy/install.sh | bash\n   agy auth login\n\n   Или укажите путь вручную:\n   ./setup.sh --agy-path=/path/to/agy"
 fi
 info "Antigravity CLI найден: ${AGY_PATH}"
 
