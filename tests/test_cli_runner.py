@@ -82,6 +82,7 @@ class TestCliRunner(unittest.TestCase):
 
         def send_side_effect(data):
             if session.child is mock_child1:
+                session.close()
                 raise pexpect.EOF("Process dead")
             return None
 
@@ -91,11 +92,10 @@ class TestCliRunner(unittest.TestCase):
 
         async def fake_ensure():
             if session.child is None:
-                session.child = mock_child1
-            else:
                 session.child = mock_child2
 
         mock_ensure_started.side_effect = fake_ensure
+        session.child = mock_child1
 
         mock_screen = MagicMock()
         mock_screen.display = ["Response line 1"]
@@ -105,6 +105,7 @@ class TestCliRunner(unittest.TestCase):
         self.assertEqual(mock_child1.send.call_count, 1)
         self.assertEqual(mock_child2.send.call_count, 1)
         self.assertEqual(response, "Response line 1")
+
 
 
 if __name__ == "__main__":
