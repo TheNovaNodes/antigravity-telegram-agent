@@ -383,8 +383,34 @@ async def handle_message(message: Message):
     placeholder = await message.answer("🤔 Думаю...")
     session = session_manager.get_session(message.chat.id)
 
+    async def update_thinking_status(msg: Message):
+        import time
+        start_time = time.time()
+        states = ["🤔 Думаю.", "🤔 Думаю..", "🤔 Думаю..."]
+        i = 0
+        while True:
+            await asyncio.sleep(2.5)
+            elapsed = int(time.time() - start_time)
+            i = (i + 1) % len(states)
+            state = states[i]
+            if elapsed > 45:
+                text = f"{state}\n<i>Глубокий анализ ({elapsed} сек)</i>"
+            elif elapsed > 15:
+                text = f"{state}\n<i>Ожидание ответа модели ({elapsed} сек)</i>"
+            else:
+                text = f"{state} ({elapsed} сек)"
+            try:
+                await msg.edit_text(text, parse_mode="HTML")
+            except Exception:
+                pass
+
+    status_task = asyncio.create_task(update_thinking_status(placeholder))
+
     try:
         response_text = await session.get_response(message.text)
+        
+        # Stop the live status updating
+        status_task.cancel()
         
         # Log structured execution audit log
         log_audit_event(
@@ -403,5 +429,6 @@ async def handle_message(message: Message):
             await placeholder.edit_text("⚠️ Агент отработал молча или не вернул текста.")
 
     except Exception as e:
+        status_task.cancel()
         logger.error(f"Error handling message for chat_id={message.chat.id}: {e}", exc_info=True)
         await safe_edit_text(placeholder, f"❌ <b>Произошла ошибка:</b> {e}")
