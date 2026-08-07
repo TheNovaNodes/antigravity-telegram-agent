@@ -53,3 +53,20 @@ def get_available_conversations(limit: int = 8) -> List[Dict[str, str]]:
         logger.error(f"Failed to fetch conversation summaries: {e}", exc_info=True)
 
     return conversations
+
+def rename_conversation(conversation_id: str, new_title: str) -> bool:
+    """Manually rename a conversation title in the agy CLI SQLite database."""
+    if not DB_PATH.exists() or not conversation_id:
+        return False
+    
+    try:
+        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+            conn.execute(
+                "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
+                (new_title, conversation_id)
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Failed to rename conversation {conversation_id}: {e}", exc_info=True)
+        return False

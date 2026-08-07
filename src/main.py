@@ -32,6 +32,7 @@ async def main():
     await bot.set_my_commands([
         BotCommand(command="menu", description="🎛️ Главный центр управления DMagyBOT"),
         BotCommand(command="resume", description="📂 Возобновить сессию из истории (/resume)"),
+        BotCommand(command="rename", description="✏️ Переименовать текущую сессию (/rename Новое Имя)"),
         BotCommand(command="mcp", description="🔌 Управление MCP серверами (Память, Поиск, CRM)"),
         BotCommand(command="models", description="🤖 Выбор нейросети (Gemini, Claude, GPT)"),
         BotCommand(command="effort", description="⚡ Глубина рассуждений (low/medium/high)"),

@@ -269,6 +269,33 @@ async def cmd_reset(message: Message):
         await message.answer("ℹ️ Активной сессии не найдено.", parse_mode="HTML")
 
 
+@router.message(Command("rename"))
+async def cmd_rename(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    
+    session = session_manager.get_session(message.chat.id)
+    if not session.conversation_id:
+        await message.answer("⚠️ Нет активной сессии для переименования. Сначала начните диалог или выберите через /resume.", parse_mode="HTML")
+        return
+        
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("ℹ️ <b>Как использовать:</b>\nОтправьте <code>/rename Новое Имя Сессии</code>", parse_mode="HTML")
+        return
+        
+    new_title = parts[1].strip()
+    
+    # Needs import: from src.conversations import rename_conversation
+    from src.conversations import rename_conversation
+    success = rename_conversation(session.conversation_id, new_title)
+    
+    if success:
+        await message.answer(f"✅ <b>Сессия переименована!</b>\nНовое имя: <i>{new_title}</i>", parse_mode="HTML")
+    else:
+        await message.answer("❌ Ошибка при переименовании. База данных недоступна или ID не найден.", parse_mode="HTML")
+
+
 @router.message(Command("resume"))
 async def cmd_resume(message: Message):
     if not is_allowed(message.from_user.id):
