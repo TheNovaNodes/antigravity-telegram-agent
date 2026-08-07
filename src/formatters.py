@@ -58,24 +58,113 @@ def check_known_errors(text: str) -> str | None:
     return None
 
 
+def highlight_tech_terms(text: str) -> str:
+    """Highlight standalone technical terms, filenames, and paths in mono font for dyslexia readability."""
+    # Pattern matching file paths and files with extensions like src/db.py, config.json, main.py
+    path_pattern = r'(?<![A-Za-z0-9_/<>&;`"])(\b[a-zA-Z0-9_\-\.]+\/[a-zA-Z0-9_\-\./\.]+\b|\b[a-zA-Z0-9_\-]+\.(?:py|json|md|txt|sh|html|css|js|yml|yaml|toml|service)\b)(?![A-Za-z0-9_/<>&;`"])'
+    text = re.sub(path_pattern, r'<code>\1</code>', text)
+    return text
+
+
 def markdown_to_html(text: str) -> str:
-    """Convert standard markdown formatting to Telegram-compatible HTML tags with safe character escaping."""
+    """Convert Markdown syntax to full Telegram-compatible Rich Text HTML safely.
+
+    Handles:
+    - Code blocks ```lang ... ``` -> <pre><code class="language-lang">...</code></pre>
+    - Inline code `code` -> <code>code</code>
+    - Bold **text** / __text__ -> <b>text</b>
+    - Italic *text* -> <i>text</i>
+    - Headers # Header -> <b><u>HEADER</u></b>
+    - Blockquotes > quote -> <blockquote>quote</blockquote>
+    - Links [text](url) -> <a href="url">text</a>
+    - Separators --- -> horizontal line
+    """
     if not text:
         return ""
-    # Safe HTML escaping to prevent Telegram entity parsing errors
-    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Preserve multi-line code blocks during escaping
+    code_blocks = []
+
+    def save_code_block(match):
+        lang = match.group(1) or ""
+        code_content = match.group(2)
+        # Escape code block content safely
+        escaped_code = code_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        idx = len(code_blocks)
+        class_attr = f' class="language-{lang.strip()}"' if lang.strip() else ""
+        code_blocks.append(f'<pre><code{class_attr}>{escaped_code}</code></pre>')
+        return f"__CODE_BLOCK_{idx}__"
+
+    # Extract ```lang\ncode``` blocks first
+    text_processed = re.sub(r"```(\w*)\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
+
+    # Safe HTML escaping for main text
+    escaped = text_processed.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Restore code blocks back (their contents are already safely escaped)
+    for idx, cb in enumerate(code_blocks):
+        escaped = escaped.replace(f"__CODE_BLOCK_{idx}__", cb)
+
     lines = escaped.split("\n")
     processed_lines = []
+    in_quote = False
+    quote_buffer = []
+
+    def flush_quote():
+        nonlocal quote_buffer, in_quote
+        if quote_buffer:
+            q_text = "\n".join(quote_buffer)
+            processed_lines.append(f"<blockquote>{q_text}</blockquote>")
+            quote_buffer = []
+        in_quote = False
+
     for line in lines:
-        if line.strip() in ("---", "***", "___"):
+        l = line.rstrip()
+        stripped = l.strip()
+
+        # Check separator lines
+        if stripped in ("---", "***", "___", "───────────────"):
+            flush_quote()
             processed_lines.append("───────────────")
             continue
-        l = line
-        # Convert **bold** -> <b>bold</b>
-        l = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", l)
-        # Convert `code` -> <code>code</code>
-        l = re.sub(r"`(.*?)`", r"<code>\1</code>", l)
+
+        # Check blockquotes (> quote)
+        if stripped.startswith("&gt; ") or stripped.startswith("> "):
+            in_quote = True
+            q_line = stripped[5:] if stripped.startswith("&gt; ") else stripped[2:]
+            quote_buffer.append(q_line)
+            continue
+        elif in_quote:
+            flush_quote()
+
+        # Check Headers (# Header, ## Header, ### Header)
+        header_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if header_match:
+            header_text = header_match.group(2)
+            # Format header clearly for reading
+            l = f"<b><u>{header_text}</u></b>"
+            processed_lines.append("")
+            processed_lines.append(l)
+            continue
+
+        # Convert Markdown formatting outside code blocks
+        if "__CODE_BLOCK_" not in l and "<pre>" not in l:
+            # Convert **bold** -> <b>bold</b>
+            l = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", l)
+            l = re.sub(r"__(.*?)__", r"<b>\1</b>", l)
+            # Convert `code` -> <code>code</code>
+            l = re.sub(r"`(.*?)`", r"<code>\1</code>", l)
+            # Convert [text](url) -> <a href="url">text</a>
+            l = re.sub(r"\[(.*?)\]\((https?://\S+)\)", r'<a href="\2">\1</a>', l)
+            # Convert *italic* -> <i>italic</i>
+            l = re.sub(r"(?<!\w)\*(.*?)\*(?!\w)", r"<i>\1</i>", l)
+
+            # Auto-highlight standalone tech terms and file paths if not already in HTML tags
+            l = highlight_tech_terms(l)
+
         processed_lines.append(l)
+
+    flush_quote()
     return "\n".join(processed_lines)
 
 
@@ -85,8 +174,8 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
     1. Filters TUI banners, prompt echoes, status lines.
     2. Intercepts eligibility & auth errors with friendly instructions.
     3. Unwraps mid-sentence terminal line wraps into natural flowing paragraphs.
-    4. Applies generous spacing (double newlines) and clean bullet points.
-    5. Converts to Telegram-safe HTML formatting.
+    4. Applies generous spacing (double newlines) and clean bullet points for low cognitive load.
+    5. Converts to Telegram-safe Rich Text HTML formatting.
     """
     raw_joined = "\n".join(raw_screen_display)
     known_err = check_known_errors(raw_joined)
@@ -121,7 +210,7 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
             curr.append(line)
         else:
             prev = curr[-1]
-            # Paragraph boundary triggers: sentence end punctuation, list items, or code block headers
+            # Paragraph boundary triggers: sentence end punctuation, list items, headers, code blocks
             if (
                 prev.endswith((".", "!", "?", ":", "```")) or
                 line.startswith(("-", "*", "•", "1.", "2.", "3.", "4.", "5.", "#", ">")) or
@@ -137,3 +226,4 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
 
     joined_text = "\n\n".join(paragraphs).strip()
     return markdown_to_html(joined_text)
+

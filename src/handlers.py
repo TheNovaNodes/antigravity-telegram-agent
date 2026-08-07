@@ -7,7 +7,7 @@ from aiogram.enums import ChatAction
 
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
-from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES
+from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
 from src.mcp_manager import mcp_manager
 from src.audit import log_audit_event
 
@@ -18,13 +18,17 @@ def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
+    email = get_active_account_email()
     buttons = [
         [
-            InlineKeyboardButton(text=f"🤖 Модель: {session.model_name.split('-')[0].upper()}", callback_data="menu:models"),
-            InlineKeyboardButton(text=f"⚡ Effort: {session.effort.upper()}", callback_data="menu:effort")
+            InlineKeyboardButton(text=f"🤖 {session.model_name.split('-')[0].upper()}", callback_data="menu:models"),
+            InlineKeyboardButton(text=f"⚡ {session.effort.upper()}", callback_data="menu:effort")
         ],
         [
             InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
+        ],
+        [
+            InlineKeyboardButton(text=f"🔑 {email}", callback_data="menu:account")
         ],
         [
             InlineKeyboardButton(text="🔌 MCP Серверы", callback_data="menu:mcp"),
@@ -205,8 +209,57 @@ async def process_menu_navigation(callback_query: CallbackQuery):
     elif action == "reset":
         session_manager.reset_session(callback_query.message.chat.id)
         await callback_query.message.edit_text("🔄 <b>Сессия сброшена!</b> Следующий запрос начнет новый диалог.", parse_mode="HTML")
+    elif action == "account":
+        email = get_active_account_email()
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Переподключить авторизацию (Hot Reload)", callback_data="account:reload")],
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        ])
+        text = (
+            f"🔑 <b>Авторизация Antigravity CLI</b>\n\n"
+            f"👤 <b>Текущий аккаунт:</b> <code>{email}</code>\n"
+            f"⚙️ <b>Подхват авторизации:</b> Автоматический (Hot Reload)\n\n"
+            f"Если вы сменили аккаунт через <code>agy auth login</code> в терминале сервера, "
+            f"нажмите кнопку ниже для принудительного обновления."
+        )
+        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
-        await callback_query.answer(f"Status: OK | Model: {session.model_name} | Effort: {session.effort}", show_alert=True)
+        email = get_active_account_email()
+        await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
+
+@router.message(Command("auth"))
+@router.message(Command("account"))
+async def cmd_account(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    email = get_active_account_email()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Переподключить авторизацию (Hot Reload)", callback_data="account:reload")],
+        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+    ])
+    text = (
+        f"🔑 <b>Авторизация Antigravity CLI</b>\n\n"
+        f"👤 <b>Текущий аккаунт:</b> <code>{email}</code>\n"
+        f"⚙️ <b>Подхват авторизации:</b> Автоматический (Hot Reload)\n\n"
+        f"Если вы сменили аккаунт через <code>agy auth login</code> в терминале сервера, "
+        f"нажмите кнопку ниже для принудительного обновления."
+    )
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@router.callback_query(lambda c: c.data == "account:reload")
+async def process_account_reload_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    session = session_manager.get_session(callback_query.message.chat.id)
+    session.close()
+    email = get_active_account_email()
+    text = (
+        f"⚡ <b>Авторизация успешно перезагружена!</b>\n\n"
+        f"👤 <b>Активный аккаунт:</b> <code>{email}</code>\n\n"
+        f"Следующий запрос пойдет с новыми учетными данными."
+    )
+    await callback_query.answer("Авторизация перезагружена!")
+    await callback_query.message.edit_text(text, parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
 async def process_mcp_toggle_callback(callback_query: CallbackQuery):

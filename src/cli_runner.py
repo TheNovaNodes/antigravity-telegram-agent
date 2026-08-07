@@ -28,28 +28,58 @@ AVAILABLE_EFFORTS = ["low", "medium", "high"]
 AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-edits": "Auto-Edits Mode"}
 
 
+import signal
+
+def get_active_account_email() -> str:
+    """Retrieve the currently authenticated Google account email from agy logs or token."""
+    home = Path.home()
+    log_dir = home / ".gemini" / "antigravity-cli" / "log"
+    if log_dir.exists():
+        try:
+            logs = sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if logs:
+                content = logs[0].read_text(errors="ignore")
+                match = re.search(r"authenticated successfully as ([^\s,]+)", content)
+                if match:
+                    return match.group(1)
+        except Exception as e:
+            logger.warning(f"Failed to extract email from agy log: {e}")
+    return "Аккаунт активен"
+
+
 def get_auth_state_signature() -> str:
     """Compute a signature representing current agy CLI authentication state.
 
-    Checks token & settings files in ~/.gemini/antigravity-cli/.
+    Checks token, settings, state files in ~/.gemini/antigravity-cli/.
     Returns string signature (mtime + hash) to detect hot-reload account switches.
     """
     home = Path.home()
-    token_file = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    settings_file = home / ".gemini" / "antigravity-cli" / "settings.json"
+    base_dir = home / ".gemini" / "antigravity-cli"
+    token_file = base_dir / "antigravity-oauth-token"
+    settings_file = base_dir / "settings.json"
+    jetski_file = base_dir / "jetski_state.pbtxt"
+    
+    # Also check latest log file mtime
+    log_dir = base_dir / "log"
+    latest_log = None
+    if log_dir.exists():
+        logs = sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if logs:
+            latest_log = logs[0]
 
     parts = []
-    for fpath in (token_file, settings_file):
-        if fpath.exists():
+    for fpath in (token_file, settings_file, jetski_file, latest_log):
+        if fpath and fpath.exists():
             try:
                 st = fpath.stat()
-                content = fpath.read_bytes()
+                content = fpath.read_bytes()[:1024]
                 h = hashlib.md5(content).hexdigest()[:8]
                 parts.append(f"{fpath.name}:{st.st_mtime}:{st.st_size}:{h}")
             except Exception:
                 parts.append(f"{fpath.name}:err")
         else:
-            parts.append(f"{fpath.name}:missing")
+            name = fpath.name if fpath else "none"
+            parts.append(f"{name}:missing")
 
     return "|".join(parts)
 
@@ -217,13 +247,19 @@ class AgySession:
             return formatted_response
 
     def close(self):
-        """Terminates active agy process cleanly."""
+        """Terminates active agy process cleanly and forcefully."""
         child = self.child
         self.child = None
         if child:
             try:
-                if child.isalive():
+                pid = getattr(child, "pid", None)
+                if hasattr(child, "isalive") and callable(child.isalive) and child.isalive():
                     child.close(force=True)
+                if pid and isinstance(pid, int):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
             except Exception as e:
                 logger.warning(f"Error closing agy session for chat_id={self.chat_id}: {e}")
 

@@ -1,5 +1,11 @@
 import unittest
-from src.formatters import is_tui_noise, check_known_errors, format_dyslexia_friendly_text
+from src.formatters import (
+    is_tui_noise,
+    check_known_errors,
+    format_dyslexia_friendly_text,
+    markdown_to_html,
+    highlight_tech_terms
+)
 
 
 class TestFormatters(unittest.TestCase):
@@ -17,6 +23,31 @@ class TestFormatters(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("Ошибка доступа к аккаунту", result)
         self.assertIn("<code>agy auth login</code>", result)
+
+    def test_markdown_to_html_formatting(self):
+        md_text = (
+            "# Главный заголовок\n\n"
+            "Вот **жирный текст** и *курсив*, а также `код`.\n"
+            "> Это важная цитата\n\n"
+            "```python\ndef hello():\n    return 'world'\n```\n"
+            "Ссылка: [Google](https://google.com)\n"
+            "Путь к файлу: src/db.py"
+        )
+        html = markdown_to_html(md_text)
+        self.assertIn("<b><u>Главный заголовок</u></b>", html)
+        self.assertIn("<b>жирный текст</b>", html)
+        self.assertIn("<i>курсив</i>", html)
+        self.assertIn("<code>код</code>", html)
+        self.assertIn("<blockquote>Это важная цитата</blockquote>", html)
+        self.assertIn("def hello():", html)
+        self.assertIn('<a href="https://google.com">Google</a>', html)
+        self.assertIn("<code>src/db.py</code>", html)
+
+    def test_highlight_tech_terms(self):
+        text = "Проверьте файл src/handlers.py или config.json для подробностей."
+        highlighted = highlight_tech_terms(text)
+        self.assertIn("<code>src/handlers.py</code>", highlighted)
+        self.assertIn("<code>config.json</code>", highlighted)
 
     def test_format_dyslexia_friendly_text_unwrapping(self):
         raw_screen = [
@@ -46,3 +77,4 @@ class TestFormatters(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
