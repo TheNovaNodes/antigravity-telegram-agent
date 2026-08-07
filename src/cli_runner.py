@@ -285,12 +285,21 @@ class AgySession:
             )
             self.spawn_auth_signature = current_auth_sig
 
-            # Drain startup banner
+            # Drain startup banner and auto-confirm first-run interactive prompts
+            screen = pyte.Screen(120, 60)
+            stream = pyte.ByteStream(screen)
             idle_count = 0
             while idle_count < 3:
                 try:
-                    await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
-                    idle_count = 0
+                    chunk = await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
+                    if chunk:
+                        stream.feed(chunk)
+                        idle_count = 0
+                        banner_text = "\n".join(screen.display).lower()
+                        if any(phrase in banner_text for phrase in ["arrow keys to navigate", "enter to select", "press enter"]):
+                            logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
+                            self.child.send(b"\r\n")
+                            screen.reset()
                 except pexpect.TIMEOUT:
                     idle_count += 1
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
