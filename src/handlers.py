@@ -36,10 +36,26 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+from src.conversations import get_available_conversations
+
 def get_models_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for alias, full_name in AVAILABLE_MODELS.items():
         buttons.append([InlineKeyboardButton(text=f"🤖 {alias} ({full_name})", callback_data=f"set_model:{alias}")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_resume_keyboard() -> InlineKeyboardMarkup:
+    conversations = get_available_conversations(limit=8)
+    buttons = [
+        [InlineKeyboardButton(text="🔄 Продолжить последнюю сессию (--continue)", callback_data="resume_set:latest")]
+    ]
+    for conv in conversations:
+        date_part = f" ({conv['date']})" if conv['date'] else ""
+        label = f"💬 {conv['summary'][:28]}{date_part}"
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"resume_set:{conv['id']}")])
+
     buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -228,6 +244,36 @@ async def cmd_reset(message: Message):
         await message.answer("🔄 **Сессия сброшена!**")
     else:
         await message.answer("ℹ️ Активной сессии не найдено.")
+
+
+@router.message(Command("resume"))
+async def cmd_resume(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    kb = get_resume_keyboard()
+    await message.answer(
+        "📂 **Выберите сохраненную сессию из истории `agy CLI` для возобновления:**",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("resume_set:"))
+async def process_resume_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    conv_id = callback_query.data.split("resume_set:")[1]
+    session = session_manager.get_session(callback_query.message.chat.id)
+
+    if conv_id == "latest":
+        session.set_conversation("latest")
+        text = "🔄 **Возобновлена последняя активная сессия `agy CLI` (`--continue`)!**"
+    else:
+        session.set_conversation(conv_id)
+        text = f"✅ **Сессия возобновлена!**\n\n🆔 **Conversation ID**: `{conv_id}`\n\nСледующий запрос продолжится в контексте выложенного диалога."
+
+    await callback_query.answer("Сессия переключена!")
+    await callback_query.message.edit_text(text, parse_mode="Markdown")
 
 async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3900):
     """Splits response into safe Telegram chunks (<= 4000 chars) to prevent 4096-character limit crash."""

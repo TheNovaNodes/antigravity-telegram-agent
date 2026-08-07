@@ -31,6 +31,7 @@ async def main():
     # Register Telegram native slash command menu
     await bot.set_my_commands([
         BotCommand(command="menu", description="🎛️ Главный центр управления DMagyBOT"),
+        BotCommand(command="resume", description="📂 Возобновить сессию из истории (/resume)"),
         BotCommand(command="mcp", description="🔌 Управление MCP серверами (Память, Поиск, CRM)"),
         BotCommand(command="models", description="🤖 Выбор нейросети (Gemini, Claude, GPT)"),
         BotCommand(command="effort", description="⚡ Глубина рассуждений (low/medium/high)"),

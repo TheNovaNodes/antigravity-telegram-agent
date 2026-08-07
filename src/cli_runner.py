@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 import pexpect
 import pyte
 from src.config import AGY_BINARY_PATH
@@ -55,12 +56,13 @@ def get_auth_state_signature() -> str:
 
 class AgySession:
     """Manages an interactive PTY session for a single chat with model, effort, and mode controls."""
-    def __init__(self, chat_id: int, model_name: str = "gemini-3.1-pro-high", effort: str = "high", mode: str = "default"):
+    def __init__(self, chat_id: int, model_name: str = "gemini-3.1-pro-high", effort: str = "high", mode: str = "default", conversation_id: Optional[str] = None):
         self.chat_id = chat_id
         self.child = None
         self.model_name = model_name
         self.effort = effort
         self.mode = mode
+        self.conversation_id = conversation_id
         self.spawn_auth_signature = None
         self._lock = asyncio.Lock()
 
@@ -76,7 +78,7 @@ class AgySession:
             self.model_name = new_model
             logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name}")
             self.close()
-            save_user_session(self.chat_id, self.model_name, self.effort, self.mode)
+            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
         return True
 
     def set_effort(self, effort_level: str) -> bool:
@@ -85,7 +87,7 @@ class AgySession:
                 self.effort = effort_level
                 logger.info(f"Switching effort for chat_id={self.chat_id} to {self.effort}")
                 self.close()
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode)
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
             return True
         return False
 
@@ -95,9 +97,18 @@ class AgySession:
                 self.mode = mode_key
                 logger.info(f"Switching mode for chat_id={self.chat_id} to {self.mode}")
                 self.close()
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode)
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
             return True
         return False
+
+    def set_conversation(self, conversation_id: Optional[str]) -> bool:
+        """Switch or resume a specific agy conversation by ID or 'latest'."""
+        if self.conversation_id != conversation_id:
+            self.conversation_id = conversation_id
+            logger.info(f"Switching conversation for chat_id={self.chat_id} to {conversation_id}")
+            self.close()
+            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
+        return True
 
     async def _ensure_started(self):
         """Spawns process with configured flags and MCP environment bindings.
@@ -123,6 +134,12 @@ class AgySession:
             ]
             if self.mode != "default":
                 args.extend(["--mode", self.mode])
+            
+            # Attach --conversation or --continue flag to resume specific conversation thread
+            if self.conversation_id == "latest":
+                args.append("--continue")
+            elif self.conversation_id:
+                args.extend(["--conversation", self.conversation_id])
 
             logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args}")
             env = os.environ.copy()
