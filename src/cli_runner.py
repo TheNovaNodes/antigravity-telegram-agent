@@ -30,9 +30,29 @@ AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-
 
 import signal
 
+import urllib.request
+import json
+
 def get_active_account_email() -> str:
-    """Retrieve the currently authenticated Google account email from agy logs or token."""
+    """Retrieve the currently authenticated Google account email via Google OAuth userinfo endpoint."""
     home = Path.home()
+    token_file = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    if token_file.exists():
+        try:
+            data = json.loads(token_file.read_text())
+            access_token = data.get("token", {}).get("access_token")
+            if access_token:
+                req = urllib.request.Request("https://www.googleapis.com/oauth2/v3/userinfo")
+                req.add_header("Authorization", f"Bearer {access_token}")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    info = json.loads(resp.read().decode())
+                    email = info.get("email")
+                    if email:
+                        return email
+        except Exception as e:
+            logger.warning(f"Failed to fetch userinfo via OAuth token: {e}")
+
+    # Fallback scan of agy logs
     log_dir = home / ".gemini" / "antigravity-cli" / "log"
     if log_dir.exists():
         try:

@@ -28,14 +28,15 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
         ],
         [
-            InlineKeyboardButton(text=f"🔑 {email}", callback_data="menu:account")
+            InlineKeyboardButton(text=f"🔑 {email}", callback_data="menu:account"),
+            InlineKeyboardButton(text="📊 Квоты (/usage)", callback_data="menu:usage")
         ],
         [
             InlineKeyboardButton(text="🔌 MCP Серверы", callback_data="menu:mcp"),
             InlineKeyboardButton(text="🔄 Сбросить сессию", callback_data="menu:reset")
         ],
         [
-            InlineKeyboardButton(text="📊 Статус", callback_data="menu:status")
+            InlineKeyboardButton(text="⚡ Статус системы", callback_data="menu:status")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -223,9 +224,32 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             f"нажмите кнопку ниже для принудительного обновления."
         )
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    elif action == "usage":
+        await callback_query.bot.send_chat_action(chat_id=callback_query.message.chat.id, action=ChatAction.TYPING)
+        await callback_query.answer("Запрашиваю квоты моделей...")
+        session = session_manager.get_session(callback_query.message.chat.id)
+        raw_response = await session.get_response("/usage")
+        email = get_active_account_email()
+        from src.formatters import format_usage_response
+        formatted = format_usage_response(raw_response, email)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]])
+        await safe_edit_text(callback_query.message, formatted)
     elif action == "status":
         email = get_active_account_email()
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
+
+@router.message(Command("usage"))
+async def cmd_usage(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+    placeholder = await message.answer("📊 <i>Запрашиваю квоты моделей...</i>", parse_mode="HTML")
+    session = session_manager.get_session(message.chat.id)
+    raw_response = await session.get_response("/usage")
+    email = get_active_account_email()
+    from src.formatters import format_usage_response
+    formatted = format_usage_response(raw_response, email)
+    await safe_edit_text(placeholder, formatted)
 
 @router.message(Command("auth"))
 @router.message(Command("account"))

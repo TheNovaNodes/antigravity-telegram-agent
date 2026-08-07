@@ -227,3 +227,35 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
     joined_text = "\n\n".join(paragraphs).strip()
     return markdown_to_html(joined_text)
 
+
+def format_usage_response(raw_text: str, email: str = "") -> str:
+    """Format agy /usage raw output into a clean, dyslexia-friendly HTML Telegram response."""
+    lines = raw_text.split("\n")
+    skip_keywords = ["scroll", "pgup", "pgdown", "page", "ctrl+", "esc close", "models & quota", "all models"]
+    
+    output_parts = ["📊 <b>Использование квот моделей (Antigravity Usage)</b>\n"]
+    if email:
+        output_parts.append(f"👤 <b>Аккаунт:</b> <code>{email}</code>\n")
+
+    for line in lines:
+        l_lower = line.lower().strip()
+        if not l_lower or any(k in l_lower for k in skip_keywords):
+            continue
+        if l_lower.startswith("account:"):
+            continue
+        
+        if any(m in line for m in ["Gemini", "Claude", "GPT"]):
+            output_parts.append(f"\n🔹 <b>{line.strip()}</b>")
+        elif "% remaining" in line:
+            pct_match = re.search(r"(\d+)%\s+remaining", line)
+            pct = int(pct_match.group(1)) if pct_match else 50
+            green_blocks = int(pct / 10)
+            black_blocks = 10 - green_blocks
+            bar = "🟩" * green_blocks + "⬛" * black_blocks
+            output_parts.append(f"• <b>Остаток квоты:</b> {pct}% ({bar})")
+            if "Refreshes in" in line:
+                ref_time = line.split("Refreshes in")[1].strip()
+                output_parts.append(f"• <b>Обновление через:</b> <code>{ref_time}</code>")
+
+    return "\n".join(output_parts)
+
