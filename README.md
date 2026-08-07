@@ -83,7 +83,10 @@
 - **Model Context Protocol (MCP)**: Полная совместимость с экосистемой `TheNovaNodes` (Control Plane / Data Plane).
 - **PTY-Архитектура (`pexpect` + `pyte`)**: Эмуляция терминала для прямого взаимодействия с `agy` без дополнительных API-ключей Gemini.
 - **Интерактивный панель управления (`/menu`, `/mcp`)**: Модульный интерфейс Telegram для настройки моделей, глубин рассуждений (`effort`), режимов работы и состояния MCP-серверов.
-- **Персистентность сессий (SQLite)**: База данных `data/bot.db` сохраняет конфигурацию пользователей и обеспечивает возобновление сессий после перезапуска.
+- **Персистентность сессий (SQLite)**: База данных `data/dmagybot.db` сохраняет конфигурацию пользователей и обеспечивает возобновление сессий после перезапуска.
+- **Автоматический Hot Reload авторизации**: Мониторинг сигнатуры файлов `~/.gemini/antigravity-cli/antigravity-oauth-token` и `settings.json`. При смене аккаунта через `agy auth login` на сервере бот автоматически подхватывает новые креды без ручного рестарта.
+- **Форматирование Dyslexia-Friendly & Очистка TUI**: Автоматическая склейка рваных строк терминала в плавные естественные абзацы с двойным отступом (`\n\n`), полным удалением ASCII-арта (`▄▀▀`), эхо команд (`> ...`) и служебных рамок.
+- **Перехват системных ошибок**: Автоматический перехват `Eligibility Check` и `Quota Exceeded` с выдачей понятных пошаговых рекомендаций на русском языке.
 - **Безопасный чанкинг**: Алгоритм разделения ответов, гарантирующий соблюдение ограничений Telegram API (4096 символов).
 - **Аудит операций (`logs/audit.log`)**: Журналирование событий в формате JSON для контроля исполняемых команд и моделей.
 - **Автоматическая очистка ресурсов**: Фоновый процесс удаления неактивных сессий (Idle > 30 мин).
@@ -100,22 +103,25 @@ DMagyBOT/
 │   ├── config.py           # Валидация конфигурации окружения
 │   ├── mcp_config.py       # Менеджер MCP-серверов (TheNovaNodes & Custom Gateways)
 │   ├── mcp_manager.py      # Модуль проверки статуса и управления MCP
-│   ├── cli_runner.py       # AgySession (Управление PTY-процессом agy и pyte)
-│   ├── session_manager.py  # SessionManager (Управление жизненным циклом сессий)
-│   ├── db.py               # Персистентность сессий в SQLite
-│   ├── audit.py            # Журналирование аудита в JSON
+│   ├── cli_runner.py       # AgySession (PTY-процессы agy, pyte и Hot Reload авторизации)
+│   ├── formatters.py       # Dyslexia-Friendly форматирование и перехват системных ошибок
+│   ├── session_manager.py  # SessionManager (Управление жизненным циклом сессий и Idle TTL)
+│   ├── db.py               # Персистентность сессий в SQLite (data/dmagybot.db)
+│   ├── audit.py            # Журналирование аудита в JSON (logs/audit.log)
 │   ├── handlers.py         # Обработчики команд Telegram и callbacks
 │   └── main.py             # Точка входа приложения и инициализация сервисов
-├── tests/                  # Набор автоматизированных unittest-тестов
+├── tests/                  # Набор из 29 автоматизированных unittest-тестов
 │   ├── test_audit.py
+│   ├── test_auth_hot_reload.py
 │   ├── test_chunking.py
 │   ├── test_cli_runner.py
 │   ├── test_config.py
 │   ├── test_db_persistence.py
+│   ├── test_formatters.py
 │   ├── test_handlers.py
 │   ├── test_mcp.py
 │   └── test_session_manager.py
-├── data/                   # База данных SQLite (bot.db)
+├── data/                   # База данных SQLite (dmagybot.db)
 ├── logs/                   # Журналы аудита (audit.log)
 ├── mcp_config.json         # Локальные эндпоинты MCP-серверов
 ├── dmagybot.service        # Юнит-файл systemd
