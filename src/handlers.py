@@ -377,4 +377,4 @@ async def handle_message(message: Message):
 
     except Exception as e:
         logger.error(f"Error handling message for chat_id={message.chat.id}: {e}", exc_info=True)
-        await placeholder.edit_text(f"❌ **Произошла ошибка:** {e}")
+        await safe_edit_text(placeholder, f"❌ <b>Произошла ошибка:</b> {e}")

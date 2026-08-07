@@ -15,10 +15,11 @@ def is_tui_noise(line: str) -> bool:
         return True
 
     lower = s.lower()
-    # Filter CLI header banners and status bars
+    # Filter CLI header banners, status bars, and reasoning traces
     if any(pattern in lower for pattern in [
         "antigravity cli", "gemini 3.", "claude-", "gpt-", "esc to cancel",
-        "generating...", "ctrl+c", "reasoning effort", "execution mode"
+        "generating...", "ctrl+c", "reasoning effort", "execution mode",
+        "thought for", "prioritizing tool", "tool usage"
     ]):
         return True
 
