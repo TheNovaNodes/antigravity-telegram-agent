@@ -78,10 +78,15 @@ class TestCliRunner(unittest.TestCase):
 
         session = AgySession(12345)
         mock_child1 = MagicMock()
-        mock_child1.send.side_effect = pexpect.EOF("Process dead")
-
         mock_child2 = MagicMock()
-        mock_child2.send.return_value = None
+
+        def send_side_effect(data):
+            if session.child is mock_child1:
+                raise pexpect.EOF("Process dead")
+            return None
+
+        mock_child1.send.side_effect = send_side_effect
+        mock_child2.send.side_effect = send_side_effect
         mock_child2.expect.side_effect = pexpect.TIMEOUT("Timeout")
 
         async def fake_ensure():
@@ -104,5 +109,6 @@ class TestCliRunner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
