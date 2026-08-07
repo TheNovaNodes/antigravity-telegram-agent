@@ -228,34 +228,69 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
     return markdown_to_html(joined_text)
 
 
-def format_usage_response(raw_text: str, email: str = "") -> str:
-    """Format agy /usage raw output into a clean, dyslexia-friendly HTML Telegram response."""
-    lines = raw_text.split("\n")
-    skip_keywords = ["scroll", "pgup", "pgdown", "page", "ctrl+", "esc close", "models & quota", "all models"]
+def format_usage_response(lines, email: str = "") -> str:
+    """Format agy /usage raw screen lines into a comprehensive, dyslexia-friendly HTML Telegram report."""
+    raw_joined = "\n".join(lines) if isinstance(lines, list) else str(lines)
+    lines_list = raw_joined.split("\n")
     
-    output_parts = ["📊 <b>Использование квот моделей (Antigravity Usage)</b>\n"]
-    if email:
-        output_parts.append(f"👤 <b>Аккаунт:</b> <code>{email}</code>\n")
+    skip_keywords = [
+        "scroll", "pgup", "pgdown", "page", "ctrl+", "esc close", 
+        "models & quota", "all models", "welcome to", "signed in",
+        "view your available", "quota refreshes"
+    ]
+    
+    parsed_models = []
+    current_model = None
 
-    for line in lines:
-        l_lower = line.lower().strip()
-        if not l_lower or any(k in l_lower for k in skip_keywords):
-            continue
-        if l_lower.startswith("account:"):
-            continue
+    for line in lines_list:
+        l_strip = line.strip()
+        l_lower = l_strip.lower()
         
-        if any(m in line for m in ["Gemini", "Claude", "GPT"]):
-            output_parts.append(f"\n🔹 <b>{line.strip()}</b>")
-        elif "% remaining" in line:
-            pct_match = re.search(r"(\d+)%\s+remaining", line)
-            pct = int(pct_match.group(1)) if pct_match else 50
-            green_blocks = int(pct / 10)
-            black_blocks = 10 - green_blocks
-            bar = "🟩" * green_blocks + "⬛" * black_blocks
-            output_parts.append(f"• <b>Остаток квоты:</b> {pct}% ({bar})")
-            if "Refreshes in" in line:
-                ref_time = line.split("Refreshes in")[1].strip()
-                output_parts.append(f"• <b>Обновление через:</b> <code>{ref_time}</code>")
+        if not l_strip or any(k in l_lower for k in skip_keywords) or l_lower.startswith("account:"):
+            continue
+
+        if any(brand in l_strip for brand in ["Gemini", "Claude", "GPT"]):
+            if "separate quota pools" in l_lower:
+                continue
+            current_model = {
+                "name": l_strip,
+                "pct": 100,
+                "refreshes": ""
+            }
+            parsed_models.append(current_model)
+        elif current_model:
+            if "% remaining" in l_strip:
+                pct_match = re.search(r"(\d+)%\s+remaining", l_strip)
+                if pct_match:
+                    current_model["pct"] = int(pct_match.group(1))
+                if "Refreshes in" in l_strip:
+                    current_model["refreshes"] = l_strip.split("Refreshes in")[1].strip()
+
+    seen = set()
+    unique_models = []
+    for m in parsed_models:
+        if m["name"] not in seen:
+            seen.add(m["name"])
+            unique_models.append(m)
+
+    output_parts = [
+        "📊 <b>Подробный отчет по квотам и лимитам моделей</b>\n",
+        f"👤 <b>Аккаунт:</b> <code>{email}</code>\n" if email else ""
+    ]
+
+    for m in unique_models:
+        name = m["name"]
+        pct = m["pct"]
+        ref = m["refreshes"]
+        green_blocks = int(pct / 10)
+        black_blocks = 10 - green_blocks
+        bar = "🟩" * green_blocks + "⬛" * black_blocks
+        
+        ref_text = f"\n   • <i>Сброс лимита через:</i> <code>{ref}</code>" if ref else ""
+        output_parts.append(
+            f"🔹 <b>{name}</b>\n"
+            f"   Остаток квоты: <b>{pct}%</b> ({bar}){ref_text}\n"
+        )
 
     return "\n".join(output_parts)
 

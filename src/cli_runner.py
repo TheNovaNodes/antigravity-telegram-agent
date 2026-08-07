@@ -266,6 +266,56 @@ class AgySession:
             formatted_response = format_dyslexia_friendly_text(lines)
             return formatted_response
 
+    async def get_usage_info(self) -> str:
+        """Sends /usage to agy, scrolls modal overlay to capture all model quotas, and closes modal cleanly."""
+        from src.formatters import format_usage_response
+        async with self._lock:
+            await self._ensure_started()
+
+            try:
+                self.child.send(b"/usage\r\n")
+            except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
+                self.close()
+                await self._ensure_started()
+                self.child.send(b"/usage\r\n")
+
+            all_lines = []
+
+            # Page down 4 times to capture all models across modal pages
+            for _ in range(4):
+                screen = pyte.Screen(120, 60)
+                stream = pyte.ByteStream(screen)
+                idle_count = 0
+                while idle_count < 3:
+                    try:
+                        chunk = await asyncio.to_thread(self.child.read_nonblocking, size=4096, timeout=0.3)
+                        if chunk:
+                            stream.feed(chunk)
+                            idle_count = 0
+                    except (pexpect.TIMEOUT, pexpect.EOF, OSError):
+                        idle_count += 1
+
+                for line in screen.display:
+                    s = line.strip()
+                    if s and s not in all_lines:
+                        all_lines.append(s)
+
+                try:
+                    self.child.send(b"\x1b[6~")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+
+            # Close modal overlay using Escape
+            try:
+                self.child.send(b"\x1b")
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+            email = get_active_account_email()
+            return format_usage_response(all_lines, email)
+
     def close(self):
         """Terminates active agy process cleanly and forcefully."""
         child = self.child

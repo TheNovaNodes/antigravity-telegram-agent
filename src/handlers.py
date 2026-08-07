@@ -226,14 +226,14 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "usage":
         await callback_query.bot.send_chat_action(chat_id=callback_query.message.chat.id, action=ChatAction.TYPING)
-        await callback_query.answer("Запрашиваю квоты моделей...")
+        await callback_query.answer("Запрашиваю полную информацию по квотам...")
         session = session_manager.get_session(callback_query.message.chat.id)
-        raw_response = await session.get_response("/usage")
-        email = get_active_account_email()
-        from src.formatters import format_usage_response
-        formatted = format_usage_response(raw_response, email)
+        formatted = await session.get_usage_info()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]])
-        await safe_edit_text(callback_query.message, formatted)
+        try:
+            await callback_query.message.edit_text(formatted, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await safe_edit_text(callback_query.message, formatted)
     elif action == "status":
         email = get_active_account_email()
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
@@ -243,12 +243,9 @@ async def cmd_usage(message: Message):
     if not is_allowed(message.from_user.id):
         return
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    placeholder = await message.answer("📊 <i>Запрашиваю квоты моделей...</i>", parse_mode="HTML")
+    placeholder = await message.answer("📊 <i>Запрашиваю полную информацию по квотам моделей...</i>", parse_mode="HTML")
     session = session_manager.get_session(message.chat.id)
-    raw_response = await session.get_response("/usage")
-    email = get_active_account_email()
-    from src.formatters import format_usage_response
-    formatted = format_usage_response(raw_response, email)
+    formatted = await session.get_usage_info()
     await safe_edit_text(placeholder, formatted)
 
 @router.message(Command("auth"))
