@@ -19,6 +19,7 @@ def is_allowed(user_id: int) -> bool:
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     email = get_active_account_email()
+    btn_email = email if len(email) <= 24 else email[:21] + "..."
     buttons = [
         [
             InlineKeyboardButton(text=f"🤖 {session.model_name.split('-')[0].upper()}", callback_data="menu:models"),
@@ -28,7 +29,7 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
         ],
         [
-            InlineKeyboardButton(text=f"🔑 {email}", callback_data="menu:account"),
+            InlineKeyboardButton(text=f"🔑 {btn_email}", callback_data="menu:account"),
             InlineKeyboardButton(text="📊 Квоты (/usage)", callback_data="menu:usage")
         ],
         [
