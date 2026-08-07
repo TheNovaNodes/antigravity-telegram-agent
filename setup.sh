@@ -174,8 +174,9 @@ ALLOWED_USER_IDS="${USER_IDS}"
 LOG_LEVEL="INFO"
 AGY_BINARY_PATH="${AGY_PATH}"
 EOF
+chown "${REAL_USER}:${REAL_USER}" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
-info "Файл .env создан и защищен (chmod 600)"
+info "Файл .env создан и защищен (права пользователя ${REAL_USER}, 600)"
 
 # ─────────────────── Step 4: Python Virtual Environment ───────────────────
 header "Шаг 4 из 5: Установка зависимостей"
@@ -187,6 +188,7 @@ else
     info "Виртуальное окружение уже существует"
 fi
 
+chown -R "${REAL_USER}:${REAL_USER}" "$PROJECT_DIR"
 "${VENV_DIR}/bin/pip" install --upgrade pip
 echo ""
 echo -e "${YELLOW}  Устанавливаю зависимости (это может занять 1-2 минуты)...${RESET}"
@@ -218,6 +220,10 @@ WantedBy=multi-user.target
 EOF
 
 info "Systemd-сервис создан: ${SERVICE_FILE}"
+
+# Fix project directory permissions for REAL_USER
+chown -R "${REAL_USER}:${REAL_USER}" "$PROJECT_DIR"
+chmod 600 "$ENV_FILE"
 
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}" --quiet
