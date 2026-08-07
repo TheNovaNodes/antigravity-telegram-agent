@@ -4,6 +4,45 @@
 
 ---
 
+## ⚡ Быстрая установка (3 команды)
+
+### Перед установкой
+
+1. Установите [Antigravity CLI](https://developers.google.com/agy) на сервер
+2. Авторизуйтесь: `agy auth login`
+3. Создайте бота в Telegram через [@BotFather](https://t.me/BotFather) и сохраните токен
+4. Узнайте ваш Telegram User ID через [@userinfobot](https://t.me/userinfobot)
+
+### Установка
+
+```bash
+git clone https://github.com/thedoctormes-hue/DMagyBOT.git
+cd DMagyBOT
+sudo ./setup.sh
+```
+
+Установщик в интерактивном режиме попросит вас ввести:
+- 🔑 **Токен бота** (от @BotFather)
+- 👤 **Ваш Telegram User ID** (от @userinfobot)
+
+После этого **всё произойдет автоматически**: создание виртуального окружения, установка зависимостей, генерация конфигурации, регистрация и запуск systemd-сервиса.
+
+### Автоматическая установка (для Ansible, скриптов)
+
+```bash
+sudo ./setup.sh --token="123456:ABC-DEF" --user-id="173681771"
+```
+
+### Проверка
+
+```bash
+systemctl status dmagybot
+```
+
+Откройте Telegram, найдите вашего бота и отправьте **/start**.
+
+---
+
 ## 🚀 Рекомендуемый ИИ-стек и MCP Архитектура
 
 Для обеспечения автономности, точного контекстного поиска и независимости от вендоров рекомендуется архитектурная триада MCP-сервисов:
@@ -179,21 +218,37 @@ NEXTCLOUD_PASS="app_password"
 
 ## 🚀 Развертывание
 
-### 1. Подготовка окружения
+> Рекомендуется использовать автоматический установщик `setup.sh` (см. раздел «Быстрая установка» в начале документа).
+
+### Управление сервисом
+
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install aiogram pexpect pyte python-dotenv
+# Статус бота
+systemctl status dmagybot
+
+# Логи в реальном времени
+journalctl -u dmagybot -f
+
+# Перезапуск
+systemctl restart dmagybot
+
+# Остановка
+systemctl stop dmagybot
 ```
 
-### 2. Конфигурация
+### Ручная установка (если setup.sh не подходит)
+
 ```bash
+# 1. Виртуальное окружение и зависимости
+python3 -m venv .venv
+.venv/bin/pip install aiogram pexpect pyte python-dotenv
+
+# 2. Конфигурация
 cp .env.example .env
+nano .env     # Впишите TELEGRAM_BOT_TOKEN и ALLOWED_USER_IDS
 chmod 600 .env
-```
 
-### 3. Запуск через systemd
-```bash
+# 3. Systemd-сервис (отредактируйте пути в dmagybot.service!)
 cp dmagybot.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now dmagybot
