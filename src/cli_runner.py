@@ -311,6 +311,7 @@ class AgySession:
             stream = pyte.ByteStream(screen)
 
             idle_count = 0
+            total_timeout_count = 0
             received_bytes = False
 
             while True:
@@ -323,10 +324,14 @@ class AgySession:
                         stream.feed(chunk)
                         idle_count = 0
                 except pexpect.TIMEOUT:
+                    total_timeout_count += 1
                     if received_bytes:
                         idle_count += 1
-                        if idle_count >= 12:
+                        if idle_count >= 6:  # 3 seconds of silence after stream output
                             break
+                    elif total_timeout_count >= 60:  # 30 seconds max timeout if CLI hangs
+                        logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 30s)")
+                        break
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
