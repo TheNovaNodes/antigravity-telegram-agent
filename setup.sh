@@ -198,8 +198,6 @@ info "Все зависимости установлены"
 # ─────────────────── Step 5: Systemd Service ──────────────────────────────
 header "Шаг 5 из 5: Настройка автозапуска (systemd)"
 
-CURRENT_USER="$(whoami)"
-
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=DMagyBOT - Telegram Bridge for Antigravity AGY
@@ -207,9 +205,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=${CURRENT_USER}
+User=${REAL_USER}
 WorkingDirectory=${PROJECT_DIR}
 Environment="PYTHONPATH=${PROJECT_DIR}"
+Environment="HOME=${REAL_HOME}"
 ExecStart=${VENV_DIR}/bin/python src/main.py
 Restart=always
 RestartSec=5

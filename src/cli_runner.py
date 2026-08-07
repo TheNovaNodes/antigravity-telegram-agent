@@ -33,10 +33,33 @@ import signal
 import urllib.request
 import json
 
+def _get_gemini_dir() -> Path:
+    """Find the active .gemini/antigravity-cli directory across possible HOME paths."""
+    homes_to_check = [Path.home()]
+    # Check SUDO_USER home if present
+    sudo_user = os.getenv("SUDO_USER")
+    if sudo_user:
+        homes_to_check.append(Path(f"/home/{sudo_user}"))
+    
+    # Also scan /home/* and /root
+    if Path("/root").exists():
+        homes_to_check.append(Path("/root"))
+    if Path("/home").exists():
+        for p in Path("/home").iterdir():
+            if p.is_dir():
+                homes_to_check.append(p)
+
+    for h in homes_to_check:
+        target = h / ".gemini" / "antigravity-cli"
+        if (target / "antigravity-oauth-token").exists():
+            return target
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
 def get_active_account_email() -> str:
     """Retrieve the currently authenticated Google account email via Google OAuth userinfo endpoint."""
-    home = Path.home()
-    token_file = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    base_dir = _get_gemini_dir()
+    token_file = base_dir / "antigravity-oauth-token"
     if token_file.exists():
         try:
             data = json.loads(token_file.read_text())
@@ -53,7 +76,7 @@ def get_active_account_email() -> str:
             logger.warning(f"Failed to fetch userinfo via OAuth token: {e}")
 
     # Fallback scan of agy logs
-    log_dir = home / ".gemini" / "antigravity-cli" / "log"
+    log_dir = base_dir / "log"
     if log_dir.exists():
         try:
             logs = sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -73,8 +96,7 @@ def get_auth_state_signature() -> str:
     Checks token, settings, state files in ~/.gemini/antigravity-cli/.
     Returns string signature (mtime + hash) to detect hot-reload account switches.
     """
-    home = Path.home()
-    base_dir = home / ".gemini" / "antigravity-cli"
+    base_dir = _get_gemini_dir()
     token_file = base_dir / "antigravity-oauth-token"
     settings_file = base_dir / "settings.json"
     jetski_file = base_dir / "jetski_state.pbtxt"
