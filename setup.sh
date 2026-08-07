@@ -76,25 +76,42 @@ fi
 PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 info "Python ${PY_VERSION} найден"
 
-# Check agy CLI
+# Check agy CLI — resolve real user's HOME when running under sudo
+REAL_USER="${SUDO_USER:-$(whoami)}"
+REAL_HOME=$(eval echo "~${REAL_USER}")
+
 AGY_PATH=""
-if command -v agy &>/dev/null; then
-    AGY_PATH="$(command -v agy)"
-elif [[ -f "$HOME/.local/bin/agy" ]]; then
-    AGY_PATH="$HOME/.local/bin/agy"
-fi
+for candidate in \
+    "$(command -v agy 2>/dev/null)" \
+    "${REAL_HOME}/.local/bin/agy" \
+    "$HOME/.local/bin/agy" \
+    "/usr/local/bin/agy" \
+    "/root/.local/bin/agy"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+        AGY_PATH="$candidate"
+        break
+    fi
+done
 
 if [[ -z "$AGY_PATH" ]]; then
     error "Antigravity CLI (agy) не найден!\n\n   Сначала установите agy и авторизуйтесь:\n   curl -sS https://dl.google.com/agy/install.sh | bash\n   agy auth login"
 fi
 info "Antigravity CLI найден: ${AGY_PATH}"
 
-# Check agy auth
-TOKEN_FILE="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
-if [[ ! -f "$TOKEN_FILE" ]]; then
+# Check agy auth — look in real user's home first
+TOKEN_FILE=""
+for tf in "${REAL_HOME}/.gemini/antigravity-cli/antigravity-oauth-token" \
+          "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"; do
+    if [[ -f "$tf" ]]; then
+        TOKEN_FILE="$tf"
+        break
+    fi
+done
+
+if [[ -z "$TOKEN_FILE" ]]; then
     error "Вы не авторизованы в Antigravity CLI!\n\n   Выполните: agy auth login"
 fi
-info "Авторизация Antigravity CLI подтверждена"
+info "Авторизация Antigravity CLI подтверждена (${REAL_USER})"
 
 # ─────────────────── Step 2: Bot Token & User ID ──────────────────────────
 header "Шаг 2 из 5: Настройка Telegram"
