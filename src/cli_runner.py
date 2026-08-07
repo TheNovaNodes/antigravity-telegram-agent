@@ -57,36 +57,80 @@ def _get_gemini_dir() -> Path:
 
 
 def get_active_account_email() -> str:
-    """Retrieve the currently authenticated Google account email via Google OAuth userinfo endpoint."""
+    """Retrieve the currently authenticated Google account email via OAuth, JWT payload, or CLI logs."""
     base_dir = _get_gemini_dir()
     token_file = base_dir / "antigravity-oauth-token"
+    
+    # 1. Try OAuth token file
     if token_file.exists():
         try:
             data = json.loads(token_file.read_text())
-            access_token = data.get("token", {}).get("access_token")
+            token_dict = data.get("token", {}) if isinstance(data, dict) else {}
+            
+            # 1a. Try Google OAuth userinfo API endpoint
+            access_token = token_dict.get("access_token")
             if access_token:
-                req = urllib.request.Request("https://www.googleapis.com/oauth2/v3/userinfo")
-                req.add_header("Authorization", f"Bearer {access_token}")
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
-                    info = json.loads(resp.read().decode())
-                    email = info.get("email")
-                    if email:
-                        return email
-        except Exception as e:
-            logger.warning(f"Failed to fetch userinfo via OAuth token: {e}")
+                try:
+                    req = urllib.request.Request("https://www.googleapis.com/oauth2/v3/userinfo")
+                    req.add_header("Authorization", f"Bearer {access_token}")
+                    with urllib.request.urlopen(req, timeout=3.0) as resp:
+                        info = json.loads(resp.read().decode())
+                        email = info.get("email")
+                        if email:
+                            return email
+                except Exception as net_err:
+                    logger.debug(f"Userinfo API call failed: {net_err}")
 
-    # Fallback scan of agy logs
+            # 1b. Try decoding JWT id_token (doesn't expire or depend on network)
+            id_token = token_dict.get("id_token") or data.get("id_token")
+            if id_token:
+                try:
+                    parts = id_token.split(".")
+                    if len(parts) >= 2:
+                        payload_b64 = parts[1]
+                        rem = len(payload_b64) % 4
+                        if rem > 0:
+                            payload_b64 += "=" * (4 - rem)
+                        jwt_data = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
+                        email = jwt_data.get("email")
+                        if email:
+                            return email
+                except Exception as jwt_err:
+                    logger.debug(f"Failed to decode id_token JWT: {jwt_err}")
+        except Exception as e:
+            logger.warning(f"Failed to parse token file: {e}")
+
+    # 2. Robust multi-file log scanner (cli.log and log/cli-*.log)
+    log_files = []
+    cli_log = base_dir / "cli.log"
+    if cli_log.exists():
+        log_files.append(cli_log)
+
     log_dir = base_dir / "log"
     if log_dir.exists():
+        log_files.extend(sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True))
+
+    for lf in log_files:
         try:
-            logs = sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
-            if logs:
-                content = logs[0].read_text(errors="ignore")
-                match = re.search(r"authenticated successfully as ([^\s,]+)", content)
-                if match:
-                    return match.group(1)
-        except Exception as e:
-            logger.warning(f"Failed to extract email from agy log: {e}")
+            content = lf.read_text(errors="ignore")
+            # Explicit login success patterns
+            match = re.search(
+                r"(?:authenticated successfully as|logged in as|user:|account:)\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+                content,
+                re.IGNORECASE
+            )
+            if match:
+                return match.group(1)
+
+            # General email pattern matching
+            emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", content)
+            for email in reversed(emails):
+                lower_e = email.lower()
+                if not any(domain in lower_e for domain in ["example.com", "google.com", "schema.org", "googleapis.com"]):
+                    return email
+        except Exception:
+            pass
+
     return "Аккаунт активен"
 
 
@@ -97,20 +141,16 @@ def get_auth_state_signature() -> str:
     Returns string signature (mtime + hash) to detect hot-reload account switches.
     """
     base_dir = _get_gemini_dir()
-    token_file = base_dir / "antigravity-oauth-token"
-    settings_file = base_dir / "settings.json"
-    jetski_file = base_dir / "jetski_state.pbtxt"
-    
-    # Also check latest log file mtime
+    cli_log = base_dir / "cli.log"
     log_dir = base_dir / "log"
     latest_log = None
     if log_dir.exists():
         logs = sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
         if logs:
             latest_log = logs[0]
-
+    
     parts = []
-    for fpath in (token_file, settings_file, jetski_file, latest_log):
+    for fpath in (token_file, settings_file, jetski_file, cli_log, latest_log):
         if fpath and fpath.exists():
             try:
                 st = fpath.stat()
