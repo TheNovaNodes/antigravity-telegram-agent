@@ -16,7 +16,7 @@ class TestFormatters(unittest.TestCase):
         result = check_known_errors(sample_error)
         self.assertIsNotNone(result)
         self.assertIn("Ошибка доступа к аккаунту", result)
-        self.assertIn("`agy auth login`", result)
+        self.assertIn("<code>agy auth login</code>", result)
 
     def test_format_dyslexia_friendly_text_unwrapping(self):
         raw_screen = [

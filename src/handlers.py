@@ -93,21 +93,44 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-@router.message(Command("start"))
+@router.message(Command("start"), Command("help"))
+async def cmd_start(message: Message):
+    if not is_allowed(message.from_user.id):
+        logger.warning(f"Unauthorized access attempt from user_id={message.from_user.id}")
+        return
+
+    session = session_manager.get_session(message.chat.id)
+    await message.answer(
+        "👋 <b>Добро пожаловать в DMagyBOT Control Center!</b>\n\n"
+        "Я — высокопроизводительный асинхронный мост к <b>Google Antigravity (agy)</b> с поддержкой MCP-инфраструктуры.\n\n"
+        f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
+        f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
+        f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+        "<b>Доступные команды:</b>\n"
+        "• /menu — Главное меню управления\n"
+        "• /resume — Возобновить сохраненный диалог из истории\n"
+        "• /mcp — Управление MCP серверами\n"
+        "• /models — Выбор нейросетевой модели\n"
+        "• /effort — Настройка глубины рассуждений\n"
+        "• /mode — Режим работы (Standard/Plan)\n"
+        "• /reset — Сброс сессии\n",
+        reply_markup=get_main_menu_keyboard(session),
+        parse_mode="HTML"
+    )
+
 @router.message(Command("menu"))
-@router.message(Command("settings"))
 async def cmd_menu(message: Message):
     if not is_allowed(message.from_user.id):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        "🎛️ **DMagyBOT Control Center**\n\n"
-        f"• **Модель:** `{session.model_name}`\n"
-        f"• **Reasoning Effort:** `{session.effort}`\n"
-        f"• **Execution Mode:** `{AVAILABLE_MODES.get(session.mode, session.mode)}`\n\n"
+        "🎛️ <b>DMagyBOT Control Center</b>\n\n"
+        f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
+        f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
+        f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
         "Выбери параметр для настройки:",
         reply_markup=get_main_menu_keyboard(session),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @router.message(Command("mcp"))
@@ -115,7 +138,7 @@ async def cmd_mcp(message: Message):
     if not is_allowed(message.from_user.id):
         return
     report = mcp_manager.get_status_report()
-    await message.answer(report, reply_markup=get_mcp_keyboard(), parse_mode="Markdown")
+    await message.answer(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
 
 @router.message(Command("models"))
 async def cmd_models(message: Message):
@@ -123,10 +146,10 @@ async def cmd_models(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        f"🎯 **Текущая модель:** `{session.model_name}`\n\n"
+        f"🎯 <b>Текущая модель:</b> <code>{session.model_name}</code>\n\n"
         "Выбери модель для переключения:",
         reply_markup=get_models_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @router.message(Command("effort"))
@@ -135,10 +158,10 @@ async def cmd_effort(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        f"⚡ **Текущий Reasoning Effort:** `{session.effort}`\n\n"
+        f"⚡ <b>Текущий Reasoning Effort:</b> <code>{session.effort}</code>\n\n"
         "Выбери глубинное усилие рассуждения агента:",
         reply_markup=get_effort_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @router.message(Command("mode"))
@@ -147,10 +170,10 @@ async def cmd_mode(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        f"🎯 **Текущий Execution Mode:** `{AVAILABLE_MODES.get(session.mode, session.mode)}`\n\n"
+        f"🎯 <b>Текущий Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
         "Выбери режим исполнения:",
         reply_markup=get_mode_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 @router.callback_query(lambda c: c.data and c.data.startswith("menu:"))
@@ -162,26 +185,26 @@ async def process_menu_navigation(callback_query: CallbackQuery):
 
     if action == "main":
         await callback_query.message.edit_text(
-            "🎛️ **DMagyBOT Control Center**\n\n"
-            f"• **Модель:** `{session.model_name}`\n"
-            f"• **Reasoning Effort:** `{session.effort}`\n"
-            f"• **Execution Mode:** `{AVAILABLE_MODES.get(session.mode, session.mode)}`\n\n"
+            "🎛️ <b>DMagyBOT Control Center</b>\n\n"
+            f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
+            f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
+            f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
             "Выбери параметр для настройки:",
             reply_markup=get_main_menu_keyboard(session),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     elif action == "models":
-        await callback_query.message.edit_text("🎯 **Выбор нейросетевой модели:**", reply_markup=get_models_keyboard(), parse_mode="Markdown")
+        await callback_query.message.edit_text("🎯 <b>Выбор нейросетевой модели:</b>", reply_markup=get_models_keyboard(), parse_mode="HTML")
     elif action == "effort":
-        await callback_query.message.edit_text("⚡ **Выбор глубинного уровня рассуждений (Effort):**", reply_markup=get_effort_keyboard(), parse_mode="Markdown")
+        await callback_query.message.edit_text("⚡ <b>Выбор глубинного уровня рассуждений (Effort):</b>", reply_markup=get_effort_keyboard(), parse_mode="HTML")
     elif action == "mode":
-        await callback_query.message.edit_text("🎯 **Выбор режима выполнения (Execution Mode):**", reply_markup=get_mode_keyboard(), parse_mode="Markdown")
+        await callback_query.message.edit_text("🎯 <b>Выбор режима выполнения (Execution Mode):</b>", reply_markup=get_mode_keyboard(), parse_mode="HTML")
     elif action == "mcp":
         report = mcp_manager.get_status_report()
-        await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="Markdown")
+        await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
     elif action == "reset":
         session_manager.reset_session(callback_query.message.chat.id)
-        await callback_query.message.edit_text("🔄 **Сессия сброшена!** Следующий запрос начнет новый диалог.", parse_mode="Markdown")
+        await callback_query.message.edit_text("🔄 <b>Сессия сброшена!</b> Следующий запрос начнет новый диалог.", parse_mode="HTML")
     elif action == "status":
         await callback_query.answer(f"Status: OK | Model: {session.model_name} | Effort: {session.effort}", show_alert=True)
 
@@ -194,7 +217,7 @@ async def process_mcp_toggle_callback(callback_query: CallbackQuery):
     state_str = "включен ✅" if new_state else "отключен ⚪"
     await callback_query.answer(f"MCP сервер {key} {state_str}")
     report = mcp_manager.get_status_report()
-    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="Markdown")
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_model:"))
 async def process_model_callback(callback_query: CallbackQuery):
@@ -204,9 +227,9 @@ async def process_model_callback(callback_query: CallbackQuery):
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_model(alias):
         await callback_query.message.edit_text(
-            f"✅ **Модель успешно изменена!**\nНовая модель: `{session.model_name}`",
+            f"✅ <b>Модель успешно изменена!</b>\nНовая модель: <code>{session.model_name}</code>",
             reply_markup=get_main_menu_keyboard(session),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_effort:"))
@@ -217,9 +240,9 @@ async def process_effort_callback(callback_query: CallbackQuery):
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_effort(level):
         await callback_query.message.edit_text(
-            f"✅ **Effort успешно изменен!**\nУровень рассуждений: `{session.effort.upper()}`",
+            f"✅ <b>Effort успешно изменен!</b>\nУровень рассуждений: <code>{session.effort.upper()}</code>",
             reply_markup=get_main_menu_keyboard(session),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_mode:"))
@@ -230,9 +253,9 @@ async def process_mode_callback(callback_query: CallbackQuery):
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_mode(mode_key):
         await callback_query.message.edit_text(
-            f"✅ **Execution Mode успешно изменен!**\nРежим: `{AVAILABLE_MODES.get(session.mode, session.mode)}`",
+            f"✅ <b>Execution Mode успешно изменен!</b>\nРежим: <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>",
             reply_markup=get_main_menu_keyboard(session),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
 @router.message(Command("reset"))
@@ -241,9 +264,9 @@ async def cmd_reset(message: Message):
         return
     chat_id = message.chat.id
     if session_manager.reset_session(chat_id):
-        await message.answer("🔄 **Сессия сброшена!**")
+        await message.answer("🔄 <b>Сессия сброшена!</b>", parse_mode="HTML")
     else:
-        await message.answer("ℹ️ Активной сессии не найдено.")
+        await message.answer("ℹ️ Активной сессии не найдено.", parse_mode="HTML")
 
 
 @router.message(Command("resume"))
@@ -252,9 +275,9 @@ async def cmd_resume(message: Message):
         return
     kb = get_resume_keyboard()
     await message.answer(
-        "📂 **Выберите сохраненную сессию из истории `agy CLI` для возобновления:**",
+        "📂 <b>Выберите сохраненную сессию из истории agy CLI для возобновления:</b>",
         reply_markup=kb,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -267,18 +290,18 @@ async def process_resume_callback(callback_query: CallbackQuery):
 
     if conv_id == "latest":
         session.set_conversation("latest")
-        text = "🔄 **Возобновлена последняя активная сессия `agy CLI` (`--continue`)!**"
+        text = "🔄 <b>Возобновлена последняя активная сессия agy CLI (<code>--continue</code>)!</b>"
     else:
         session.set_conversation(conv_id)
-        text = f"✅ **Сессия возобновлена!**\n\n🆔 **Conversation ID**: `{conv_id}`\n\nСледующий запрос продолжится в контексте выложенного диалога."
+        text = f"✅ <b>Сессия возобновлена!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>\n\nСледующий запрос продолжится в контексте выложенного диалога."
 
     await callback_query.answer("Сессия переключена!")
-    await callback_query.message.edit_text(text, parse_mode="Markdown")
+    await callback_query.message.edit_text(text, parse_mode="HTML")
 
 async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3900):
     """Splits response into safe Telegram chunks (<= 4000 chars) to prevent 4096-character limit crash."""
     if len(text) <= max_chunk_size:
-        await placeholder.edit_text(text)
+        await placeholder.edit_text(text, parse_mode="HTML")
         return
 
     chunks = []
@@ -297,10 +320,10 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
     if current_chunk:
         chunks.append("\n".join(current_chunk))
 
-    await placeholder.edit_text(chunks[0])
+    await placeholder.edit_text(chunks[0], parse_mode="HTML")
     for chunk in chunks[1:]:
         if chunk.strip():
-            await message.answer(chunk)
+            await message.answer(chunk, parse_mode="HTML")
 
 
 @router.message()

@@ -30,31 +30,50 @@ def is_tui_noise(line: str) -> bool:
 
 
 def check_known_errors(text: str) -> str | None:
-    """Intercept known CLI errors and return clean, dyslexia-friendly Markdown alerts."""
+    """Intercept known CLI errors and return clean, dyslexia-friendly HTML alerts."""
     lower = text.lower()
     if "eligibility check failed" in lower or "not eligible for antigravity" in lower:
         return (
-            "⚠️ **Ошибка доступа к аккаунту (Eligibility Check)**\n\n"
+            "⚠️ <b>Ошибка доступа к аккаунту (Eligibility Check)</b>\n\n"
             "Текущий аккаунт Google или регион вашего сервера не поддерживается сервисом Antigravity.\n\n"
-            "---\n\n"
-            "📌 **Что произошло:**\n"
+            "───────────────\n\n"
+            "📌 <b>Что произошло:</b>\n"
             "Google ограничивает доступ к Antigravity для определенных геолокаций и типов аккаунтов.\n\n"
-            "💡 **Как решить эту проблему (3 простых шага):**\n\n"
-            "1. **Войдите в другой аккаунт на сервере**:\n"
+            "💡 <b>Как решить эту проблему (3 простых шага):</b>\n\n"
+            "1. <b>Войдите в другой аккаунт на сервере</b>:\n"
             "   Выполните в терминале сервера команду:\n"
-            "   `agy auth login`\n\n"
-            "2. **Проверьте прокси или VPN**:\n"
+            "   <code>agy auth login</code>\n\n"
+            "2. <b>Проверьте прокси или VPN</b>:\n"
             "   Убедитесь, что сетевой трафик идет через поддерживаемый регион.\n\n"
-            "3. **Автоматическое обновление**:\n"
+            "3. <b>Автоматическое обновление</b>:\n"
             "   После входа бот автоматически подхватит новый аккаунт благодаря Hot Reload!"
         )
     if "quota exceeded" in lower or "resource has been exhausted" in lower:
         return (
-            "⚠️ **Лимит запросов исчерпан (Quota Exceeded)**\n\n"
+            "⚠️ <b>Лимит запросов исчерпан (Quota Exceeded)</b>\n\n"
             "Текущая модель исчерпала суточный лимит запросов.\n\n"
-            "💡 **Решение**: Нажмите команду `/models` в боте и переключитесь на другую модель (например, `claude-sonnet` или `gemini-flash-high`)."
+            "💡 <b>Решение</b>: Нажмите команду `/models` в боте и переключитесь на другую модель (например, <code>claude-sonnet</code> или <code>gemini-flash-high</code>)."
         )
     return None
+
+
+def markdown_to_html(text: str) -> str:
+    """Convert standard markdown formatting to Telegram-compatible HTML tags."""
+    if not text:
+        return ""
+    lines = text.split("\n")
+    processed_lines = []
+    for line in lines:
+        if line.strip() in ("---", "***", "___"):
+            processed_lines.append("───────────────")
+            continue
+        l = line
+        # Convert **bold** -> <b>bold</b>
+        l = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", l)
+        # Convert `code` -> <code>code</code>
+        l = re.sub(r"`(.*?)`", r"<code>\1</code>", l)
+        processed_lines.append(l)
+    return "\n".join(processed_lines)
 
 
 def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
@@ -64,6 +83,7 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
     2. Intercepts eligibility & auth errors with friendly instructions.
     3. Unwraps mid-sentence terminal line wraps into natural flowing paragraphs.
     4. Applies generous spacing (double newlines) and clean bullet points.
+    5. Converts to Telegram-safe HTML formatting.
     """
     raw_joined = "\n".join(raw_screen_display)
     known_err = check_known_errors(raw_joined)
@@ -112,5 +132,5 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
     if curr:
         paragraphs.append(" ".join(curr))
 
-    # Join paragraphs with generous double newlines for high readability / dyslexia friendliness
-    return "\n\n".join(paragraphs).strip()
+    joined_text = "\n\n".join(paragraphs).strip()
+    return markdown_to_html(joined_text)

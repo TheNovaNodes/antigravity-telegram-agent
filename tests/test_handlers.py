@@ -57,7 +57,7 @@ class TestHandlers(unittest.TestCase):
         asyncio.run(handle_message(message))
 
         mock_session.get_response.assert_called_once_with("Hello agent")
-        placeholder.edit_text.assert_called_once_with("Agent response text")
+        placeholder.edit_text.assert_called_once_with("Agent response text", parse_mode="HTML")
         mock_audit.assert_called_once()
 
 

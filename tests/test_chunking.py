@@ -13,7 +13,7 @@ class TestChunking(unittest.TestCase):
 
         asyncio.run(send_response_chunks(message, placeholder, text))
 
-        placeholder.edit_text.assert_called_once_with(text)
+        placeholder.edit_text.assert_called_once_with(text, parse_mode="HTML")
         message.answer.assert_not_called()
 
     def test_long_response_splitting(self):
@@ -27,8 +27,8 @@ class TestChunking(unittest.TestCase):
 
         asyncio.run(send_response_chunks(message, placeholder, text))
 
-        placeholder.edit_text.assert_called_once_with(paragraph1)
-        message.answer.assert_called_once_with(paragraph2)
+        placeholder.edit_text.assert_called_once_with(paragraph1, parse_mode="HTML")
+        message.answer.assert_called_once_with(paragraph2, parse_mode="HTML")
 
 
 if __name__ == "__main__":
