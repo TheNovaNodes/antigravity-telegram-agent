@@ -364,7 +364,7 @@ class AgySession:
                     break
 
             lines = list(screen.display)
-            formatted_response = format_dyslexia_friendly_text(lines)
+            formatted_response = format_dyslexia_friendly_text(lines, prompt=prompt)
             return formatted_response
 
     async def get_usage_info(self) -> str:

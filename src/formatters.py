@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def is_tui_noise(line: str) -> bool:
+def is_tui_noise(line: str, prompt: str = "") -> bool:
     """Detect if a line is terminal ASCII noise, TUI status bar, banner, or prompt echo."""
     s = line.strip()
     if not s:
@@ -24,8 +24,13 @@ def is_tui_noise(line: str) -> bool:
         return True
 
     # Filter prompt echoes and shell path prompts
-    if s.startswith(">") or "~/" in s or "labdoctorm" in lower or "projects" in lower:
+    if s.startswith(">") or s.startswith("›") or s.startswith("❯") or s.startswith("»") or "~/" in s or "labdoctorm" in lower or "projects" in lower:
         return True
+
+    if prompt:
+        clean_p = prompt.replace("\n", " ").strip()
+        if clean_p and (s == clean_p or s == f"> {clean_p}" or s == f"› {clean_p}"):
+            return True
 
     return False
 
@@ -179,24 +184,73 @@ def markdown_to_html(text: str) -> str:
     return "\n".join(processed_lines)
 
 
-def format_dyslexia_friendly_text(raw_screen_display: list[str]) -> str:
+def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") -> list[str]:
+    """Isolate and extract ONLY the new response generated after the user's prompt.
+
+    Discards leftover screen buffer from previous turns and prompt echoes.
+    """
+    if not raw_screen_display:
+        return []
+
+    clean_prompt = prompt.replace("\n", " ").strip() if prompt else ""
+
+    # 1. Find the anchor line index where the user's prompt appears in raw_screen_display
+    prompt_idx = -1
+
+    if clean_prompt:
+        prompt_snippet = clean_prompt[:30].strip()
+        for idx in range(len(raw_screen_display) - 1, -1, -1):
+            line = raw_screen_display[idx].strip()
+            line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
+            if prompt_snippet and prompt_snippet in line_clean:
+                prompt_idx = idx
+                break
+
+    # 2. Fallback search for last prompt marker (> ...)
+    if prompt_idx == -1:
+        for idx in range(len(raw_screen_display) - 1, -1, -1):
+            line = raw_screen_display[idx].strip()
+            if line.startswith(">") or line.startswith("›") or line.startswith("❯") or line.startswith("»"):
+                prompt_idx = idx
+                break
+
+    # 3. Slice display lines starting AFTER the prompt anchor
+    if prompt_idx != -1:
+        start_idx = prompt_idx + 1
+        while start_idx < len(raw_screen_display):
+            line = raw_screen_display[start_idx].strip()
+            line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
+            # Check if this line is part of a multi-line wrapped prompt continuation
+            if clean_prompt and line_clean and len(line_clean) > 3 and line_clean in clean_prompt:
+                start_idx += 1
+            else:
+                break
+        return raw_screen_display[start_idx:]
+
+    return raw_screen_display
+
+
+def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "") -> str:
     """Transform raw PTY terminal screen lines into clean, dyslexia-friendly formatted text.
 
-    1. Filters TUI banners, prompt echoes, status lines.
-    2. Intercepts eligibility & auth errors with friendly instructions.
-    3. Unwraps mid-sentence terminal line wraps into natural flowing paragraphs.
-    4. Applies generous spacing (double newlines) and clean bullet points for low cognitive load.
-    5. Converts to Telegram-safe Rich Text HTML formatting.
+    1. Slices screen buffer to discard previous turn history and prompt echo.
+    2. Filters TUI banners, prompt echoes, status lines.
+    3. Intercepts eligibility & auth errors with friendly instructions.
+    4. Unwraps mid-sentence terminal line wraps into natural flowing paragraphs.
+    5. Applies generous spacing (double newlines) and clean bullet points for low cognitive load.
+    6. Converts to Telegram-safe Rich Text HTML formatting.
     """
     raw_joined = "\n".join(raw_screen_display)
     known_err = check_known_errors(raw_joined)
     if known_err:
         return known_err
 
+    lines_to_process = extract_new_response_lines(raw_screen_display, prompt)
+
     cleaned_lines = []
-    for line in raw_screen_display:
+    for line in lines_to_process:
         l = line.rstrip()
-        if is_tui_noise(l):
+        if is_tui_noise(l, prompt):
             continue
 
         # Strip leading TUI margins

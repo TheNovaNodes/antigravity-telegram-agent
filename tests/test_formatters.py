@@ -2,6 +2,7 @@ import unittest
 from src.formatters import (
     is_tui_noise,
     check_known_errors,
+    extract_new_response_lines,
     format_dyslexia_friendly_text,
     markdown_to_html,
     highlight_tech_terms
@@ -63,18 +64,44 @@ class TestFormatters(unittest.TestCase):
             "всех пляжах Земли."
         ]
 
-        formatted = format_dyslexia_friendly_text(raw_screen)
+        formatted = format_dyslexia_friendly_text(raw_screen, prompt="Расскажи о космосе")
         
-        # Verify no ASCII banner art or CLI headers
+        # Verify no ASCII banner art or CLI headers or prompt echo
         self.assertNotIn("Antigravity CLI", formatted)
         self.assertNotIn("Gemini 3.6", formatted)
         self.assertNotIn("▄▀▀", formatted)
+        self.assertNotIn("Расскажи о космосе", formatted)
 
         # Verify unwrapped natural paragraphs with double newlines
         self.assertIn("о которых вы могли не знать.", formatted)
         self.assertIn("\n\n", formatted)
 
+    def test_extract_new_response_lines_multi_turn(self):
+        multi_turn_screen = [
+            "  ### 📦 Предыдущий ответ",
+            "  1. Git Commit: Создан коммит предыдущей сессии",
+            "────────────────────────────────────────────────────────────",
+            "> Предыдущее сообщение пользователя",
+            "Ответ на предыдущее сообщение...",
+            "────────────────────────────────────────────────────────────",
+            "> Какое число я просил запомнить?",
+            "⣾  Generating...",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "Вы просили запомнить число 42."
+        ]
+
+        extracted = extract_new_response_lines(multi_turn_screen, prompt="Какое число я просил запомнить?")
+        formatted = format_dyslexia_friendly_text(multi_turn_screen, prompt="Какое число я просил запомнить?")
+
+        # Ensure previous turn history and prompt echo are removed
+        self.assertNotIn("Предыдущий ответ", formatted)
+        self.assertNotIn("Git Commit", formatted)
+        self.assertNotIn("Предыдущее сообщение", formatted)
+        self.assertNotIn("Какое число я просил запомнить?", formatted)
+        self.assertIn("Вы просили запомнить число 42.", formatted)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -24,7 +24,7 @@ class TestCliRunner(unittest.TestCase):
         res = session.set_model("claude-sonnet")
         self.assertTrue(res)
         self.assertEqual(session.model_name, "claude-sonnet-4-6")
-        mock_save.assert_called_with(12345, "claude-sonnet-4-6", "high", "default", None)
+        mock_save.assert_called_with(12345, "claude-sonnet-4-6", "high", "default", None, None)
 
         # Test invalid alias
         res_invalid = session.set_model("non-existent-model")
