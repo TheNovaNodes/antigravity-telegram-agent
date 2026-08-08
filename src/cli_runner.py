@@ -365,6 +365,8 @@ class AgySession:
 
             lines = list(screen.display)
             formatted_response = format_dyslexia_friendly_text(lines, prompt=prompt)
+            if not formatted_response.strip():
+                logger.warning(f"Empty or thinking-suppressed response detected from model {self.model_name} for chat_id={self.chat_id}")
             return formatted_response
 
     async def get_usage_info(self) -> str:

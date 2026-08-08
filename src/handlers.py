@@ -675,7 +675,16 @@ async def handle_message(message: Message):
         if response_text.strip():
             await send_response_chunks(message, placeholder, response_text)
         else:
-            await placeholder.edit_text("⚠️ Агент отработал молча или не вернул текста.")
+            await placeholder.edit_text(
+                "⚠️ <b>Агент отработал молча или не вернул текст.</b>\n\n"
+                "📌 <i>Возможные причины:</i>\n"
+                "• Модель <code>claude-opus-4-6-thinking</code> или <code>high</code> effort скрыла фазу мышления или превысила таймаут PTY-экрана.\n"
+                "• На серверах модели возникла кратковременная пауза (Capacity/Thinking suppression).\n\n"
+                "💡 <b>Решение:</b>\n"
+                "1. Повторите запрос или используйте <code>/models</code> для выбора <code>claude-sonnet</code> / <code>gemini-pro-high</code>.\n"
+                "2. Или снизите <code>/effort</code> до <code>medium</code>.",
+                parse_mode="HTML"
+            )
 
         # Check for newly generated artifact files and send them to the Telegram chat
         await check_and_send_artifacts(message, session)
