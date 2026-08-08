@@ -39,6 +39,7 @@ async def main():
         BotCommand(command="models", description="🤖 Выбор нейросети (Gemini, Claude, GPT)"),
         BotCommand(command="effort", description="⚡ Глубина рассуждений (low/medium/high)"),
         BotCommand(command="mode", description="🎯 Режим работы (Plan / Auto-Edits / Standard)"),
+        BotCommand(command="cd", description="📂 Изменить рабочую папку (workspace)"),
         BotCommand(command="reset", description="🔄 Сбросить сессию агента"),
         BotCommand(command="start", description="👋 Справка и старт"),
     ])

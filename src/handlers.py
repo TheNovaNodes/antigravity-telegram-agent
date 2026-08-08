@@ -29,6 +29,9 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
         ],
         [
+            InlineKeyboardButton(text=f"📂 {session.workspace if session.workspace else 'Home Dir'}", callback_data="menu:workspace")
+        ],
+        [
             InlineKeyboardButton(text=f"🔑 {btn_email}", callback_data="menu:account"),
             InlineKeyboardButton(text="📊 Квоты (/usage)", callback_data="menu:usage")
         ],
@@ -111,9 +114,11 @@ async def cmd_start(message: Message):
         "Я — высокопроизводительный асинхронный мост к <b>Google Antigravity (agy)</b> с поддержкой MCP-инфраструктуры.\n\n"
         f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
         f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
-        f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+        f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
+        f"📂 <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
         "<b>Доступные команды:</b>\n"
         "• /menu — Главное меню управления\n"
+        "• /cd — Изменить рабочую папку (workspace)\n"
         "• /resume — Возобновить сохраненный диалог из истории\n"
         "• /mcp — Управление MCP серверами\n"
         "• /models — Выбор нейросетевой модели\n"
@@ -133,7 +138,8 @@ async def cmd_menu(message: Message):
         "🎛️ <b>DMagyBOT Control Center</b>\n\n"
         f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
         f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
-        f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+        f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
+        f"• <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
         "Выбери параметр для настройки:",
         reply_markup=get_main_menu_keyboard(session),
         parse_mode="HTML"
@@ -194,7 +200,8 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             "🎛️ <b>DMagyBOT Control Center</b>\n\n"
             f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
             f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
-            f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+            f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
+            f"• <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
             "Выбери параметр для настройки:",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
@@ -205,6 +212,13 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         await callback_query.message.edit_text("⚡ <b>Выбор глубинного уровня рассуждений (Effort):</b>", reply_markup=get_effort_keyboard(), parse_mode="HTML")
     elif action == "mode":
         await callback_query.message.edit_text("🎯 <b>Выбор режима выполнения (Execution Mode):</b>", reply_markup=get_mode_keyboard(), parse_mode="HTML")
+    elif action == "workspace":
+        await callback_query.message.edit_text(
+            f"📂 <b>Текущий Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
+            "Выбери проект/папку для закрепления на всю сессию:",
+            reply_markup=get_workspace_keyboard(),
+            parse_mode="HTML"
+        )
     elif action == "mcp":
         report = mcp_manager.get_status_report()
         await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
@@ -369,6 +383,87 @@ async def cmd_rename(message: Message):
         await message.answer(f"✅ <b>Сессия переименована!</b>\nНовое имя: <i>{new_title}</i>", parse_mode="HTML")
     else:
         await message.answer("❌ Ошибка при переименовании. База данных недоступна или ID не найден.", parse_mode="HTML")
+
+
+def get_workspace_keyboard() -> InlineKeyboardMarkup:
+    """Build an interactive inline keyboard listing project folders in /root and /root/LabDoctorM."""
+    dirs_to_check = [Path("/root"), Path("/root/LabDoctorM/projects"), Path("/root/LabDoctorM/workspaces")]
+    buttons = []
+    seen_paths = set()
+
+    for base in dirs_to_check:
+        if base.exists() and base.is_dir():
+            for p in sorted(base.iterdir()):
+                if p.is_dir() and not p.name.startswith("."):
+                    p_str = str(p.resolve())
+                    if p_str not in seen_paths and p_str != "/root":
+                        seen_paths.add(p_str)
+                        label = f"📁 {p.name}"
+                        # Compact display path label
+                        if len(label) > 30:
+                            label = label[:27] + "..."
+                        buttons.append([InlineKeyboardButton(text=label, callback_data=f"set_ws:{p_str}")])
+
+    buttons.append([InlineKeyboardButton(text="🏠 Домашняя директория (/root)", callback_data="set_ws:home")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("set_ws:"))
+async def process_workspace_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    raw_path = callback_query.data.split("set_ws:")[1]
+    new_ws = None if raw_path == "home" else raw_path
+
+    session = session_manager.get_session(callback_query.message.chat.id)
+    session.set_workspace(new_ws)
+
+    display_ws = new_ws if new_ws else "Home Directory (/root)"
+    await callback_query.answer(f"Workspace изменен на {display_ws}")
+    await callback_query.message.edit_text(
+        f"✅ <b>Workspace успешно закреплен на всю сессию!</b>\n\n"
+        f"📂 <b>Текущий проект/папка:</b> <code>{display_ws}</code>\n\n"
+        f"Все последующие действия бота и CLI выполняются в этой папке до нажатия <b>/reset</b>.",
+        reply_markup=get_main_menu_keyboard(session),
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("cd"))
+async def cmd_cd(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    
+    session = session_manager.get_session(message.chat.id)
+    parts = message.text.split(maxsplit=1)
+    
+    if len(parts) < 2:
+        await message.answer(
+            f"📂 <b>Текущий Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
+            "Выбери проект/папку из списка ниже или отправь <code>/cd /путь/к/папке</code>:",
+            reply_markup=get_workspace_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+        
+    raw_path = parts[1].strip()
+    if raw_path.lower() == "home":
+        target_path = None
+    else:
+        p = Path(raw_path).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            await message.answer(f"❌ <b>Папка не найдена!</b>\nПуть <code>{raw_path}</code> не существует или не является директорией.", parse_mode="HTML")
+            return
+        target_path = str(p)
+    
+    session.set_workspace(target_path)
+    display_ws = target_path if target_path else "Home Directory (/root)"
+    await message.answer(
+        f"✅ <b>Workspace закреплен на всю сессию!</b>\n\n"
+        f"📂 <b>Новая рабочая папка:</b> <code>{display_ws}</code>",
+        parse_mode="HTML"
+    )
 
 
 @router.message(Command("resume"))

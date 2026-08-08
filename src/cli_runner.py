@@ -177,13 +177,14 @@ def get_auth_state_signature() -> str:
 
 class AgySession:
     """Manages an interactive PTY session for a single chat with model, effort, and mode controls."""
-    def __init__(self, chat_id: int, model_name: str = "gemini-3.1-pro-high", effort: str = "high", mode: str = "default", conversation_id: Optional[str] = None):
+    def __init__(self, chat_id: int, model_name: str = "gemini-3.1-pro-high", effort: str = "high", mode: str = "default", conversation_id: Optional[str] = None, workspace: Optional[str] = None):
         self.chat_id = chat_id
         self.child = None
         self.model_name = model_name
         self.effort = effort
         self.mode = mode
         self.conversation_id = conversation_id
+        self.workspace = workspace
         self.spawn_auth_signature = None
         self._lock = asyncio.Lock()
 
@@ -199,7 +200,7 @@ class AgySession:
             self.model_name = new_model
             logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name}")
             self.close()
-            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
+            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
 
     def set_effort(self, effort_level: str) -> bool:
@@ -208,7 +209,7 @@ class AgySession:
                 self.effort = effort_level
                 logger.info(f"Switching effort for chat_id={self.chat_id} to {self.effort}")
                 self.close()
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
             return True
         return False
 
@@ -218,7 +219,7 @@ class AgySession:
                 self.mode = mode_key
                 logger.info(f"Switching mode for chat_id={self.chat_id} to {self.mode}")
                 self.close()
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
             return True
         return False
 
@@ -228,7 +229,16 @@ class AgySession:
             self.conversation_id = conversation_id
             logger.info(f"Switching conversation for chat_id={self.chat_id} to {conversation_id}")
             self.close()
-            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id)
+            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+        return True
+
+    def set_workspace(self, workspace: Optional[str]) -> bool:
+        """Switch workspace directory for the session."""
+        if self.workspace != workspace:
+            self.workspace = workspace
+            logger.info(f"Switching workspace for chat_id={self.chat_id} to {workspace}")
+            self.close()
+            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
 
     async def _ensure_started(self):
@@ -261,8 +271,11 @@ class AgySession:
                 args.append("--continue")
             elif self.conversation_id:
                 args.extend(["--conversation", self.conversation_id])
+            else:
+                # Default to --continue so PTY process always preserves user conversation context!
+                args.append("--continue")
 
-            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args}")
+            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace}")
             env = os.environ.copy()
             env["TERM"] = "xterm"
 
@@ -279,6 +292,7 @@ class AgySession:
             self.child = pexpect.spawn(
                 AGY_BINARY_PATH,
                 args,
+                cwd=self.workspace,
                 env=env,
                 echo=False,
                 timeout=300

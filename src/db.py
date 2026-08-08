@@ -34,31 +34,34 @@ def init_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             );
         """)
-        # Idempotently check if conversation_id column exists
+        # Idempotently check if conversation_id and workspace columns exist
         cursor = conn.execute("PRAGMA table_info(user_sessions)")
         columns = [row["name"] for row in cursor.fetchall()]
         if "conversation_id" not in columns:
             conn.execute("ALTER TABLE user_sessions ADD COLUMN conversation_id TEXT;")
+        if "workspace" not in columns:
+            conn.execute("ALTER TABLE user_sessions ADD COLUMN workspace TEXT;")
         conn.commit()
     logger.info("SQLite database initialized for session & conversation persistence.")
 
 
-def save_user_session(chat_id: int, model_name: str, effort: str, mode: str, conversation_id: Optional[str] = None):
+def save_user_session(chat_id: int, model_name: str, effort: str, mode: str, conversation_id: Optional[str] = None, workspace: Optional[str] = None):
     """Save or update user session settings in SQLite."""
     try:
         with _get_connection() as conn:
             conn.execute("""
-                INSERT INTO user_sessions (chat_id, model_name, effort, mode, conversation_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO user_sessions (chat_id, model_name, effort, mode, conversation_id, workspace, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(chat_id) DO UPDATE SET
                     model_name = excluded.model_name,
                     effort = excluded.effort,
                     mode = excluded.mode,
                     conversation_id = excluded.conversation_id,
+                    workspace = excluded.workspace,
                     updated_at = datetime('now');
-            """, (chat_id, model_name, effort, mode, conversation_id))
+            """, (chat_id, model_name, effort, mode, conversation_id, workspace))
             conn.commit()
-        logger.debug(f"Saved session settings to DB for chat_id={chat_id}: model={model_name}, effort={effort}, mode={mode}, conv_id={conversation_id}")
+        logger.debug(f"Saved session settings to DB for chat_id={chat_id}: model={model_name}, effort={effort}, mode={mode}, conv_id={conversation_id}, workspace={workspace}")
     except Exception as e:
         logger.error(f"Failed to save user session for chat_id={chat_id}: {e}", exc_info=True)
 
@@ -68,7 +71,7 @@ def load_user_session(chat_id: int) -> Optional[Dict[str, Optional[str]]]:
     try:
         with _get_connection() as conn:
             cursor = conn.execute(
-                "SELECT model_name, effort, mode, conversation_id FROM user_sessions WHERE chat_id = ?",
+                "SELECT model_name, effort, mode, conversation_id, workspace FROM user_sessions WHERE chat_id = ?",
                 (chat_id,)
             )
             row = cursor.fetchone()
@@ -77,7 +80,8 @@ def load_user_session(chat_id: int) -> Optional[Dict[str, Optional[str]]]:
                     "model_name": row["model_name"],
                     "effort": row["effort"],
                     "mode": row["mode"],
-                    "conversation_id": row["conversation_id"] if "conversation_id" in row.keys() else None
+                    "conversation_id": row["conversation_id"] if "conversation_id" in row.keys() else None,
+                    "workspace": row["workspace"] if "workspace" in row.keys() else None
                 }
     except Exception as e:
         logger.error(f"Failed to load user session for chat_id={chat_id}: {e}", exc_info=True)

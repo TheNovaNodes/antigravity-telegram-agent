@@ -27,13 +27,14 @@ class SessionManager:
                     model_name=saved.get("model_name", "gemini-3.1-pro-high"),
                     effort=saved.get("effort", "high"),
                     mode=saved.get("mode", "default"),
-                    conversation_id=saved.get("conversation_id")
+                    conversation_id=saved.get("conversation_id"),
+                    workspace=saved.get("workspace")
                 )
             else:
                 logger.info(f"Creating new default session object for chat_id={chat_id}")
                 session = AgySession(chat_id)
                 # Persist initial session defaults to SQLite DB
-                save_user_session(chat_id, session.model_name, session.effort, session.mode, session.conversation_id)
+                save_user_session(chat_id, session.model_name, session.effort, session.mode, session.conversation_id, session.workspace)
             self.sessions[chat_id] = session
         return self.sessions[chat_id]
 
