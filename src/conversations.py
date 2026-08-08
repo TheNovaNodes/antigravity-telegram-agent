@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -70,3 +70,19 @@ def rename_conversation(conversation_id: str, new_title: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to rename conversation {conversation_id}: {e}", exc_info=True)
         return False
+
+def get_latest_conversation_id() -> Optional[str]:
+    """Retrieve the most recent conversation_id from conversation_summaries.db."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+            row = conn.execute(
+                "SELECT conversation_id FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                return row[0]
+    except Exception as e:
+        logger.error(f"Failed to fetch latest conversation ID: {e}", exc_info=True)
+    return None
+

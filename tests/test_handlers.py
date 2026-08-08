@@ -34,10 +34,11 @@ class TestHandlers(unittest.TestCase):
         asyncio.run(cmd_menu(message))
         message.answer.assert_not_called()
 
+    @patch("src.handlers.check_and_send_artifacts")
     @patch("src.handlers.log_audit_event")
     @patch("src.handlers.session_manager")
     @patch("src.handlers.is_allowed", return_value=True)
-    def test_handle_message_success(self, mock_allowed, mock_sm, mock_audit):
+    def test_handle_message_success(self, mock_allowed, mock_sm, mock_audit, mock_artifacts):
         message = AsyncMock(spec=Message)
         message.from_user = self.user
         message.chat = self.chat
@@ -59,6 +60,7 @@ class TestHandlers(unittest.TestCase):
         mock_session.get_response.assert_called_once_with("Hello agent")
         placeholder.edit_text.assert_called_once_with("Agent response text", parse_mode="HTML")
         mock_audit.assert_called_once()
+        mock_artifacts.assert_called_once()
 
 
 if __name__ == "__main__":

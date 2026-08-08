@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -577,6 +578,46 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
         if chunk.strip():
             await safe_answer(message, chunk)
 
+from pathlib import Path
+from aiogram.types import FSInputFile
+from src.conversations import get_latest_conversation_id
+
+async def check_and_send_artifacts(message: Message, session):
+    """Detect and send newly generated artifacts from agy session brain directory to Telegram chat."""
+    conv_id = session.conversation_id
+    if not conv_id or conv_id == "latest":
+        conv_id = get_latest_conversation_id()
+
+    if not conv_id:
+        return
+
+    brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id
+    if not brain_dir.exists() or not brain_dir.is_dir():
+        return
+
+    ignore_names = {".system_generated", ".user_uploaded", "scratch", "dmagy_response.md"}
+
+    # Find artifact files modified in the last 120 seconds or matching metadata
+    now = time.time()
+    artifacts_to_send = []
+
+    for item in brain_dir.iterdir():
+        if item.is_file() and item.name not in ignore_names and not item.name.endswith(".metadata.json"):
+            try:
+                mtime = item.stat().st_mtime
+                if now - mtime < 120:  # File was created or updated in the last 2 minutes
+                    artifacts_to_send.append(item)
+            except Exception as e:
+                logger.warning(f"Failed to check mtime for artifact {item}: {e}")
+
+    for artifact in artifacts_to_send:
+        try:
+            input_file = FSInputFile(str(artifact), filename=artifact.name)
+            caption = f"📦 <b>Артефакт сессии</b>\n📄 <code>{artifact.name}</code>"
+            await message.answer_document(document=input_file, caption=caption, parse_mode="HTML")
+            logger.info(f"Successfully delivered artifact file {artifact.name} to chat_id={message.chat.id}")
+        except Exception as e:
+            logger.error(f"Failed to send artifact {artifact.name} to Telegram: {e}", exc_info=True)
 
 
 @router.message()
@@ -636,7 +677,11 @@ async def handle_message(message: Message):
         else:
             await placeholder.edit_text("⚠️ Агент отработал молча или не вернул текста.")
 
+        # Check for newly generated artifact files and send them to the Telegram chat
+        await check_and_send_artifacts(message, session)
+
     except Exception as e:
         status_task.cancel()
         logger.error(f"Error handling message for chat_id={message.chat.id}: {e}", exc_info=True)
         await safe_edit_text(placeholder, f"❌ <b>Произошла ошибка:</b> {e}")
+
