@@ -316,6 +316,7 @@ class AgySession:
                             screen.reset()
                 except pexpect.TIMEOUT:
                     idle_count += 1
+                    await asyncio.sleep(0.05)
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
@@ -343,7 +344,7 @@ class AgySession:
             while True:
                 try:
                     chunk = await asyncio.to_thread(
-                        self.child.read_nonblocking, size=1024, timeout=0.5
+                        self.child.read_nonblocking, size=4096, timeout=0.1
                     )
                     if chunk:
                         received_bytes = True
@@ -353,11 +354,12 @@ class AgySession:
                     total_timeout_count += 1
                     if received_bytes:
                         idle_count += 1
-                        if idle_count >= 6:  # 3 seconds of silence after stream output
+                        if idle_count >= 15:  # 1.5 seconds of silence after stream output
                             break
-                    elif total_timeout_count >= 60:  # 30 seconds max timeout if CLI hangs
+                    elif total_timeout_count >= 300:  # 30 seconds max timeout if CLI hangs
                         logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 30s)")
                         break
+                    await asyncio.sleep(0.05)
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
