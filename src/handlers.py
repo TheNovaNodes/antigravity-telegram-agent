@@ -513,21 +513,56 @@ async def safe_answer(target: Message, text: str):
         logger.warning(f"HTML parse mode failed for answer, falling back to plain text: {e}")
         await target.answer(text, parse_mode=None)
 
-async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3900):
-    """Splits response into safe Telegram chunks (<= 4000 chars) to prevent 4096-character limit crash."""
-    if len(text) <= max_chunk_size:
+from aiogram.types import BufferedInputFile
+
+async def send_response_chunks(message: Message, placeholder: Message, text: str, max_chunk_size: int = 3800):
+    """Smart Hybrid response sender:
+    - <= 3800 chars: Single message edit
+    - 3801..8000 chars: Multi-chunk text delivery (up to 2 chunks)
+    - > 8000 chars: First 2000 chars in chat + attached full response .md file
+    """
+    total_len = len(text)
+    
+    # Threshold for document attachment (8000 chars)
+    if total_len > 8000:
+        preview_text = text[:2000].rstrip() + "\n\n...\n\n📄 <i>[Ответ слишком большой. Полная версия в файле ниже]</i>"
+        await safe_edit_text(placeholder, preview_text)
+        
+        # Prepare .md file attachment
+        file_bytes = text.encode("utf-8")
+        doc_file = BufferedInputFile(file_bytes, filename="dmagy_response.md")
+        await message.answer_document(
+            document=doc_file,
+            caption=f"📄 <b>Полный ответ DMagyBOT</b> ({total_len} символов)",
+            parse_mode="HTML"
+        )
+        return
+
+    if total_len <= max_chunk_size:
         await safe_edit_text(placeholder, text)
         return
 
+    # Multi-chunk splitting by paragraphs (\n\n or \n) preserving limits
     chunks = []
     current_chunk = []
     current_length = 0
 
-    for line in text.split("\n"):
+    lines = text.split("\n")
+    for line in lines:
         if current_length + len(line) + 1 > max_chunk_size:
-            chunks.append("\n".join(current_chunk))
-            current_chunk = [line]
-            current_length = len(line)
+            if current_chunk:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = []
+                current_length = 0
+            
+            # Handle exceptionally long single lines
+            while len(line) > max_chunk_size:
+                chunks.append(line[:max_chunk_size])
+                line = line[max_chunk_size:]
+            
+            if line:
+                current_chunk.append(line)
+                current_length = len(line)
         else:
             current_chunk.append(line)
             current_length += len(line) + 1
@@ -535,10 +570,13 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
     if current_chunk:
         chunks.append("\n".join(current_chunk))
 
+    # Send first chunk as placeholder edit
     await safe_edit_text(placeholder, chunks[0])
+    # Send remaining chunks as new messages
     for chunk in chunks[1:]:
         if chunk.strip():
             await safe_answer(message, chunk)
+
 
 
 @router.message()

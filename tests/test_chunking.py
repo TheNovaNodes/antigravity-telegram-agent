@@ -20,7 +20,7 @@ class TestChunking(unittest.TestCase):
         message = AsyncMock()
         placeholder = AsyncMock()
 
-        # Create a text > 4000 chars
+        # Create a text between 3801 and 8000 chars
         paragraph1 = "A" * 3500
         paragraph2 = "B" * 2000
         text = f"{paragraph1}\n{paragraph2}"
@@ -30,6 +30,24 @@ class TestChunking(unittest.TestCase):
         placeholder.edit_text.assert_called_once_with(paragraph1, parse_mode="HTML")
         message.answer.assert_called_once_with(paragraph2, parse_mode="HTML")
 
+    def test_huge_response_document_attachment(self):
+        message = AsyncMock()
+        placeholder = AsyncMock()
+
+        # Create text > 8000 chars
+        text = "X" * 10000
+
+        asyncio.run(send_response_chunks(message, placeholder, text))
+
+        # Check placeholder edit contains notice
+        placeholder.edit_text.assert_called_once()
+        self.assertIn("[Ответ слишком большой. Полная версия в файле ниже]", placeholder.edit_text.call_args[0][0])
+
+        # Check document attachment was sent
+        message.answer_document.assert_called_once()
+        self.assertIn("10000 символов", message.answer_document.call_args[1]["caption"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
