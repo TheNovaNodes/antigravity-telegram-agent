@@ -150,16 +150,13 @@ def get_auth_state_signature() -> str:
     token_file = base_dir / "antigravity-oauth-token"
     settings_file = base_dir / "settings.json"
     jetski_file = base_dir / "jetski_state.pbtxt"
-    cli_log = base_dir / "cli.log"
-    log_dir = base_dir / "log"
-    latest_log = None
-    if log_dir.exists():
-        logs = sorted(log_dir.glob("cli-*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if logs:
-            latest_log = logs[0]
+    # NOTE: cli.log and log/cli-*.log are intentionally EXCLUDED from signature.
+    # Including them caused a HOT RELOAD storm: agy writes to these logs on every
+    # spawn, mutating the signature, which triggers another reload — infinite loop.
+    # Only credential/config files that change on actual account switch are monitored.
     
     parts = []
-    for fpath in (token_file, settings_file, jetski_file, cli_log, latest_log):
+    for fpath in (token_file, settings_file, jetski_file):
         if fpath and fpath.exists():
             try:
                 st = fpath.stat()
@@ -240,6 +237,40 @@ class AgySession:
             self.close()
             save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
+
+    def _detect_conversation_id(self):
+        """Detect active conversation_id by finding the most recently modified brain directory.
+        
+        Scans ~/.gemini/antigravity-cli/brain/ for UUID-named directories and picks
+        the one with the newest mtime. Updates self.conversation_id and persists to DB
+        if changed. This enables artifact delivery to find the correct brain directory.
+        """
+        brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+        if not brain_base.exists():
+            return
+
+        try:
+            uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+            best_id = None
+            best_mtime = 0
+
+            for d in brain_base.iterdir():
+                if d.is_dir() and uuid_pattern.match(d.name):
+                    try:
+                        mtime = d.stat().st_mtime
+                        if mtime > best_mtime:
+                            best_mtime = mtime
+                            best_id = d.name
+                    except Exception:
+                        pass
+
+            if best_id and best_id != self.conversation_id:
+                old_id = self.conversation_id
+                self.conversation_id = best_id
+                logger.info(f"Detected conversation_id={best_id} for chat_id={self.chat_id} (was: {old_id})")
+                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+        except Exception as e:
+            logger.warning(f"Failed to detect conversation_id for chat_id={self.chat_id}: {e}")
 
     async def _ensure_started(self):
         """Spawns process with configured flags and MCP environment bindings.
@@ -367,6 +398,10 @@ class AgySession:
             formatted_response = format_dyslexia_friendly_text(lines, prompt=prompt)
             if not formatted_response.strip():
                 logger.warning(f"Empty or thinking-suppressed response detected from model {self.model_name} for chat_id={self.chat_id}")
+
+            # Detect and track the active conversation_id from brain directory
+            self._detect_conversation_id()
+
             return formatted_response
 
     async def get_usage_info(self) -> str:

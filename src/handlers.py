@@ -583,41 +583,94 @@ from aiogram.types import FSInputFile
 from src.conversations import get_latest_conversation_id
 
 async def check_and_send_artifacts(message: Message, session):
-    """Detect and send newly generated artifacts from agy session brain directory to Telegram chat."""
-    conv_id = session.conversation_id
-    if not conv_id or conv_id == "latest":
-        conv_id = get_latest_conversation_id()
+    """Detect and send newly generated artifacts from agy session brain directory to Telegram chat.
 
-    if not conv_id:
+    Uses a multi-strategy approach to find the correct brain directory:
+    1. Check the session's tracked conversation_id directory (set by _detect_conversation_id)
+    2. Fall back to latest conversation from agy CLI database
+    3. Scan ALL brain directories modified in the last 120 seconds
+
+    Recursively walks directories, excluding system folders (.system_generated, scratch, .user_uploaded).
+    Deduplicates artifacts by filename to prevent double-sending.
+    """
+    brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+    if not brain_base.exists():
+        logger.debug(f"Brain base directory {brain_base} does not exist, skipping artifact check")
         return
 
-    brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id
-    if not brain_dir.exists() or not brain_dir.is_dir():
-        return
-
-    ignore_names = {".system_generated", ".user_uploaded", "scratch", "dmagy_response.md"}
-
-    # Find artifact files modified in the last 120 seconds or matching metadata
     now = time.time()
+    ignore_dirs = {".system_generated", ".user_uploaded", "scratch"}
+    scan_dirs = []
+
+    # Strategy 1: Use session's tracked conversation_id (populated by _detect_conversation_id)
+    conv_id = session.conversation_id
+    if conv_id and conv_id != "latest":
+        target = brain_base / conv_id
+        if target.exists() and target.is_dir():
+            scan_dirs.append(target)
+
+    # Strategy 2: Fall back to latest conversation from agy CLI database
+    if not scan_dirs:
+        fallback_id = get_latest_conversation_id()
+        if fallback_id:
+            target = brain_base / fallback_id
+            if target.exists() and target.is_dir():
+                scan_dirs.append(target)
+
+    # Strategy 3: Scan any brain directory modified in the last 120 seconds
+    try:
+        for d in brain_base.iterdir():
+            if d.is_dir() and not d.name.startswith(".") and d not in scan_dirs:
+                try:
+                    if now - d.stat().st_mtime < 120:
+                        scan_dirs.append(d)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to scan brain base directory: {e}")
+
+    # Recursively find artifact files modified in the last 120 seconds
     artifacts_to_send = []
-
-    for item in brain_dir.iterdir():
-        if item.is_file() and item.name not in ignore_names and not item.name.endswith(".metadata.json"):
-            try:
-                mtime = item.stat().st_mtime
-                if now - mtime < 120:  # File was created or updated in the last 2 minutes
-                    artifacts_to_send.append(item)
-            except Exception as e:
-                logger.warning(f"Failed to check mtime for artifact {item}: {e}")
-
-    for artifact in artifacts_to_send:
+    for brain_dir in scan_dirs:
         try:
-            input_file = FSInputFile(str(artifact), filename=artifact.name)
-            caption = f"📦 <b>Артефакт сессии</b>\n📄 <code>{artifact.name}</code>"
-            await message.answer_document(document=input_file, caption=caption, parse_mode="HTML")
-            logger.info(f"Successfully delivered artifact file {artifact.name} to chat_id={message.chat.id}")
+            for item in brain_dir.rglob("*"):
+                if not item.is_file():
+                    continue
+                # Skip files inside system directories
+                rel_parts = item.relative_to(brain_dir).parts
+                if any(part in ignore_dirs for part in rel_parts):
+                    continue
+                # Skip metadata and bot-generated response files
+                if item.name.endswith(".metadata.json") or item.name == "dmagy_response.md":
+                    continue
+                try:
+                    if now - item.stat().st_mtime < 120:
+                        artifacts_to_send.append(item)
+                except Exception:
+                    pass
         except Exception as e:
-            logger.error(f"Failed to send artifact {artifact.name} to Telegram: {e}", exc_info=True)
+            logger.warning(f"Failed to scan brain directory {brain_dir}: {e}")
+
+    # Deduplicate by filename (same artifact name from different strategies)
+    seen_names = set()
+    unique_artifacts = []
+    for artifact in artifacts_to_send:
+        if artifact.name not in seen_names:
+            seen_names.add(artifact.name)
+            unique_artifacts.append(artifact)
+
+    if unique_artifacts:
+        logger.info(f"📦 Found {len(unique_artifacts)} new artifact(s) to deliver for chat_id={message.chat.id}")
+
+    for artifact in unique_artifacts:
+        try:
+            file_size_kb = artifact.stat().st_size / 1024
+            input_file = FSInputFile(str(artifact), filename=artifact.name)
+            caption = f"📦 <b>Артефакт сессии</b>\n📄 <code>{artifact.name}</code> ({file_size_kb:.1f} KB)"
+            await message.answer_document(document=input_file, caption=caption, parse_mode="HTML")
+            logger.info(f"✅ Delivered artifact {artifact.name} ({file_size_kb:.1f} KB) to chat_id={message.chat.id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to send artifact {artifact.name} to Telegram: {e}", exc_info=True)
 
 
 @router.message()
