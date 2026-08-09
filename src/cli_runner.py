@@ -19,6 +19,17 @@ from src.formatters import format_dyslexia_friendly_text
 
 logger = logging.getLogger(__name__)
 
+def _safe_screen_display(screen):
+    try:
+        return screen.display
+    except IndexError:
+        for y in range(screen.lines):
+            for x in range(screen.columns):
+                char = screen.buffer[y][x]
+                if not char.data:
+                    screen.buffer[y][x] = char._replace(data=" ")
+        return screen.display
+
 AVAILABLE_MODELS = {
     "gemini-flash-high": "gemini-3.6-flash-high",
     "gemini-flash-medium": "gemini-3.6-flash-medium",
@@ -328,6 +339,7 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
+            self.child.setwinsize(60, 120)
             self.spawn_auth_signature = current_auth_sig
 
             # Drain startup banner and auto-confirm first-run interactive prompts
@@ -340,7 +352,7 @@ class AgySession:
                     if chunk:
                         stream.feed(chunk)
                         idle_count = 0
-                        banner_text = "\n".join(screen.display).lower()
+                        banner_text = "\n".join(_safe_screen_display(screen)).lower()
                         if any(phrase in banner_text for phrase in ["arrow keys to navigate", "enter to select", "press enter"]):
                             logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
                             self.child.send(b"\r\n")
@@ -355,6 +367,9 @@ class AgySession:
         """Sends prompt to agy, uses pyte Virtual Terminal to render clean screen output."""
         async with self._lock:
             await self._ensure_started()
+
+            if not self.child or not self.child.isalive():
+                return "⚠️ Не удалось запустить CLI-процесс. Попробуйте /reset и повторите запрос."
 
             clean_prompt = prompt.replace("\n", " ").strip()
             try:
@@ -385,7 +400,7 @@ class AgySession:
                     total_timeout_count += 1
                     if received_bytes:
                         idle_count += 1
-                        if idle_count >= 15:  # 1.5 seconds of silence after stream output
+                        if idle_count >= 40:  # ~4 seconds of silence after stream output
                             break
                     elif total_timeout_count >= 300:  # 30 seconds max timeout if CLI hangs
                         logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 30s)")
@@ -394,7 +409,7 @@ class AgySession:
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
-            lines = list(screen.display)
+            lines = list(_safe_screen_display(screen))
             formatted_response = format_dyslexia_friendly_text(lines, prompt=prompt)
             if not formatted_response.strip():
                 logger.warning(f"Empty or thinking-suppressed response detected from model {self.model_name} for chat_id={self.chat_id}")
@@ -433,7 +448,7 @@ class AgySession:
                     except (pexpect.TIMEOUT, pexpect.EOF, OSError):
                         idle_count += 1
 
-                for line in screen.display:
+                for line in _safe_screen_display(screen):
                     s = line.strip()
                     if s and s not in all_lines:
                         all_lines.append(s)

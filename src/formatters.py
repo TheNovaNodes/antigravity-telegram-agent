@@ -202,7 +202,7 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
         for idx in range(len(raw_screen_display) - 1, -1, -1):
             line = raw_screen_display[idx].strip()
             line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
-            if prompt_snippet and prompt_snippet in line_clean:
+            if prompt_snippet and len(prompt_snippet) >= 5 and prompt_snippet in line_clean:
                 prompt_idx = idx
                 break
 
@@ -328,8 +328,8 @@ def format_usage_response(lines, email: str = "") -> str:
                 pct_match = re.search(r"(\d+)%\s+remaining", l_strip)
                 if pct_match:
                     current_model["pct"] = int(pct_match.group(1))
-                if "Refreshes in" in l_strip:
-                    current_model["refreshes"] = l_strip.split("Refreshes in")[1].strip()
+            elif "Refreshes in" in l_strip:
+                current_model["refreshes"] = l_strip.split("Refreshes in")[1].strip()
 
     seen = set()
     unique_models = []
