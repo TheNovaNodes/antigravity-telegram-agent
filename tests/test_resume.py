@@ -20,7 +20,7 @@ class TestResume(unittest.TestCase):
         res = session.set_conversation("41db2852-7d89-41f5-9ab9-6b1d6c26c07d")
         self.assertTrue(res)
         self.assertEqual(session.conversation_id, "41db2852-7d89-41f5-9ab9-6b1d6c26c07d")
-        mock_save.assert_called_with(12345, "gemini-3.1-pro-high", "high", "default", "41db2852-7d89-41f5-9ab9-6b1d6c26c07d")
+        mock_save.assert_called_with(12345, "gemini-3.1-pro-high", "high", "default", "41db2852-7d89-41f5-9ab9-6b1d6c26c07d", None)
 
     @patch("src.cli_runner.pexpect.spawn")
     def test_ensure_started_includes_conversation_flag(self, mock_spawn):

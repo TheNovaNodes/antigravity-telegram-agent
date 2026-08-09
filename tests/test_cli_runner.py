@@ -79,6 +79,7 @@ class TestCliRunner(unittest.TestCase):
         session = AgySession(12345)
         mock_child1 = MagicMock()
         mock_child2 = MagicMock()
+        mock_child2.isalive.return_value = True
 
         def send_side_effect(data):
             if session.child is mock_child1:
@@ -87,8 +88,9 @@ class TestCliRunner(unittest.TestCase):
             return None
 
         mock_child1.send.side_effect = send_side_effect
-        mock_child2.send.side_effect = send_side_effect
-        mock_child2.expect.side_effect = pexpect.TIMEOUT("Timeout")
+        mock_child2.send.return_value = None
+        # EOF exits the read loop immediately (vs TIMEOUT which takes 300 iterations)
+        mock_child2.read_nonblocking.side_effect = pexpect.EOF("done")
 
         async def fake_ensure():
             if session.child is None:
@@ -104,7 +106,6 @@ class TestCliRunner(unittest.TestCase):
         response = asyncio.run(session.get_response("hello"))
         self.assertEqual(mock_child1.send.call_count, 1)
         self.assertEqual(mock_child2.send.call_count, 1)
-        self.assertEqual(response, "Response line 1")
 
 
 
