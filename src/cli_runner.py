@@ -313,9 +313,8 @@ class AgySession:
                 args.append("--continue")
             elif self.conversation_id:
                 args.extend(["--conversation", self.conversation_id])
-            else:
-                # Default to --continue so PTY process always preserves user conversation context!
-                args.append("--continue")
+            # If no conversation_id is set, do not pass --continue.
+            # This ensures isolated sessions for new chats instead of grabbing the global latest.
 
             logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace}")
             env = os.environ.copy()
@@ -339,11 +338,11 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
-            self.child.setwinsize(60, 120)
+            self.child.setwinsize(6000, 120)
             self.spawn_auth_signature = current_auth_sig
 
             # Drain startup banner and auto-confirm first-run interactive prompts
-            screen = pyte.Screen(120, 60)
+            screen = pyte.Screen(120, 6000)
             stream = pyte.ByteStream(screen)
             idle_count = 0
             while idle_count < 3:
@@ -380,7 +379,7 @@ class AgySession:
                 await self._ensure_started()
                 self.child.send((clean_prompt + "\r\n").encode("utf-8"))
 
-            screen = pyte.Screen(120, 60)
+            screen = pyte.Screen(120, 6000)
             stream = pyte.ByteStream(screen)
 
             idle_count = 0
@@ -436,7 +435,7 @@ class AgySession:
 
             # Page down 4 times to capture all models across modal pages
             for _ in range(4):
-                screen = pyte.Screen(120, 60)
+                screen = pyte.Screen(120, 6000)
                 stream = pyte.ByteStream(screen)
                 idle_count = 0
                 while idle_count < 3:
