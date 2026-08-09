@@ -259,6 +259,10 @@ class AgySession:
         brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
         if not brain_base.exists():
             return
+            
+        # Only detect if we don't already have a specific UUID
+        if self.conversation_id and self.conversation_id != "latest":
+            return
 
         try:
             uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
@@ -269,6 +273,10 @@ class AgySession:
                 if d.is_dir() and uuid_pattern.match(d.name):
                     try:
                         mtime = d.stat().st_mtime
+                        transcript_path = d / ".system_generated" / "logs" / "transcript.jsonl"
+                        if transcript_path.exists():
+                            mtime = max(mtime, transcript_path.stat().st_mtime)
+                            
                         if mtime > best_mtime:
                             best_mtime = mtime
                             best_id = d.name
