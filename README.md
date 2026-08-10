@@ -1,19 +1,21 @@
 # AntigravityTelegramAgent 🤖
 
-**AntigravityTelegramAgent** — промышленный асинхронный Telegram-бот для **Google Antigravity (`agy`)**, построенный на базе виртуального терминала **`pyte`** в PTY-архитектуре, с интеграцией протокола **Model Context Protocol (MCP)**, персистентным хранением состояний сессий в SQLite, многоуровневым чанкингом ответов, аудированием операций и интерактивным центром управления (Control Center).
+**AntigravityTelegramAgent** is an industrial-grade asynchronous Telegram bot bridge for **Google Antigravity (`agy`)**. It is built on a virtual terminal (`pyte`) using a PTY-architecture. It features Model Context Protocol (MCP) integration, persistent session state management via SQLite, multi-level response chunking, operation auditing, and an interactive Control Center.
+
+As a core component of the **Antigravity Agent Ecosystem**, this repository bridges Telegram communication with powerful Antigravity AI agents, and seamlessly integrates with high-performance memory and web-search gateways provided by **TheNovaNodes**.
 
 ---
 
-## ⚡ Быстрая установка (3 команды)
+## ⚡ Quick Installation (3 Commands)
 
-### Перед установкой
+### Prerequisites
 
-1. Установите [Antigravity CLI](https://developers.google.com/agy) на сервер
-2. Авторизуйтесь: `agy auth login`
-3. Создайте бота в Telegram через [@BotFather](https://t.me/BotFather) и сохраните токен
-4. Узнайте ваш Telegram User ID через [@userinfobot](https://t.me/userinfobot)
+1. Install the [Antigravity CLI](https://developers.google.com/agy) on your server.
+2. Authenticate: `agy auth login`
+3. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and save the token.
+4. Find out your Telegram User ID via [@userinfobot](https://t.me/userinfobot).
 
-### Установка
+### Installation
 
 ```bash
 git clone https://github.com/thedoctormes-hue/antigravity-telegram-agent.git
@@ -21,51 +23,51 @@ cd AntigravityTelegramAgent
 sudo ./setup.sh
 ```
 
-Установщик в интерактивном режиме попросит вас ввести:
-- 🔑 **Токен бота** (от @BotFather)
-- 👤 **Ваш Telegram User ID** (от @userinfobot)
+The installer will interactively prompt you for:
+- 🔑 **Bot Token** (from @BotFather)
+- 👤 **Your Telegram User ID** (from @userinfobot)
 
-После этого **всё произойдет автоматически**: создание виртуального окружения, установка зависимостей, генерация конфигурации, регистрация и запуск systemd-сервиса.
+After this, the process is fully automated: creating a virtual environment, installing dependencies, generating configuration, and registering/starting the systemd service.
 
-### Автоматическая установка (для Ansible, скриптов)
+### Automated Installation (for Ansible or scripts)
 
 ```bash
 sudo ./setup.sh --token="123456:ABC-DEF" --user-id="173681771"
 ```
 
-### Проверка
+### Verification
 
 ```bash
 systemctl status antigravity-telegram-agent
 ```
 
-Откройте Telegram, найдите вашего бота и отправьте **/start**.
+Open Telegram, find your bot, and send **/start**.
 
 ---
 
-## ❓ Устранение неполадок (Troubleshooting)
+## ❓ Troubleshooting
 
-### 1. Бот запрашивает авторизацию или ссылку Google OAuth
-* **Причина:** `agy auth login` не был выполнен под тем пользователем, под которым запущен бот, или не совпадает `$HOME`.
-* **Решение:** 
-  1. Выполните `agy auth login` в терминале под вашим обычным пользователем.
-  2. Перезапустите инсталлятор для обновления путей в systemd: `sudo ./setup.sh`
+### 1. Bot requests authorization or a Google OAuth link
+* **Cause:** `agy auth login` was not run as the same user running the bot, or `$HOME` paths do not match.
+* **Solution:**
+  1. Run `agy auth login` in the terminal as your regular user.
+  2. Rerun the installer to update paths in systemd: `sudo ./setup.sh`
 
-### 2. Ошибка прав доступа `Permission denied: .env`
-* **Причина:** Файл `.env` принадлежит пользователю `root`.
-* **Решение:** Выполните `sudo ./setup.sh` (скрипт автоматически выставит владельцем вашего пользователя).
+### 2. Access error `Permission denied: .env`
+* **Cause:** The `.env` file is owned by the `root` user.
+* **Solution:** Run `sudo ./setup.sh` (the script will automatically change ownership to your user).
 
-### 3. Ошибка `NameError` или устаревший код
-* **Решение:** Обновите код и перезапустите службу:
+### 3. `NameError` or outdated code
+* **Solution:** Update the code and restart the service:
   ```bash
   git pull && sudo systemctl restart antigravity-telegram-agent
   ```
 
 ---
 
-## 🚀 Рекомендуемый ИИ-стек и MCP Архитектура
+## 🚀 Recommended AI Stack and MCP Architecture
 
-Для обеспечения автономности, точного контекстного поиска и независимости от вендоров рекомендуется архитектурная триада MCP-сервисов:
+To ensure autonomy, accurate contextual search, and vendor independence, we recommend a triad of MCP services:
 
 ```
                        ┌─────────────────────────────────────────┐
@@ -79,99 +81,99 @@ systemctl status antigravity-telegram-agent
 │  (TheNovaNodes RAG)     │       │  (TheNovaNodes Search)  │         │   (Work CRM)    │
 └────────────┬────────────┘       └────────────┬────────────┘         └────────┬────────┘
              │                                 │                               │
-  Гибридный поиск:                Метапоиск (90+ движков),           Файлы, контакты,
-  FTS5 + BM25 + Vectors           Deep Research & Markdown           календарь (CalDAV)
+  Hybrid Search:                  Metasearch (90+ engines),          Files, Contacts,
+  FTS5 + BM25 + Vectors           Deep Research & Markdown           Calendar (CalDAV)
 ```
 
 ---
 
-## 🛡️ Двухуровневое разделение MCP: Control Plane & Data Plane
+## 🛡️ Two-Tier MCP Separation: Control Plane & Data Plane
 
-Для обеспечения информационной безопасности и оптимизации расхода контекстного окна (Context Budget Efficiency) используется двухуровневая классификация MCP-инструментов:
+To ensure information security and optimize the Context Window (Context Budget Efficiency), we utilize a two-tier classification of MCP tools:
 
 ```
                           ┌───────────────────────────┐
-                          │   Двухуровневая MCP       │
-                          │      Архитектура          │
+                          │    Two-Tier MCP           │
+                          │    Architecture           │
                           └─────────────┬─────────────┘
                                         │
            ┌────────────────────────────┴────────────────────────────┐
            ▼                                                         ▼
 ┌──────────────────────────────┐                          ┌──────────────────────────────┐
 │  1. Control Plane MCP        │                          │  2. Data Plane MCP           │
-│  (Управление инфраструктурой) │                          │  (Операционное исполнение)   │
+│  (Infrastructure Management)  │                          │  (Operational Execution)     │
 ├──────────────────────────────┤                          ├──────────────────────────────┤
-│ • Администрирование воркспейсов│                          │ • Поиск по векторно-лексической│
-│ • Управление API-ключами      │                          │   базе знании (FTS5 + BM25)   │
-│ • Конфигурация движков поиска │                          │ • Агрегированный метапоиск   │
-│ • Изоляция прав доступа      │                          │ • Чтение/Запись CRM файлов   │
+│ • Workspace Administration   │                          │ • Knowledge Base Search      │
+│ • API Key Management         │                          │   (FTS5 + BM25)              │
+│ • Search Engine Configuration│                          │ • Aggregated Metasearch      │
+│ • Access Right Isolation     │                          │ • CRM File Read/Write        │
 └──────────────────────────────┘                          └──────────────────────────────┘
 ```
 
-1. **Control Plane MCP (Управление)**: Содержит административные функции. Отделен для предотвращения уязвимостей типа `Prompt Injection` и исключения лишних административных схем из пользовательского диалога.
-2. **Data Plane MCP (Исполнение)**: Передает агенту только легковесные операционные инструменты (поиск по семантической памяти, веб-поиск, работа с файлами пользователя).
+1. **Control Plane MCP (Management)**: Contains administrative functions. It is separated to prevent vulnerabilities such as Prompt Injections and to exclude unnecessary administrative schemas from user dialogue.
+2. **Data Plane MCP (Execution)**: Provides the agent with lightweight operational tools only (semantic memory search, web search, reading/writing user files).
 
 ---
 
-## 🧠 Высокопроизводительные MCP Гейтвеи от TheNovaNodes
+## 🧠 High-Performance MCP Gateways by TheNovaNodes
 
-Для работы с семантической памятью и веб-поиском рекомендуются специализированные MCP-репозитории организации **[TheNovaNodes](https://github.com/TheNovaNodes)**, обладающие уникальными архитектурными и инженерными преимуществами:
+For handling semantic memory and web search, we highly recommend specialized MCP repositories provided by **[TheNovaNodes](https://github.com/TheNovaNodes)**, which offer unique architectural and engineering advantages:
 
-### 1. 🧠 Семантическая память: [`TheNovaNodes/nova-anythingllm-mcp`](https://github.com/TheNovaNodes/nova-anythingllm-mcp)
-* **Инженерные особенности**:
-  - **Гибридный поиск нового поколения**: Объединяет лексический поиск **FTS5 + BM25** с векторным сходством через взвешенную слияющую оценку (RRF — Reciprocal Rank Fusion / Weighted Merge, калиброванную по метрикам NDCG). Это решает проблему потери точных терминов, наименований функций и артикулов, характерную для чисто векторных решений.
-  - **Context Assembly**: Автоматически достраивает найденные совпадения до полного абзацного контекста.
-  - **Gatekeeping & Diagnostics**: Встроенные механизмы проверки здоровья (`gateway_health`) и ограничение параллелизма (Fan-out Throttle) для защиты инстанса AnythingLLM.
-* **Репозиторий**: [`TheNovaNodes/nova-anythingllm-mcp`](https://github.com/TheNovaNodes/nova-anythingllm-mcp) (Пакет PyPI: `nova-memory-gateway`).
+### 1. 🧠 Semantic Memory: [`TheNovaNodes/nova-anythingllm-mcp`](https://github.com/TheNovaNodes/nova-anythingllm-mcp)
+* **Engineering Features**:
+  - **Next-Generation Hybrid Search**: Combines **FTS5 + BM25** lexical search with vector similarity using weighted merge evaluation (RRF — Reciprocal Rank Fusion / Weighted Merge, calibrated against NDCG metrics). This solves the problem of losing exact terms, function names, and part numbers, which is typical of purely vector-based solutions.
+  - **Context Assembly**: Automatically expands found matches into full paragraph context.
+  - **Gatekeeping & Diagnostics**: Built-in health checks (`gateway_health`) and concurrency limiting (Fan-out Throttle) to protect your AnythingLLM instance.
+* **Repository**: [`TheNovaNodes/nova-anythingllm-mcp`](https://github.com/TheNovaNodes/nova-anythingllm-mcp) (PyPI Package: `nova-memory-gateway`).
 
-### 🔍 2. Глубокий веб-поиск: [`TheNovaNodes/nova-searxng-mcp`](https://github.com/TheNovaNodes/nova-searxng-mcp)
-* **Инженерные особенности**:
-  - **Метапоиск по 90+ источникам**: Агрегирует выдачу без рекламы и пользовательского трекинга.
-  - **Deep Research Orchestration**: Поддерживает многошаговый оркестрируемый поиск с синтезом источников и автоматической очисткой JS-страниц в формат Markdown.
-  - **Слияние с семантической памятью**: Возможность мгновенной интеграции результатов поиска с локальной базой знаний.
-* **Репозиторий**: [`TheNovaNodes/nova-searxng-mcp`](https://github.com/TheNovaNodes/nova-searxng-mcp).
+### 🔍 2. Deep Web Search: [`TheNovaNodes/nova-searxng-mcp`](https://github.com/TheNovaNodes/nova-searxng-mcp)
+* **Engineering Features**:
+  - **Metasearch across 90+ sources**: Aggregates search results without ads and user tracking.
+  - **Deep Research Orchestration**: Supports multi-step orchestrated search with source synthesis and automatic cleaning of JS-pages into Markdown format.
+  - **Semantic Memory Fusion**: Allows instant integration of search results into your local knowledge base.
+* **Repository**: [`TheNovaNodes/nova-searxng-mcp`](https://github.com/TheNovaNodes/nova-searxng-mcp).
 
 ### 💼 3. Work OS & CRM: [`cbcoutinho/nextcloud-mcp-server`](https://github.com/cbcoutinho/nextcloud-mcp-server)
-* **Инженерные особенности**:
-  - Обеспечивает интеграцию с персональным облаком Nextcloud (файловая система, календарь CalDAV, задачи Deck и контакты).
-* **Репозиторий**: [`cbcoutinho/nextcloud-mcp-server`](https://github.com/cbcoutinho/nextcloud-mcp-server) (или официальный [`nextcloud/context_agent`](https://github.com/nextcloud/context_agent)).
+* **Engineering Features**:
+  - Provides integration with the Nextcloud personal cloud (file system, CalDAV calendar, Deck tasks, and contacts).
+* **Repository**: [`cbcoutinho/nextcloud-mcp-server`](https://github.com/cbcoutinho/nextcloud-mcp-server) (or official [`nextcloud/context_agent`](https://github.com/nextcloud/context_agent)).
 
 ---
 
-## 🌟 Возможности AntigravityTelegramAgent
-- **Model Context Protocol (MCP)**: Полная совместимость с экосистемой `TheNovaNodes` (Control Plane / Data Plane).
-- **PTY-Архитектура (`pexpect` + `pyte`)**: Эмуляция терминала для прямого взаимодействия с `agy` без дополнительных API-ключей Gemini, с асинхронной неблокирующей оптимизацией CPU (`asyncio.sleep` в polling-петле чтения PTY-потока для устранения busy-loop).
-- **Интерактивный панель управления (`/menu`, `/mcp`)**: Модульный интерфейс Telegram для настройки моделей, глубин рассуждений (`effort`), режимов работы и состояния MCP-серверов.
-- **Персистентность сессий (SQLite)**: База данных `data/antigravity-telegram-agent.db` сохраняет конфигурацию пользователей и обеспечивает возобновление сессий после перезапуска.
-- **Автоматический Hot Reload авторизации**: Мониторинг сигнатуры файлов `~/.gemini/antigravity-cli/antigravity-oauth-token` и `settings.json`. При смене аккаунта через `agy auth login` на сервере бот автоматически подхватывает новые креды без ручного рестарта.
-- **Форматирование Dyslexia-Friendly & Telegram Rich Text (HTML)**: Автоматическая конвертация Markdown в Rich Text HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<blockquote>`, `<a href="...">`), авто-выделение латинских терминов и путей файлов в `<code>`, склейка рваных строк терминала в плавные естественные абзацы с щедрыми отступами (`\n\n`) и очисткой ASCII-арта (`▄▀▀`).
-- **Перехват системных ошибок**: Автоматический перехват `Eligibility Check` и `Quota Exceeded` с выдачей понятных пошаговых рекомендаций на русском языке.
-- **Умная гибридная доставка сообщений (Smart Hybrid Delivery)**: Алгоритм доставки ответов сохраняет Telegram Rich Text HTML-разметку при малых ответах (до 3800 символов), выполняет безопасный параграфный Multi-Chunking для ответов средних объемов (3800–8000 символов) и автоматически формирует прикрепленный файл `agent_response.md` с предпросмотром при ответах свыше 8000 символов.
-- **Динамический размер терминала (Large Output Handling)**: PTY-буфер динамически расширен (до 6000 строк) для предотвращения обрезания длинных логов и ответов от модели.
-- **Smart Hybrid Delivery & Доставка Артефактов**: Отправка длинных ответов (> 8000 символов) и **автоматический перехват и доставка сгенерированных агентом файлов-артефактов** (`.md`, `.json`, `.py`, `.png` и др.) из рабочей директории сессий `brain/<conversation_id>` напрямую в чат Telegram в виде документов.
-- **Аудит операций (`logs/audit.log`)**: Журналирование событий в формате JSON для контроля исполняемых команд и моделей.
-- **Автоматическая очистка ресурсов**: Фоновый процесс удаления неактивных сессий (Idle > 30 мин).
+## 🌟 Features of AntigravityTelegramAgent
+- **Model Context Protocol (MCP)**: Full compatibility with the `TheNovaNodes` ecosystem (Control Plane / Data Plane).
+- **PTY-Architecture (`pexpect` + `pyte`)**: Terminal emulation for direct interaction with `agy` without additional Gemini API keys, featuring asynchronous non-blocking CPU optimization (`asyncio.sleep` in the PTY stream reading polling loop to eliminate busy-loops).
+- **Interactive Control Panel (`/menu`, `/mcp`)**: A modular Telegram interface for configuring models, reasoning depths (`effort`), working modes, and MCP server states.
+- **Session Persistence (SQLite)**: The `data/antigravity-telegram-agent.db` database saves user configuration and ensures session resumption after restart.
+- **Automatic Auth Hot Reload**: Monitors file signatures of `~/.gemini/antigravity-cli/antigravity-oauth-token` and `settings.json`. If you change the account via `agy auth login` on the server, the bot automatically picks up the new credentials without a manual restart.
+- **Dyslexia-Friendly & Telegram Rich Text (HTML) Formatting**: Automatic conversion of Markdown to Rich Text HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<blockquote>`, `<a href="...">`), auto-highlighting of Latin terms and file paths in `<code>`, and merging of ragged terminal lines into smooth natural paragraphs with generous spacing (`\n\n`) and ASCII-art cleaning (`▄▀▀`).
+- **System Error Interception**: Automatic interception of `Eligibility Check` and `Quota Exceeded` with clear, step-by-step recommendations.
+- **Smart Hybrid Delivery**: An algorithm that preserves Telegram Rich Text HTML markup for small responses (up to 3800 characters), performs safe paragraph Multi-Chunking for medium responses (3800–8000 characters), and automatically generates an attached `agent_response.md` file with a preview for responses exceeding 8000 characters.
+- **Large Output Handling**: The PTY buffer is dynamically expanded (up to 6000 lines) to prevent truncation of long logs and model responses.
+- **Artifact Delivery**: Automatic interception and delivery of agent-generated artifact files (`.md`, `.json`, `.py`, `.png`, etc.) from the working session directory `brain/<conversation_id>` directly into the Telegram chat as documents.
+- **Operation Auditing (`logs/audit.log`)**: JSON format logging to monitor executed commands and models.
+- **Automatic Resource Cleanup**: A background process for removing inactive sessions (Idle TTL > 30 min).
 
 ---
 
-## 🏗️ Структура проекта
+## 🏗️ Project Structure
 ```
 AntigravityTelegramAgent/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml          # GitHub Actions CI workflow
 ├── src/
-│   ├── config.py           # Валидация конфигурации окружения
-│   ├── mcp_config.py       # Менеджер MCP-серверов (TheNovaNodes & Custom Gateways)
-│   ├── mcp_manager.py      # Модуль проверки статуса и управления MCP
-│   ├── cli_runner.py       # AgySession (PTY-процессы agy, pyte и Hot Reload авторизации)
-│   ├── formatters.py       # Dyslexia-Friendly форматирование и перехват системных ошибок
-│   ├── session_manager.py  # SessionManager (Управление жизненным циклом сессий и Idle TTL)
-│   ├── db.py               # Персистентность сессий в SQLite (data/antigravity-telegram-agent.db)
-│   ├── audit.py            # Журналирование аудита в JSON (logs/audit.log)
-│   ├── handlers.py         # Обработчики команд Telegram и callbacks
-│   └── main.py             # Точка входа приложения и инициализация сервисов
-├── tests/                  # Набор из 29 автоматизированных unittest-тестов
+│   ├── config.py           # Environment configuration validation
+│   ├── mcp_config.py       # MCP Servers manager (TheNovaNodes & Custom Gateways)
+│   ├── mcp_manager.py      # MCP status checking and management module
+│   ├── cli_runner.py       # AgySession (PTY-processes agy, pyte and Auth Hot Reload)
+│   ├── formatters.py       # Dyslexia-Friendly formatting and system error interception
+│   ├── session_manager.py  # SessionManager (Session lifecycle management and Idle TTL)
+│   ├── db.py               # SQLite Session persistence (data/antigravity-telegram-agent.db)
+│   ├── audit.py            # JSON Auditing (logs/audit.log)
+│   ├── handlers.py         # Telegram command and callback handlers
+│   └── main.py             # Application entry point and service initialization
+├── tests/                  # Suite of automated unittest tests
 │   ├── test_audit.py
 │   ├── test_auth_hot_reload.py
 │   ├── test_chunking.py
@@ -182,36 +184,36 @@ AntigravityTelegramAgent/
 │   ├── test_handlers.py
 │   ├── test_mcp.py
 │   └── test_session_manager.py
-├── data/                   # База данных SQLite (antigravity-telegram-agent.db)
-├── logs/                   # Журналы аудита (audit.log)
-├── mcp_config.json         # Локальные эндпоинты MCP-серверов
-├── antigravity-telegram-agent.service        # Юнит-файл systemd
-├── pyproject.toml          # Зависимости проекта
-├── .env.example            # Шаблон конфигурации
-└── README.md               # Документация
+├── data/                   # SQLite Database (antigravity-telegram-agent.db)
+├── logs/                   # Audit logs (audit.log)
+├── mcp_config.json         # Local endpoints for MCP servers
+├── antigravity-telegram-agent.service        # systemd unit file
+├── pyproject.toml          # Project dependencies
+├── .env.example            # Configuration template
+└── README.md               # Documentation
 ```
 
 ---
 
-## 🛠️ Команды бота
-- `/start` — Инициализация бота и краткая справка.
-- `/menu` — Интерактивный Центр Управления (Control Center).
-- `/usage` — Просмотр использования квот моделей и лимитов Antigravity (`/usage`).
-- `/auth` — Авторизация, просмотр Google email и кнопка Hot Reload.
-- `/resume` — Выбор и возобновление сессии из истории CLI (`conversation_summaries.db`).
-- `/rename` — Переименование активной сессии (`/rename Новое Название`).
-- `/mcp` — Панель управления MCP-серверами.
-- `/models` — Переключение нейросетевых моделей (Gemini, Claude, GPT).
-- `/effort` — Настройка глубины рассуждений (`low`, `medium`, `high`).
-- `/mode` — Выбор режима работы (`Standard`, `Plan`, `Auto-Edits`).
-- `/reset` / `/clear` — Сброс активного контекста сессии.
-- `/help` — Справочное руководство.
+## 🛠️ Bot Commands
+- `/start` — Initialize bot and show brief help.
+- `/menu` — Interactive Control Center.
+- `/usage` — View usage quotas and Antigravity limits (`/usage`).
+- `/auth` — Authorization, view Google email, and Hot Reload button.
+- `/resume` — Select and resume a session from the CLI history (`conversation_summaries.db`).
+- `/rename` — Rename the active session (`/rename New Name`).
+- `/mcp` — Control panel for MCP servers.
+- `/models` — Switch AI models (Gemini, Claude, GPT).
+- `/effort` — Set reasoning depth (`low`, `medium`, `high`).
+- `/mode` — Select working mode (`Standard`, `Plan`, `Auto-Edits`).
+- `/reset` / `/clear` — Reset active session context.
+- `/help` — Help manual.
 
 ---
 
-## 🔌 Конфигурация MCP-серверов
+## 🔌 MCP Server Configuration
 
-Параметры MCP-серверов настраиваются через `mcp_config.json` или переменные окружения `.env`:
+Parameters for MCP servers are configured via `mcp_config.json` or `.env` environment variables:
 
 ```env
 # TheNovaNodes AnythingLLM Gateway
@@ -229,48 +231,48 @@ NEXTCLOUD_PASS="app_password"
 
 ---
 
-## 🧪 Тестирование
+## 🧪 Testing
 
-Запуск полного пакета автоматизированных тестов:
+Run the full suite of automated tests:
 ```bash
-.venv/bin/python -m unittest discover -s tests
+python -m pytest
 ```
 
 ---
 
-## 🚀 Развертывание
+## 🚀 Deployment
 
-> Рекомендуется использовать автоматический установщик `setup.sh` (см. раздел «Быстрая установка» в начале документа).
+> It is recommended to use the automatic installer `setup.sh` (see the "Quick Installation" section at the top of this document).
 
-### Управление сервисом
+### Service Management
 
 ```bash
-# Статус бота
+# Bot status
 systemctl status antigravity-telegram-agent
 
-# Логи в реальном времени
+# Real-time logs
 journalctl -u antigravity-telegram-agent -f
 
-# Перезапуск
+# Restart
 systemctl restart antigravity-telegram-agent
 
-# Остановка
+# Stop
 systemctl stop antigravity-telegram-agent
 ```
 
-### Ручная установка (если setup.sh не подходит)
+### Manual Installation (if setup.sh is not applicable)
 
 ```bash
-# 1. Виртуальное окружение и зависимости
+# 1. Virtual Environment and Dependencies
 python3 -m venv .venv
 .venv/bin/pip install aiogram pexpect pyte python-dotenv
 
-# 2. Конфигурация
+# 2. Configuration
 cp .env.example .env
-nano .env     # Впишите TELEGRAM_BOT_TOKEN и ALLOWED_USER_IDS
+nano .env     # Enter TELEGRAM_BOT_TOKEN and ALLOWED_USER_IDS
 chmod 600 .env
 
-# 3. Systemd-сервис (отредактируйте пути в antigravity-telegram-agent.service!)
+# 3. Systemd Service (edit paths in antigravity-telegram-agent.service!)
 cp antigravity-telegram-agent.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now antigravity-telegram-agent
