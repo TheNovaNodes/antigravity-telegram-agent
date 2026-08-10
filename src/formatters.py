@@ -351,14 +351,11 @@ def format_usage_response(lines, email: str = "") -> str:
         name = m["name"]
         pct = m["pct"]
         ref = m["refreshes"]
-        green_blocks = int(pct / 10)
-        black_blocks = 10 - green_blocks
-        bar = "🟩" * green_blocks + "⬛" * black_blocks
         
-        ref_text = f"\n   • <i>Сброс лимита через:</i> <code>{ref}</code>" if ref else ""
+        ref_text = f"\n   • <i>Сброс через:</i> <code>{ref}</code>" if ref else ""
         output_parts.append(
             f"🔹 <b>{name}</b>\n"
-            f"   Остаток квоты: <b>{pct}%</b> ({bar}){ref_text}\n"
+            f"   Остаток: <b>{pct}%</b>{ref_text}\n"
         )
 
     return "\n".join(output_parts)
