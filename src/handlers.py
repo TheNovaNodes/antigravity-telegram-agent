@@ -93,13 +93,22 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
     servers = mcp_manager.config_manager.config.get("servers", {})
     buttons = []
     
-    anythingllm_st = "✅ On" if servers.get("anythingllm", {}).get("enabled") else "⚪ Off"
-    searxng_st = "✅ On" if servers.get("searxng", {}).get("enabled") else "⚪ Off"
-    nextcloud_st = "✅ On" if servers.get("nextcloud", {}).get("enabled") else "⚪ Off"
+    icons = {
+        "anythingllm": "🧠 AnythingLLM (Память)",
+        "searxng": "🔍 SearXNG (Поиск)",
+        "nextcloud": "💼 Nextcloud (CRM)",
+        "anythingllm-control": "⚙️ AnythingLLM (Control)",
+        "nextcloud-control": "⚙️ Nextcloud (Control)"
+    }
 
-    buttons.append([InlineKeyboardButton(text=f"🧠 AnythingLLM (Память): {anythingllm_st}", callback_data="toggle_mcp:anythingllm")])
-    buttons.append([InlineKeyboardButton(text=f"🔍 SearXNG (Поиск): {searxng_st}", callback_data="toggle_mcp:searxng")])
-    buttons.append([InlineKeyboardButton(text=f"💼 Nextcloud (CRM): {nextcloud_st}", callback_data="toggle_mcp:nextcloud")])
+    for key, srv in servers.items():
+        state_icon = "✅" if srv.get("enabled") else "❌"
+        btn_text = icons.get(key, f"🔌 {srv.get('name', key)}")
+        # Shorten text if needed to fit nicely on mobile
+        if len(btn_text) > 30:
+            btn_text = btn_text[:27] + "..."
+        buttons.append([InlineKeyboardButton(text=f"{btn_text}: {state_icon}", callback_data=f"toggle_mcp:{key}")])
+
     buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
