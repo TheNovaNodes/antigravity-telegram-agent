@@ -68,8 +68,11 @@ def _get_gemini_dir() -> Path:
 
     for h in homes_to_check:
         target = h / ".gemini" / "antigravity-cli"
-        if (target / "antigravity-oauth-token").exists():
-            return target
+        try:
+            if (target / "antigravity-oauth-token").exists():
+                return target
+        except PermissionError:
+            pass
     return Path.home() / ".gemini" / "antigravity-cli"
 
 

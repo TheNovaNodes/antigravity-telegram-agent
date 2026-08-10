@@ -25,5 +25,6 @@ jobs:
       - name: Run unittest suite
         env:
           TELEGRAM_BOT_TOKEN: "dummy:token_for_ci_tests"
+          ALLOWED_USER_IDS: "173681771"
         run: |
           python -m unittest discover -s tests
