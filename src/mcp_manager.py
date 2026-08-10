@@ -1,5 +1,5 @@
 """
-MCP Manager helper for checking server status and integration with DMagyBOT.
+MCP Manager helper for checking server status and integration with AntigravityTelegramAgent.
 """
 
 from typing import Dict, Any

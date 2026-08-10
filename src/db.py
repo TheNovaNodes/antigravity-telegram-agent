@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-DB_PATH = DATA_DIR / "dmagybot.db"
+DB_PATH = DATA_DIR / "antigravity-telegram-agent.db"
 
 
 def _get_connection() -> sqlite3.Connection:

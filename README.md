@@ -1,6 +1,6 @@
-# DMagyBOT 🤖
+# AntigravityTelegramAgent 🤖
 
-**DMagyBOT** — промышленный асинхронный Telegram-бот для **Google Antigravity (`agy`)**, построенный на базе виртуального терминала **`pyte`** в PTY-архитектуре, с интеграцией протокола **Model Context Protocol (MCP)**, персистентным хранением состояний сессий в SQLite, многоуровневым чанкингом ответов, аудированием операций и интерактивным центром управления (Control Center).
+**AntigravityTelegramAgent** — промышленный асинхронный Telegram-бот для **Google Antigravity (`agy`)**, построенный на базе виртуального терминала **`pyte`** в PTY-архитектуре, с интеграцией протокола **Model Context Protocol (MCP)**, персистентным хранением состояний сессий в SQLite, многоуровневым чанкингом ответов, аудированием операций и интерактивным центром управления (Control Center).
 
 ---
 
@@ -16,8 +16,8 @@
 ### Установка
 
 ```bash
-git clone https://github.com/thedoctormes-hue/DMagyBOT.git
-cd DMagyBOT
+git clone https://github.com/thedoctormes-hue/antigravity-telegram-agent.git
+cd AntigravityTelegramAgent
 sudo ./setup.sh
 ```
 
@@ -36,7 +36,7 @@ sudo ./setup.sh --token="123456:ABC-DEF" --user-id="173681771"
 ### Проверка
 
 ```bash
-systemctl status dmagybot
+systemctl status antigravity-telegram-agent
 ```
 
 Откройте Telegram, найдите вашего бота и отправьте **/start**.
@@ -58,7 +58,7 @@ systemctl status dmagybot
 ### 3. Ошибка `NameError` или устаревший код
 * **Решение:** Обновите код и перезапустите службу:
   ```bash
-  git pull && sudo systemctl restart dmagybot
+  git pull && sudo systemctl restart antigravity-telegram-agent
   ```
 
 ---
@@ -138,15 +138,15 @@ systemctl status dmagybot
 
 ---
 
-## 🌟 Возможности DMagyBOT
+## 🌟 Возможности AntigravityTelegramAgent
 - **Model Context Protocol (MCP)**: Полная совместимость с экосистемой `TheNovaNodes` (Control Plane / Data Plane).
 - **PTY-Архитектура (`pexpect` + `pyte`)**: Эмуляция терминала для прямого взаимодействия с `agy` без дополнительных API-ключей Gemini, с асинхронной неблокирующей оптимизацией CPU (`asyncio.sleep` в polling-петле чтения PTY-потока для устранения busy-loop).
 - **Интерактивный панель управления (`/menu`, `/mcp`)**: Модульный интерфейс Telegram для настройки моделей, глубин рассуждений (`effort`), режимов работы и состояния MCP-серверов.
-- **Персистентность сессий (SQLite)**: База данных `data/dmagybot.db` сохраняет конфигурацию пользователей и обеспечивает возобновление сессий после перезапуска.
+- **Персистентность сессий (SQLite)**: База данных `data/antigravity-telegram-agent.db` сохраняет конфигурацию пользователей и обеспечивает возобновление сессий после перезапуска.
 - **Автоматический Hot Reload авторизации**: Мониторинг сигнатуры файлов `~/.gemini/antigravity-cli/antigravity-oauth-token` и `settings.json`. При смене аккаунта через `agy auth login` на сервере бот автоматически подхватывает новые креды без ручного рестарта.
 - **Форматирование Dyslexia-Friendly & Telegram Rich Text (HTML)**: Автоматическая конвертация Markdown в Rich Text HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<blockquote>`, `<a href="...">`), авто-выделение латинских терминов и путей файлов в `<code>`, склейка рваных строк терминала в плавные естественные абзацы с щедрыми отступами (`\n\n`) и очисткой ASCII-арта (`▄▀▀`).
 - **Перехват системных ошибок**: Автоматический перехват `Eligibility Check` и `Quota Exceeded` с выдачей понятных пошаговых рекомендаций на русском языке.
-- **Умная гибридная доставка сообщений (Smart Hybrid Delivery)**: Алгоритм доставки ответов сохраняет Telegram Rich Text HTML-разметку при малых ответах (до 3800 символов), выполняет безопасный параграфный Multi-Chunking для ответов средних объемов (3800–8000 символов) и автоматически формирует прикрепленный файл `dmagy_response.md` с предпросмотром при ответах свыше 8000 символов.
+- **Умная гибридная доставка сообщений (Smart Hybrid Delivery)**: Алгоритм доставки ответов сохраняет Telegram Rich Text HTML-разметку при малых ответах (до 3800 символов), выполняет безопасный параграфный Multi-Chunking для ответов средних объемов (3800–8000 символов) и автоматически формирует прикрепленный файл `agent_response.md` с предпросмотром при ответах свыше 8000 символов.
 - **Динамический размер терминала (Large Output Handling)**: PTY-буфер динамически расширен (до 6000 строк) для предотвращения обрезания длинных логов и ответов от модели.
 - **Smart Hybrid Delivery & Доставка Артефактов**: Отправка длинных ответов (> 8000 символов) и **автоматический перехват и доставка сгенерированных агентом файлов-артефактов** (`.md`, `.json`, `.py`, `.png` и др.) из рабочей директории сессий `brain/<conversation_id>` напрямую в чат Telegram в виде документов.
 - **Аудит операций (`logs/audit.log`)**: Журналирование событий в формате JSON для контроля исполняемых команд и моделей.
@@ -156,7 +156,7 @@ systemctl status dmagybot
 
 ## 🏗️ Структура проекта
 ```
-DMagyBOT/
+AntigravityTelegramAgent/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml          # GitHub Actions CI workflow
@@ -167,7 +167,7 @@ DMagyBOT/
 │   ├── cli_runner.py       # AgySession (PTY-процессы agy, pyte и Hot Reload авторизации)
 │   ├── formatters.py       # Dyslexia-Friendly форматирование и перехват системных ошибок
 │   ├── session_manager.py  # SessionManager (Управление жизненным циклом сессий и Idle TTL)
-│   ├── db.py               # Персистентность сессий в SQLite (data/dmagybot.db)
+│   ├── db.py               # Персистентность сессий в SQLite (data/antigravity-telegram-agent.db)
 │   ├── audit.py            # Журналирование аудита в JSON (logs/audit.log)
 │   ├── handlers.py         # Обработчики команд Telegram и callbacks
 │   └── main.py             # Точка входа приложения и инициализация сервисов
@@ -182,10 +182,10 @@ DMagyBOT/
 │   ├── test_handlers.py
 │   ├── test_mcp.py
 │   └── test_session_manager.py
-├── data/                   # База данных SQLite (dmagybot.db)
+├── data/                   # База данных SQLite (antigravity-telegram-agent.db)
 ├── logs/                   # Журналы аудита (audit.log)
 ├── mcp_config.json         # Локальные эндпоинты MCP-серверов
-├── dmagybot.service        # Юнит-файл systemd
+├── antigravity-telegram-agent.service        # Юнит-файл systemd
 ├── pyproject.toml          # Зависимости проекта
 ├── .env.example            # Шаблон конфигурации
 └── README.md               # Документация
@@ -246,16 +246,16 @@ NEXTCLOUD_PASS="app_password"
 
 ```bash
 # Статус бота
-systemctl status dmagybot
+systemctl status antigravity-telegram-agent
 
 # Логи в реальном времени
-journalctl -u dmagybot -f
+journalctl -u antigravity-telegram-agent -f
 
 # Перезапуск
-systemctl restart dmagybot
+systemctl restart antigravity-telegram-agent
 
 # Остановка
-systemctl stop dmagybot
+systemctl stop antigravity-telegram-agent
 ```
 
 ### Ручная установка (если setup.sh не подходит)
@@ -270,8 +270,8 @@ cp .env.example .env
 nano .env     # Впишите TELEGRAM_BOT_TOKEN и ALLOWED_USER_IDS
 chmod 600 .env
 
-# 3. Systemd-сервис (отредактируйте пути в dmagybot.service!)
-cp dmagybot.service /etc/systemd/system/
+# 3. Systemd-сервис (отредактируйте пути в antigravity-telegram-agent.service!)
+cp antigravity-telegram-agent.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now dmagybot
+systemctl enable --now antigravity-telegram-agent
 ```

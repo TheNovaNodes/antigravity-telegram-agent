@@ -111,7 +111,7 @@ async def cmd_start(message: Message):
 
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        "👋 <b>Добро пожаловать в DMagyBOT Control Center!</b>\n\n"
+        "👋 <b>Добро пожаловать в Antigravity Telegram Agent Control Center!</b>\n\n"
         "Я — высокопроизводительный асинхронный мост к <b>Google Antigravity (agy)</b> с поддержкой MCP-инфраструктуры.\n\n"
         f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
         f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
@@ -136,7 +136,7 @@ async def cmd_menu(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        "🎛️ <b>DMagyBOT Control Center</b>\n\n"
+        "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
         f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
         f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
         f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
@@ -198,7 +198,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
 
     if action == "main":
         await callback_query.message.edit_text(
-            "🎛️ <b>DMagyBOT Control Center</b>\n\n"
+            "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
             f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
             f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
             f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
@@ -388,6 +388,7 @@ async def cmd_rename(message: Message):
 
 def get_workspace_keyboard() -> InlineKeyboardMarkup:
     """Build an interactive inline keyboard listing project folders in /root and /root/LabDoctorM."""
+    import hashlib
     dirs_to_check = [Path("/root"), Path("/root/LabDoctorM/projects"), Path("/root/LabDoctorM/workspaces")]
     buttons = []
     seen_paths = set()
@@ -403,7 +404,8 @@ def get_workspace_keyboard() -> InlineKeyboardMarkup:
                         # Compact display path label
                         if len(label) > 30:
                             label = label[:27] + "..."
-                        buttons.append([InlineKeyboardButton(text=label, callback_data=f"set_ws:{p_str}")])
+                        path_hash = hashlib.sha256(p_str.encode()).hexdigest()[:16]
+                        buttons.append([InlineKeyboardButton(text=label, callback_data=f"set_ws:{path_hash}")])
 
     buttons.append([InlineKeyboardButton(text="🏠 Домашняя директория (/root)", callback_data="set_ws:home")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
@@ -414,8 +416,28 @@ def get_workspace_keyboard() -> InlineKeyboardMarkup:
 async def process_workspace_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
-    raw_path = callback_query.data.split("set_ws:")[1]
-    new_ws = None if raw_path == "home" else raw_path
+    raw_hash = callback_query.data.split("set_ws:")[1]
+    new_ws = None
+    
+    if raw_hash != "home":
+        import hashlib
+        dirs_to_check = [Path("/root"), Path("/root/LabDoctorM/projects"), Path("/root/LabDoctorM/workspaces")]
+        found = False
+        for base in dirs_to_check:
+            if base.exists() and base.is_dir():
+                for p in base.iterdir():
+                    if p.is_dir() and not p.name.startswith("."):
+                        p_str = str(p.resolve())
+                        if hashlib.sha256(p_str.encode()).hexdigest()[:16] == raw_hash:
+                            new_ws = p_str
+                            found = True
+                            break
+            if found:
+                break
+        
+        if not found:
+            await callback_query.answer("❌ Ошибка: Папка не найдена", show_alert=True)
+            return
 
     session = session_manager.get_session(callback_query.message.chat.id)
     session.set_workspace(new_ws)
@@ -531,10 +553,10 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
         
         # Prepare .md file attachment
         file_bytes = text.encode("utf-8")
-        doc_file = BufferedInputFile(file_bytes, filename="dmagy_response.md")
+        doc_file = BufferedInputFile(file_bytes, filename="agent_response.md")
         await message.answer_document(
             document=doc_file,
-            caption=f"📄 <b>Полный ответ DMagyBOT</b> ({total_len} символов)",
+            caption=f"📄 <b>Полный ответ AntigravityTelegramAgent</b> ({total_len} символов)",
             parse_mode="HTML"
         )
         return
@@ -641,7 +663,7 @@ async def check_and_send_artifacts(message: Message, session):
                 if any(part in ignore_dirs for part in rel_parts):
                     continue
                 # Skip metadata and bot-generated response files
-                if item.name.endswith(".metadata.json") or item.name == "dmagy_response.md":
+                if item.name.endswith(".metadata.json") or item.name == "agent_response.md":
                     continue
                 try:
                     if now - item.stat().st_mtime < 120:

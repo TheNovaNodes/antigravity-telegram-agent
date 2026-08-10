@@ -54,7 +54,7 @@ class TestFormatters(unittest.TestCase):
         raw_screen = [
             "      ▄▀▀▄        Antigravity CLI 1.1.10",
             "    ▀▀▀▀▀▀▀▀      Gemini 3.6 Flash (Low)",
-            "   ▄▀▀    ▀▀▄     ~/LabDoctorM/projects/DMagyBOT:",
+            "   ▄▀▀    ▀▀▄     ~/LabDoctorM/projects/antigravity-telegram-agent:",
             "  ▄▀▀      ▀▀▄",
             "> Расскажи о космосе",
             "Привет! Вот 3 интересных факта о космосе, о которых вы могли не",

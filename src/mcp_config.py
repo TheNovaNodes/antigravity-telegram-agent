@@ -1,5 +1,5 @@
 """
-MCP (Model Context Protocol) Configuration Manager for DMagyBOT.
+MCP (Model Context Protocol) Configuration Manager for AntigravityTelegramAgent.
 Integrates custom high-performance MCP gateways from TheNovaNodes (nova-anythingllm-mcp, nova-searxng-mcp) and Nextcloud.
 Supports dual-plane separation: Control Plane (Management) vs Data Plane (Operations).
 """

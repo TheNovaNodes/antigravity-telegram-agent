@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnostic script for DMagyBOT credential & systemd setup validation."""
+"""Diagnostic script for AntigravityTelegramAgent credential & systemd setup validation."""
 
 import os
 import sys

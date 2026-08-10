@@ -30,7 +30,7 @@ async def main():
 
     # Register Telegram native slash command menu
     await bot.set_my_commands([
-        BotCommand(command="menu", description="🎛️ Главный центр управления DMagyBOT"),
+        BotCommand(command="menu", description="🎛️ Главный центр управления AntigravityTelegramAgent"),
         BotCommand(command="usage", description="📊 Лимиты и квоты нейросетей (/usage)"),
         BotCommand(command="auth", description="🔑 Просмотр и Hot Reload аккаунта Google"),
         BotCommand(command="resume", description="📂 Возобновить сессию из истории (/resume)"),
@@ -44,7 +44,7 @@ async def main():
         BotCommand(command="start", description="👋 Справка и старт"),
     ])
 
-    logger.info("🚀 Starting DMagyBOT (Control Center & Pyte PTY Architecture)...")
+    logger.info("🚀 Starting AntigravityTelegramAgent (Control Center & Pyte PTY Architecture)...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
