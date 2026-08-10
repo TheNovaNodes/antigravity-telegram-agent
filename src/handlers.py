@@ -47,6 +47,7 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 from src.conversations import get_available_conversations
+from src.jules_monitor import ACTIVE_JULES_SESSIONS
 
 def get_models_keyboard() -> InlineKeyboardMarkup:
     buttons = []
@@ -393,6 +394,21 @@ async def cmd_rename(message: Message):
         await message.answer(f"✅ <b>Сессия переименована!</b>\nНовое имя: <i>{new_title}</i>", parse_mode="HTML")
     else:
         await message.answer("❌ Ошибка при переименовании. База данных недоступна или ID не найден.", parse_mode="HTML")
+
+@router.message(Command("track_jules"))
+async def cmd_track_jules(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+        
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("ℹ️ <b>Как использовать:</b>\nОтправьте <code>/track_jules ИмяСессииJules</code>", parse_mode="HTML")
+        return
+        
+    session_name = parts[1].strip()
+    ACTIVE_JULES_SESSIONS[session_name] = message.chat.id
+    
+    await message.answer(f"✅ <b>Jules сессия добавлена в мониторинг!</b>\nИмя: <code>{session_name}</code>\n\nВы получите уведомление, когда она завершится.", parse_mode="HTML")
 
 
 def get_workspace_keyboard() -> InlineKeyboardMarkup:

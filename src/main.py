@@ -13,6 +13,7 @@ from src.config import BOT_TOKEN, LOG_LEVEL
 from src.db import init_db
 from src.handlers import router
 from src.session_manager import session_manager
+from src.jules_monitor import monitor_jules_sessions
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL))
 logger = logging.getLogger(__name__)
@@ -25,6 +26,10 @@ async def main():
     asyncio.create_task(session_manager.start_cleanup_loop())
 
     bot = Bot(token=BOT_TOKEN)
+    
+    # Start Jules sessions monitor loop
+    asyncio.create_task(monitor_jules_sessions(bot))
+
     dp = Dispatcher()
     dp.include_router(router)
 

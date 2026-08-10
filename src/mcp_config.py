@@ -79,6 +79,8 @@ class MCPConfigManager:
                         for key, server in data["servers"].items():
                             if key in merged["servers"]:
                                 merged["servers"][key].update(server)
+                            else:
+                                merged["servers"][key] = server
                     if "enabled" in data:
                         merged["enabled"] = data["enabled"]
                     return merged
@@ -144,14 +146,25 @@ class MCPConfigManager:
                 }
             elif key == "nextcloud":
                 mcp_servers["nextcloud-crm"] = {
-                    "command": "npx",
-                    "args": ["-y", "nextcloud-mcp-server"],
-                    "env": {
-                        "NEXTCLOUD_URL": cfg.get("url", "http://127.0.0.1:8000"),
-                        "NEXTCLOUD_USERNAME": cfg.get("username", ""),
-                        "NEXTCLOUD_PASSWORD": cfg.get("app_password", "")
-                    }
+                    "url": cfg.get("url", "http://127.0.0.1:8000/mcp/sse")
                 }
+            else:
+                if "command" in cfg:
+                    mcp_servers[key] = {
+                        "command": cfg.get("command"),
+                        "args": cfg.get("args", []),
+                        "env": cfg.get("env", {})
+                    }
+                elif key.startswith("google-jules-"):
+                    env_var_suffix = key.split("-")[-1].upper()
+                    env_var_name = f"JULES_API_KEY_{env_var_suffix}"
+                    env_val = os.environ.get(env_var_name, "")
+                    mcp_servers[key] = {
+                        "command": "/root/LabDoctorM/projects/google-jules-mcp/.venv/bin/google-jules-mcp",
+                        "args": [],
+                        "env": {"JULES_API_KEY": env_val} if env_val else {}
+                    }
+
 
         return {"mcpServers": mcp_servers}
 
