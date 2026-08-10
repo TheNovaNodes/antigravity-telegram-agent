@@ -46,8 +46,46 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-from src.conversations import get_available_conversations
+from src.conversations import get_available_conversations, get_conversation_title
 from src.jules_monitor import ACTIVE_JULES_SESSIONS
+
+def get_menu_text(session, is_start=False) -> str:
+    active_session_title = "Новая сессия (изолированная)"
+    if session.conversation_id:
+        if session.conversation_id == "latest":
+            active_session_title = "Последняя активная сессия (--continue)"
+        else:
+            title = get_conversation_title(session.conversation_id)
+            active_session_title = f"{title} ({session.conversation_id[:8]})" if title else f"ID: {session.conversation_id[:8]}"
+
+    header = "👋 <b>Добро пожаловать в Antigravity Telegram Agent Control Center!</b>\n\nЯ — высокопроизводительный асинхронный мост к <b>Google Antigravity (agy)</b> с поддержкой MCP-инфраструктуры.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
+    
+    text = (
+        f"{header}"
+        f"💬 <b>Активная сессия:</b> <code>{active_session_title}</code>\n"
+        f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
+        f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
+        f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
+        f"📂 <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
+    )
+    
+    if is_start:
+        text += (
+            "<b>Доступные команды:</b>\n"
+            "• /menu — Главное меню управления\n"
+            "• /cd — Изменить рабочую папку (workspace)\n"
+            "• /resume — Возобновить сохраненный диалог из истории\n"
+            "• /mcp — Управление MCP серверами\n"
+            "• /models — Выбор нейросетевой модели\n"
+            "• /effort — Настройка глубины рассуждений\n"
+            "• /mode — Режим работы (Standard/Plan)\n"
+            "• /reset — Сброс сессии\n"
+        )
+    else:
+        text += "Выбери параметр для настройки:"
+        
+    return text
+
 
 def get_models_keyboard() -> InlineKeyboardMarkup:
     buttons = []
@@ -121,21 +159,7 @@ async def cmd_start(message: Message):
 
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        "👋 <b>Добро пожаловать в Antigravity Telegram Agent Control Center!</b>\n\n"
-        "Я — высокопроизводительный асинхронный мост к <b>Google Antigravity (agy)</b> с поддержкой MCP-инфраструктуры.\n\n"
-        f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
-        f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
-        f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
-        f"📂 <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
-        "<b>Доступные команды:</b>\n"
-        "• /menu — Главное меню управления\n"
-        "• /cd — Изменить рабочую папку (workspace)\n"
-        "• /resume — Возобновить сохраненный диалог из истории\n"
-        "• /mcp — Управление MCP серверами\n"
-        "• /models — Выбор нейросетевой модели\n"
-        "• /effort — Настройка глубины рассуждений\n"
-        "• /mode — Режим работы (Standard/Plan)\n"
-        "• /reset — Сброс сессии\n",
+        get_menu_text(session, is_start=True),
         reply_markup=get_main_menu_keyboard(session),
         parse_mode="HTML"
     )
@@ -146,12 +170,7 @@ async def cmd_menu(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
-        f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
-        f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
-        f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
-        f"• <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
-        "Выбери параметр для настройки:",
+        get_menu_text(session, is_start=False),
         reply_markup=get_main_menu_keyboard(session),
         parse_mode="HTML"
     )
@@ -208,12 +227,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
 
     if action == "main":
         await callback_query.message.edit_text(
-            "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
-            f"• <b>Модель:</b> <code>{session.model_name}</code>\n"
-            f"• <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
-            f"• <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
-            f"• <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
-            "Выбери параметр для настройки:",
+            get_menu_text(session, is_start=False),
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )

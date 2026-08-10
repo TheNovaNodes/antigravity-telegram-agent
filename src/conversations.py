@@ -86,3 +86,19 @@ def get_latest_conversation_id() -> Optional[str]:
         logger.error(f"Failed to fetch latest conversation ID: {e}", exc_info=True)
     return None
 
+def get_conversation_title(conversation_id: str) -> Optional[str]:
+    """Retrieve the summary or title of a specific conversation by its ID."""
+    if not conversation_id or not DB_PATH.exists():
+        return None
+    try:
+        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT preview, title FROM conversation_summaries WHERE conversation_id = ?",
+                (conversation_id,)
+            ).fetchone()
+            if row:
+                return row["preview"] or row["title"] or "Диалог без названия"
+    except Exception as e:
+        logger.error(f"Failed to fetch conversation title for {conversation_id}: {e}", exc_info=True)
+    return None

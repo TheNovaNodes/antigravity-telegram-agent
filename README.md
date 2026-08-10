@@ -143,7 +143,7 @@ For handling semantic memory and web search, we highly recommend specialized MCP
 ## 🌟 Features of AntigravityTelegramAgent
 - **Model Context Protocol (MCP)**: Full compatibility with the `TheNovaNodes` ecosystem (Control Plane / Data Plane).
 - **PTY-Architecture (`pexpect` + `pyte`)**: Terminal emulation for direct interaction with `agy` without additional Gemini API keys, featuring asynchronous non-blocking CPU optimization (`asyncio.sleep` in the PTY stream reading polling loop to eliminate busy-loops).
-- **Interactive Control Panel (`/menu`, `/mcp`)**: A modular Telegram interface for configuring models, reasoning depths (`effort`), working modes, and MCP server states.
+- **Interactive Control Panel (`/menu`, `/mcp`)**: A modular Telegram interface for configuring models, reasoning depths (`effort`), working modes, MCP server states, and dynamically displaying the currently active session (e.g. isolated, resumed, or specific conversation ID).
 - **Session Persistence (SQLite)**: The `data/antigravity-telegram-agent.db` database saves user configuration and ensures session resumption after restart.
 - **Automatic Auth Hot Reload**: Monitors file signatures of `~/.gemini/antigravity-cli/antigravity-oauth-token` and `settings.json`. If you change the account via `agy auth login` on the server, the bot automatically picks up the new credentials without a manual restart.
 - **Dyslexia-Friendly & Telegram Rich Text (HTML) Formatting**: Automatic conversion of Markdown to Rich Text HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<blockquote>`, `<a href="...">`), auto-highlighting of Latin terms and file paths in `<code>`, and merging of ragged terminal lines into smooth natural paragraphs with generous spacing (`\n\n`) and ASCII-art cleaning (`▄▀▀`).
