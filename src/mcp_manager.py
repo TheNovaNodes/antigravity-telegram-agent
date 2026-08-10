@@ -18,9 +18,9 @@ class MCPManager:
         global_enabled = "🟢 Включено" if cfg.get("enabled") else "🔴 Отключено"
         
         report = [
-            "🧠 **Model Context Protocol (MCP) Статус**",
+            "🧠 <b>Model Context Protocol (MCP) Статус</b>",
             f"Статус службы: {global_enabled}\n",
-            "**Подключенные серверы:**"
+            "<b>Подключенные серверы:</b>"
         ]
 
         servers = cfg.get("servers", {})
@@ -35,7 +35,7 @@ class MCPManager:
             state = "✅ Активен" if srv.get("enabled") else "⚪ Отключен"
             name = srv.get("name", key)
             url = srv.get("url", "N/A")
-            report.append(f"{icon} **{name}**: {state}\n   URL: `{url}`")
+            report.append(f"{icon} <b>{name}</b>: {state}\n   URL: <code>{url}</code>")
 
         return "\n".join(report)
 
