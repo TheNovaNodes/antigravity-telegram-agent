@@ -23,5 +23,7 @@ jobs:
           pip install aiogram pexpect pyte python-dotenv
 
       - name: Run unittest suite
+        env:
+          TELEGRAM_BOT_TOKEN: "dummy:token_for_ci_tests"
         run: |
           python -m unittest discover -s tests
