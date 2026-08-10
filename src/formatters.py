@@ -309,6 +309,10 @@ def format_usage_response(lines, email: str = "") -> str:
 
     for line in lines_list:
         l_strip = line.strip()
+        # Clean terminal box drawing characters
+        for c in ["│", "─", "┌", "┐", "└", "┘", "├", "┤", "┼", "▐", "▌", "█", "▄", "▀"]:
+            l_strip = l_strip.replace(c, "")
+        l_strip = l_strip.strip()
         l_lower = l_strip.lower()
         
         if not l_strip or any(k in l_lower for k in skip_keywords) or l_lower.startswith("account:"):
