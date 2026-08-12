@@ -158,7 +158,7 @@ class AgySession:
         self,
         chat_id: int,
         model_name: str = "gemini-3.6-flash-low",
-        effort: str = "high",
+        effort: str = "low",
         mode: str = "default",
         conversation_id: Optional[str] = None,
         workspace: Optional[str] = None
