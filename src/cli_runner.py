@@ -226,10 +226,29 @@ class AgySession:
         return True
 
     def _detect_conversation_id(self):
-        """Detect conversation ID created by THIS bot's agy child process via directory delta."""
+        """Detect conversation ID created by THIS bot's agy child process via directory delta.
+
+        For 'latest' mode (--continue): resolves to actual UUID via agy CLI database,
+        since --continue reuses an existing brain directory and won't create a new one.
+        For new sessions (conversation_id=None): uses brain directory delta detection.
+        """
         if self.conversation_id and self.conversation_id != "latest":
             return
 
+        # Strategy 1: For "latest", resolve via agy CLI conversation_summaries.db
+        if self.conversation_id == "latest":
+            try:
+                from src.conversations import get_latest_conversation_id
+                resolved = get_latest_conversation_id()
+                if resolved:
+                    logger.info(f"Resolved 'latest' conversation_id to {resolved} for chat_id={self.chat_id}")
+                    self.conversation_id = resolved
+                    save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to resolve 'latest' conversation_id for chat_id={self.chat_id}: {e}")
+
+        # Strategy 2: Delta-detection for brand new sessions (conversation_id=None)
         brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
         if not brain_base.exists():
             return

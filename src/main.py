@@ -47,6 +47,7 @@ async def main():
         BotCommand(command="mode", description="🎯 Режим работы (Plan / Auto-Edits / Standard)"),
         BotCommand(command="cd", description="📂 Изменить рабочую папку (workspace)"),
         BotCommand(command="reset", description="🔄 Сбросить сессию агента"),
+        BotCommand(command="debug", description="🔍 Debug: состояние сессии и PTY"),
         BotCommand(command="start", description="👋 Справка и старт"),
     ])
 

@@ -97,14 +97,18 @@ def get_models_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_resume_keyboard() -> InlineKeyboardMarkup:
+def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMarkup:
+    """Build resume keyboard with current session indicator and new session button."""
     conversations = get_available_conversations(limit=15)
     buttons = [
+        [InlineKeyboardButton(text="🆕 Новая сессия (чистый диалог)", callback_data="resume_set:new")],
         [InlineKeyboardButton(text="🔄 Продолжить последнюю сессию (--continue)", callback_data="resume_set:latest")]
     ]
     for conv in conversations:
         date_part = f" ({conv['date']})" if conv['date'] else ""
-        label = f"💬 {conv['summary'][:28]}{date_part}"
+        is_current = current_conversation_id and conv['id'] == current_conversation_id
+        marker = "✅ " if is_current else "💬 "
+        label = f"{marker}{conv['summary'][:28]}{date_part}"
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"resume_set:{conv['id']}")])
 
     buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
@@ -388,8 +392,13 @@ async def cmd_reset(message: Message):
     if not is_allowed(message.from_user.id):
         return
     chat_id = message.chat.id
-    session_manager.reset_session(chat_id)
-    await message.answer("✨ <b>Новая сессия создана!</b> Все старые подпроцессы закрыты, следующий запрос начнёт чистый диалог.", parse_mode="HTML")
+    new = session_manager.new_session(chat_id)
+    await message.answer(
+        f"✨ <b>Новая сессия создана!</b>\n\n"
+        f"Настройки сохранены: <code>{new.model_name}</code> / <code>{new.effort}</code> / <code>{AVAILABLE_MODES.get(new.mode, new.mode)}</code>\n"
+        f"Следующий запрос начнёт чистый диалог.",
+        parse_mode="HTML"
+    )
 
 
 @router.message(Command("rename"))
@@ -433,6 +442,45 @@ async def cmd_track_jules(message: Message):
     
     await message.answer(f"✅ <b>Jules сессия добавлена в мониторинг!</b>\nИмя: <code>{session_name}</code>\n\nВы получите уведомление, когда она завершится.", parse_mode="HTML")
 
+
+@router.message(Command("debug"))
+async def cmd_debug(message: Message):
+    """Debug command: shows full session state for troubleshooting."""
+    if not is_allowed(message.from_user.id):
+        return
+    session = session_manager.get_session(message.chat.id)
+    pty_alive = bool(session.child and session.child.isalive())
+    pty_pid = session.child.pid if session.child else None
+
+    from src.conversations import get_latest_conversation_id
+    latest_conv = get_latest_conversation_id()
+
+    from pathlib import Path
+    brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+    brain_dirs_count = 0
+    if brain_base.exists():
+        brain_dirs_count = sum(1 for d in brain_base.iterdir() if d.is_dir() and not d.name.startswith("."))
+
+    text = (
+        f"🔍 <b>Debug Info — Session State</b>\n\n"
+        f"<b>chat_id:</b> <code>{message.chat.id}</code>\n"
+        f"<b>user_id:</b> <code>{message.from_user.id}</code>\n\n"
+        f"<b>── Session ──</b>\n"
+        f"<b>conversation_id:</b> <code>{session.conversation_id or 'None (new session)'}</code>\n"
+        f"<b>model:</b> <code>{session.model_name}</code>\n"
+        f"<b>effort:</b> <code>{session.effort}</code>\n"
+        f"<b>mode:</b> <code>{session.mode}</code>\n"
+        f"<b>workspace:</b> <code>{session.workspace or 'Home Directory'}</code>\n\n"
+        f"<b>── PTY Process ──</b>\n"
+        f"<b>PTY alive:</b> <code>{pty_alive}</code>\n"
+        f"<b>PTY PID:</b> <code>{pty_pid or 'N/A'}</code>\n"
+        f"<b>auth_signature:</b> <code>{session.spawn_auth_signature[:24] + '...' if session.spawn_auth_signature else 'None'}</code>\n\n"
+        f"<b>── System ──</b>\n"
+        f"<b>active sessions:</b> <code>{len(session_manager.sessions)}</code>\n"
+        f"<b>brain directories:</b> <code>{brain_dirs_count}</code>\n"
+        f"<b>latest conv (global):</b> <code>{latest_conv[:8] + '...' if latest_conv else 'None'}</code>\n"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 def get_workspace_keyboard() -> InlineKeyboardMarkup:
     """Build an interactive inline keyboard listing project folders in /root/lab and subdirectories."""
@@ -553,9 +601,16 @@ async def cmd_cd(message: Message):
 async def cmd_resume(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    kb = get_resume_keyboard()
+    session = session_manager.get_session(message.chat.id)
+    kb = get_resume_keyboard(current_conversation_id=session.conversation_id)
+    current_info = ""
+    if session.conversation_id:
+        if session.conversation_id == "latest":
+            current_info = "\n\n💬 <b>Текущая:</b> Последняя активная (--continue)"
+        else:
+            current_info = f"\n\n💬 <b>Текущая:</b> <code>{session.conversation_id[:8]}...</code>"
     await message.answer(
-        "📂 <b>Выберите сохраненную сессию из истории agy CLI для возобновления:</b>",
+        f"📂 <b>Выберите сохраненную сессию из истории agy CLI для возобновления:</b>{current_info}",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -568,12 +623,17 @@ async def process_resume_callback(callback_query: CallbackQuery):
     conv_id = callback_query.data.split("resume_set:")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
 
-    if conv_id == "latest":
+    if conv_id == "new":
+        session_manager.new_session(callback_query.message.chat.id)
+        text = f"✨ <b>Новая чистая сессия создана!</b>\nНастройки сохранены. Следующий запрос начнёт новый диалог."
+    elif conv_id == "latest":
         session.set_conversation("latest")
         text = "🔄 <b>Возобновлена последняя активная сессия agy CLI (<code>--continue</code>)!</b>"
     else:
         session.set_conversation(conv_id)
-        text = f"✅ <b>Сессия возобновлена!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>\n\nСледующий запрос продолжится в контексте выложенного диалога."
+        title = get_conversation_title(conv_id)
+        title_display = f"\n📝 <b>Название:</b> <i>{title}</i>" if title else ""
+        text = f"✅ <b>Сессия возобновлена!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nСледующий запрос продолжится в контексте выбранного диалога."
 
     await callback_query.answer("Сессия переключена!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
@@ -821,7 +881,9 @@ async def handle_message(message: Message):
         await check_and_send_artifacts(message, session)
 
     except Exception as e:
-        status_task.cancel()
         logger.error(f"Error handling message for chat_id={message.chat.id}: {e}", exc_info=True)
-        await safe_edit_text(placeholder, f"❌ <b>Произошла ошибка:</b> {e}")
+        try:
+            await safe_edit_text(placeholder, f"❌ <b>Произошла ошибка:</b> {e}")
+        except Exception:
+            pass
 

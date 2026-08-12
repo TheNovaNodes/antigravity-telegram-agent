@@ -38,7 +38,43 @@ class SessionManager:
             self.sessions[chat_id] = session
         return self.sessions[chat_id]
 
+    def new_session(self, chat_id: int) -> 'AgySession':
+        """Create a new conversation while preserving user preferences (model, effort, mode, workspace)."""
+        old_session = self.sessions.get(chat_id)
+        # Preserve user preferences from current session or load from DB
+        if old_session:
+            preserved = {
+                "model_name": old_session.model_name,
+                "effort": old_session.effort,
+                "mode": old_session.mode,
+                "workspace": old_session.workspace,
+            }
+            old_session.close()
+        else:
+            saved = load_user_session(chat_id)
+            preserved = {
+                "model_name": saved.get("model_name", "gemini-3.6-flash-low") if saved else "gemini-3.6-flash-low",
+                "effort": saved.get("effort", "low") if saved else "low",
+                "mode": saved.get("mode", "default") if saved else "default",
+                "workspace": saved.get("workspace") if saved else None,
+            }
+
+        new = AgySession(
+            chat_id,
+            model_name=preserved["model_name"],
+            effort=preserved["effort"],
+            mode=preserved["mode"],
+            conversation_id=None,
+            workspace=preserved["workspace"]
+        )
+        self.sessions[chat_id] = new
+        self.last_accessed[chat_id] = time.time()
+        save_user_session(chat_id, new.model_name, new.effort, new.mode, None, new.workspace)
+        logger.info(f"Created new session for chat_id={chat_id} preserving preferences: model={new.model_name}, effort={new.effort}, mode={new.mode}")
+        return new
+
     def reset_session(self, chat_id: int) -> bool:
+        """Full reset: delete all saved preferences and close PTY. Use new_session() for /new instead."""
         delete_user_session(chat_id)
         self.last_accessed.pop(chat_id, None)
         if chat_id in self.sessions:
