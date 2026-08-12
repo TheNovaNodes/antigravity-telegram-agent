@@ -349,13 +349,14 @@ class AgySession:
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
 
-    async def get_response(self, prompt: str) -> str:
-        """Sends prompt to agy, waits for reasoning/generation, renders clean screen output."""
+    async def stream_response(self, prompt: str):
+        """Yields progressive formatted text chunks as agy generates content on screen."""
         async with self._lock:
             await self._ensure_started()
 
             if not self.child or not self.child.isalive():
-                return "⚠️ Не удалось запустить CLI-процесс. Попробуйте /reset и повторите запрос."
+                yield "⚠️ Не удалось запустить CLI-процесс. Попробуйте /new и повторите запрос."
+                return
 
             clean_prompt = prompt.replace("\n", " ").strip()
             try:
@@ -373,6 +374,7 @@ class AgySession:
             received_content_bytes = False
             last_content_hash = None
             content_stable_ticks = 0
+            last_yielded_text = ""
 
             while True:
                 try:
@@ -381,21 +383,25 @@ class AgySession:
                     )
                     if chunk:
                         stream.feed(chunk)
-                        # Only count non-spinner chunks (>6 bytes) as real content
                         if len(chunk) > 6:
                             received_content_bytes = True
                 except pexpect.TIMEOUT:
                     total_timeout_count += 1
 
-                    # Every 10 ticks (~1s), check content stability
-                    if total_timeout_count % 10 == 0:
+                    # Check content stability & stream updates every 15 ticks (~1.5s)
+                    if total_timeout_count % 15 == 0:
                         content_lines = [l for l in _safe_screen_display(screen) if l.strip()]
                         content_hash = hash(tuple(content_lines))
                         
+                        if received_content_bytes:
+                            formatted = format_dyslexia_friendly_text(list(_safe_screen_display(screen)), prompt=prompt)
+                            if formatted.strip() and formatted != last_yielded_text:
+                                last_yielded_text = formatted
+                                yield formatted
+
                         if received_content_bytes and content_hash == last_content_hash:
                             content_stable_ticks += 1
-                            # Content unchanged for ~3 seconds = response complete
-                            if content_stable_ticks >= 3:
+                            if content_stable_ticks >= 2:  # ~3 sec total stability
                                 break
                         else:
                             content_stable_ticks = 0
@@ -416,12 +422,19 @@ class AgySession:
                     break
 
             lines = list(_safe_screen_display(screen))
-            formatted_response = format_dyslexia_friendly_text(lines, prompt=prompt)
-            if not formatted_response.strip():
+            final_formatted = format_dyslexia_friendly_text(lines, prompt=prompt)
+            if not final_formatted.strip():
                 logger.warning(f"Empty or thinking-suppressed response detected from model {self.model_name} for chat_id={self.chat_id}")
 
             self._detect_conversation_id()
-            return formatted_response
+            yield final_formatted
+
+    async def get_response(self, prompt: str) -> str:
+        """Sends prompt to agy and returns final rendered response."""
+        res = ""
+        async for chunk in self.stream_response(prompt):
+            res = chunk
+        return res
 
     async def get_usage_info(self) -> str:
         """Sends /usage to agy, scrolls modal overlay to capture all model quotas, and closes modal cleanly."""

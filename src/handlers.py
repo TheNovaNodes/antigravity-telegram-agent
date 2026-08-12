@@ -758,35 +758,21 @@ async def handle_message(message: Message):
     placeholder = await message.answer("🤔 Думаю...")
     session = session_manager.get_session(message.chat.id)
 
-    async def update_thinking_status(msg: Message):
-        import time
-        start_time = time.time()
-        states = ["🤔 Думаю.", "🤔 Думаю..", "🤔 Думаю..."]
-        i = 0
-        while True:
-            await asyncio.sleep(2.5)
-            elapsed = int(time.time() - start_time)
-            i = (i + 1) % len(states)
-            state = states[i]
-            if elapsed > 45:
-                text = f"{state}\n<i>Глубокий анализ ({elapsed} сек)</i>"
-            elif elapsed > 15:
-                text = f"{state}\n<i>Ожидание ответа модели ({elapsed} сек)</i>"
-            else:
-                text = f"{state} ({elapsed} сек)"
-            try:
-                await msg.edit_text(text, parse_mode="HTML")
-            except Exception:
-                pass
-
-    status_task = asyncio.create_task(update_thinking_status(placeholder))
+    last_edit_time = 0
+    last_text = ""
+    response_text = ""
 
     try:
-        response_text = await session.get_response(message.text)
-        
-        # Stop the live status updating
-        status_task.cancel()
-        
+        import time
+        async for partial_text in session.stream_response(message.text):
+            response_text = partial_text
+            now = time.time()
+            if now - last_edit_time > 1.5 and partial_text.strip() and partial_text != last_text:
+                last_edit_time = now
+                last_text = partial_text
+                disp_text = partial_text[:3800] + "\n\n<i>⏳ Печатаю...</i>" if len(partial_text) > 3800 else partial_text + "\n\n<i>⏳ Печатаю...</i>"
+                await safe_edit_text(placeholder, disp_text)
+
         # Log structured execution audit log
         log_audit_event(
             user_id=message.from_user.id,
