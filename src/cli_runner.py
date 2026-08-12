@@ -308,7 +308,7 @@ class AgySession:
             screen = pyte.Screen(120, 500)
             stream = pyte.ByteStream(screen)
             idle_count = 0
-            while idle_count < 3:
+            while idle_count < 20:
                 try:
                     chunk = await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
                     if chunk:
@@ -319,6 +319,7 @@ class AgySession:
                             logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
                             self.child.send(b"\r\n")
                             screen.reset()
+                            break
                     else:
                         break
                     await asyncio.sleep(0.01)
