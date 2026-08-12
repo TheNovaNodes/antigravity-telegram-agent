@@ -226,12 +226,7 @@ class AgySession:
         return True
 
     def _detect_conversation_id(self):
-        """Detect conversation ID created by THIS bot's agy child process.
-        
-        Only looks at conversations created AFTER the child was spawned,
-        and only if we don't already have a conversation_id set.
-        Avoids hijacking CLI or subagent conversations.
-        """
+        """Detect conversation ID created by THIS bot's agy child process via directory delta."""
         if self.conversation_id and self.conversation_id != "latest":
             return
 
@@ -240,41 +235,19 @@ class AgySession:
             return
 
         try:
-            child_pid = getattr(self.child, "pid", None) if self.child else None
-            if not child_pid:
-                return
-
-            # Look for the most recently created conversation dir
-            # that was created AFTER our child process started
-            import psutil
-            try:
-                child_create_time = psutil.Process(child_pid).create_time()
-            except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError):
-                # If psutil not available, skip detection to avoid grabbing wrong conversation
-                return
-
             uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-            best_id = None
-            best_ctime = 0
-
-            for d in brain_base.iterdir():
-                if d.is_dir() and uuid_pattern.match(d.name):
-                    try:
-                        # Use creation time (st_ctime), not modification time
-                        ctime = d.stat().st_ctime
-                        # Only consider dirs created AFTER our child process spawned
-                        if ctime >= child_create_time - 5:  # 5 sec grace
-                            if ctime > best_ctime:
-                                best_ctime = ctime
-                                best_id = d.name
-                    except Exception:
-                        pass
-
-            if best_id and best_id != self.conversation_id:
-                old_id = self.conversation_id
-                self.conversation_id = best_id
-                logger.info(f"Detected conversation_id={best_id} for chat_id={self.chat_id} (was: {old_id})")
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+            known = getattr(self, "_spawn_brain_dirs", set())
+            current = set(d.name for d in brain_base.iterdir() if d.is_dir() and uuid_pattern.match(d.name))
+            
+            new_dirs = list(current - known)
+            if new_dirs:
+                # Pick the newest directory from new_dirs
+                best_id = max(new_dirs, key=lambda name: (brain_base / name).stat().st_mtime)
+                if best_id != self.conversation_id:
+                    old_id = self.conversation_id
+                    self.conversation_id = best_id
+                    logger.info(f"Detected newly spawned conversation_id={best_id} for chat_id={self.chat_id} (was: {old_id})")
+                    save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         except Exception as e:
             logger.warning(f"Failed to detect conversation_id for chat_id={self.chat_id}: {e}")
 
@@ -313,6 +286,12 @@ class AgySession:
             
             mcp_env = mcp_config.get_env_dict()
             env.update(mcp_env)
+
+            brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+            if brain_base.exists():
+                self._spawn_brain_dirs = set(d.name for d in brain_base.iterdir() if d.is_dir())
+            else:
+                self._spawn_brain_dirs = set()
 
             self.child = pexpect.spawn(
                 AGY_BINARY_PATH,
@@ -410,14 +389,14 @@ class AgySession:
                             content_stable_ticks = 0
                         last_content_hash = content_hash
 
-                    # Hard timeout: 120 seconds max
-                    if total_timeout_count >= 1200:
-                        logger.warning(f"Max timeout reached (120s) for chat_id={self.chat_id}")
+                    # Hard timeout: 300 seconds max
+                    if total_timeout_count >= 3000:
+                        logger.warning(f"Max timeout reached (300s) for chat_id={self.chat_id}")
                         break
 
-                    # No content at all after 60 seconds = agy failed to respond
-                    if not received_content_bytes and total_timeout_count >= 600:
-                        logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 60s)")
+                    # No content at all after 180 seconds = agy failed to respond or is stuck loading huge context
+                    if not received_content_bytes and total_timeout_count >= 1800:
+                        logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 180s)")
                         break
 
                     await asyncio.sleep(0.05)
