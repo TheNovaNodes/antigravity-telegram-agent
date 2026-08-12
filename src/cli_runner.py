@@ -328,7 +328,8 @@ class AgySession:
             stream = pyte.ByteStream(screen)
             idle_count = 0
             menu_confirmed = False
-            while idle_count < 40:
+            # MCP servers can take a while to initialize, wait up to 60 seconds (120 * 0.5s)
+            while idle_count < 120:
                 try:
                     chunk = await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
                     if chunk:
@@ -337,19 +338,28 @@ class AgySession:
                         
                         if not menu_confirmed:
                             banner_text = "\n".join(_safe_screen_display(screen)).lower()
+                            
+                            # Abort if auth requires interactive login, otherwise we hang on OAuth
+                            if "select login method" in banner_text:
+                                logger.error(f"Auth lost detected for chat_id={self.chat_id}. Aborting.")
+                                self.close()
+                                raise RuntimeError("⚠️ <b>Агент потерял авторизацию!</b>\nПожалуйста, зайдите на сервер через SSH от пользователя root и выполните команду <code>agy auth login</code>, затем повторите запрос.")
+
                             if any(phrase in banner_text for phrase in ["arrow keys to navigate", "use arrow keys", "what would you like to do"]):
                                 logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
                                 self.child.send(b"\r\n")
                                 menu_confirmed = True
                                 screen.reset()
-                        else:
-                            # Wait for the actual prompt to appear after menu transition
-                            raw_lines = _safe_screen_display(screen)
-                            for l in reversed(raw_lines):
-                                clean_l = l.strip()
-                                if clean_l in (">", "❯", "›") or clean_l.startswith("> ") or clean_l.startswith("❯ ") or clean_l.startswith("› ") or clean_l.startswith("? "):
-                                    logger.info("Ready prompt detected after cold start.")
-                                    return
+                                continue  # Skip prompt check on the exact tick we confirm the menu
+
+                        # Wait for the actual prompt to appear
+                        raw_lines = _safe_screen_display(screen)
+                        for l in reversed(raw_lines):
+                            clean_l = l.strip()
+                            clean_l_no_ansi = re.sub(r'\x1b\[.*?m', '', clean_l)
+                            if clean_l_no_ansi in (">", "❯", "›") or clean_l_no_ansi.startswith("> ") or clean_l_no_ansi.startswith("❯ ") or clean_l_no_ansi.startswith("› ") or clean_l_no_ansi.startswith("? "):
+                                logger.info("Ready prompt detected after cold start.")
+                                return
                     else:
                         break
                     await asyncio.sleep(0.01)
@@ -358,6 +368,11 @@ class AgySession:
                     await asyncio.sleep(0.05)
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
+            
+            # If we exited the loop without returning, we timed out or hit EOF
+            logger.error(f"Failed to detect ready prompt for chat_id={self.chat_id}. PTY might be hung.")
+            self.close()
+            raise RuntimeError("⚠️ <b>Ошибка запуска:</b> Процесс CLI не смог корректно стартовать или завис. Пожалуйста, попробуйте сбросить сессию через <code>/new</code>.")
 
     async def stream_response(self, prompt: str):
         """Yields progressive formatted text chunks as agy generates content on screen."""
