@@ -342,11 +342,14 @@ async def process_model_callback(callback_query: CallbackQuery):
     alias = callback_query.data.split(":")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_model(alias):
+        await callback_query.answer("Модель изменена!")
         await callback_query.message.edit_text(
             f"✅ <b>Модель успешно изменена!</b>\nНовая модель: <code>{session.model_name}</code>",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
+    else:
+        await callback_query.answer("Эта модель уже выбрана!")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_effort:"))
 async def process_effort_callback(callback_query: CallbackQuery):
@@ -355,11 +358,14 @@ async def process_effort_callback(callback_query: CallbackQuery):
     level = callback_query.data.split(":")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_effort(level):
+        await callback_query.answer("Effort изменен!")
         await callback_query.message.edit_text(
             f"✅ <b>Effort успешно изменен!</b>\nУровень рассуждений: <code>{session.effort.upper()}</code>",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
+    else:
+        await callback_query.answer("Этот effort уже выбран!")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_mode:"))
 async def process_mode_callback(callback_query: CallbackQuery):
@@ -368,11 +374,14 @@ async def process_mode_callback(callback_query: CallbackQuery):
     mode_key = callback_query.data.split(":")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_mode(mode_key):
+        await callback_query.answer("Режим изменен!")
         await callback_query.message.edit_text(
             f"✅ <b>Execution Mode успешно изменен!</b>\nРежим: <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
+    else:
+        await callback_query.answer("Этот режим уже выбран!")
 
 @router.message(Command("reset"), Command("new"), Command("clear"))
 async def cmd_reset(message: Message):
