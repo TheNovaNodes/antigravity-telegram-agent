@@ -750,7 +750,7 @@ async def check_and_send_artifacts(message: Message, session):
 async def handle_message(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    if not message.text:
+    if not message.text or message.text.startswith("/"):
         return
 
     # Trigger Telegram typing action
