@@ -389,14 +389,14 @@ class AgySession:
                             content_stable_ticks = 0
                         last_content_hash = content_hash
 
-                    # Hard timeout: 300 seconds max
-                    if total_timeout_count >= 3000:
-                        logger.warning(f"Max timeout reached (300s) for chat_id={self.chat_id}")
+                    # Hard timeout: 1800 seconds max (30 min)
+                    if total_timeout_count >= 18000:
+                        logger.warning(f"Max timeout reached (1800s) for chat_id={self.chat_id}")
                         break
 
-                    # No content at all after 180 seconds = agy failed to respond or is stuck loading huge context
-                    if not received_content_bytes and total_timeout_count >= 1800:
-                        logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 180s)")
+                    # No content at all after 900 seconds = agy failed to respond or is stuck loading huge context
+                    if not received_content_bytes and total_timeout_count >= 9000:
+                        logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 900s)")
                         break
 
                     await asyncio.sleep(0.05)
