@@ -31,14 +31,12 @@ def _safe_screen_display(screen):
         return screen.display
 
 AVAILABLE_MODELS = {
-    "gemini-flash-high": "gemini-3.6-flash-high",
-    "gemini-flash-medium": "gemini-3.6-flash-medium",
-    "gemini-flash-low": "gemini-3.6-flash-low",
-    "gemini-pro-high": "gemini-3.1-pro-high",
-    "gemini-pro-low": "gemini-3.1-pro-low",
-    "claude-sonnet": "claude-sonnet-4-6",
-    "claude-opus": "claude-opus-4-6-thinking",
-    "gpt-oss": "gpt-oss-120b-medium"
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "gemini-2.5-pro": "gemini-2.5-pro",
+    "gemini-2.0-thinking": "gemini-2.0-flash-thinking-exp-01-21",
+    "gemini-2.0-pro": "gemini-2.0-pro-exp-02-05",
+    "gemini-2.0-flash": "gemini-2.0-flash",
+    "gemini-1.5-pro": "gemini-1.5-pro"
 }
 
 AVAILABLE_EFFORTS = ["low", "medium", "high"]
@@ -157,7 +155,7 @@ class AgySession:
     def __init__(
         self,
         chat_id: int,
-        model_name: str = "gemini-3.6-flash-low",
+        model_name: str = "gemini-2.5-flash",
         effort: str = "low",
         mode: str = "default",
         conversation_id: Optional[str] = None,
@@ -165,7 +163,7 @@ class AgySession:
     ):
         self.chat_id = chat_id
         self.child = None
-        self.model_name = model_name
+        self.model_name = model_name if model_name in AVAILABLE_MODELS.values() else "gemini-2.5-flash"
         self.effort = effort
         self.mode = mode
         self.conversation_id: Optional[str] = conversation_id
@@ -427,6 +425,12 @@ class AgySession:
 
                     await asyncio.sleep(0.05)
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
+                    raw_lines = _safe_screen_display(screen)
+                    final_text = "\n".join(l.strip() for l in raw_lines if l.strip())
+                    if final_text and not received_content_bytes:
+                        clean = re.sub(r'\x1b\[.*?m', '', final_text)
+                        yield clean
+                        received_content_bytes = True
                     break
 
             lines = list(_safe_screen_display(screen))
