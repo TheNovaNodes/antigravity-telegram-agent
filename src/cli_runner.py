@@ -308,18 +308,29 @@ class AgySession:
             screen = pyte.Screen(120, 500)
             stream = pyte.ByteStream(screen)
             idle_count = 0
-            while idle_count < 20:
+            menu_confirmed = False
+            while idle_count < 40:
                 try:
                     chunk = await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
                     if chunk:
                         stream.feed(chunk)
                         idle_count = 0
-                        banner_text = "\n".join(_safe_screen_display(screen)).lower()
-                        if any(phrase in banner_text for phrase in ["arrow keys to navigate", "use arrow keys", "what would you like to do"]):
-                            logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
-                            self.child.send(b"\r\n")
-                            screen.reset()
-                            break
+                        
+                        if not menu_confirmed:
+                            banner_text = "\n".join(_safe_screen_display(screen)).lower()
+                            if any(phrase in banner_text for phrase in ["arrow keys to navigate", "use arrow keys", "what would you like to do"]):
+                                logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
+                                self.child.send(b"\r\n")
+                                menu_confirmed = True
+                                screen.reset()
+                        else:
+                            # Wait for the actual prompt to appear after menu transition
+                            raw_lines = _safe_screen_display(screen)
+                            for l in reversed(raw_lines):
+                                clean_l = l.strip()
+                                if clean_l in (">", "❯", "›") or clean_l.startswith("> ") or clean_l.startswith("❯ ") or clean_l.startswith("› ") or clean_l.startswith("? "):
+                                    logger.info("Ready prompt detected after cold start.")
+                                    return
                     else:
                         break
                     await asyncio.sleep(0.01)
