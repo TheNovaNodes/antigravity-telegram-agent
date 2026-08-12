@@ -374,15 +374,13 @@ async def process_mode_callback(callback_query: CallbackQuery):
             parse_mode="HTML"
         )
 
-@router.message(Command("reset"))
+@router.message(Command("reset"), Command("new"), Command("clear"))
 async def cmd_reset(message: Message):
     if not is_allowed(message.from_user.id):
         return
     chat_id = message.chat.id
-    if session_manager.reset_session(chat_id):
-        await message.answer("🔄 <b>Сессия сброшена!</b>", parse_mode="HTML")
-    else:
-        await message.answer("ℹ️ Активной сессии не найдено.", parse_mode="HTML")
+    session_manager.reset_session(chat_id)
+    await message.answer("✨ <b>Новая сессия создана!</b> Все старые подпроцессы закрыты, следующий запрос начнёт чистый диалог.", parse_mode="HTML")
 
 
 @router.message(Command("rename"))

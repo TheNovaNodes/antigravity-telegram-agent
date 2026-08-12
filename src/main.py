@@ -36,6 +36,7 @@ async def main():
     # Register Telegram native slash command menu
     await bot.set_my_commands([
         BotCommand(command="menu", description="🎛️ Главный центр управления AntigravityTelegramAgent"),
+        BotCommand(command="new", description="✨ Начать новую сессию агента (/new или /reset)"),
         BotCommand(command="usage", description="📊 Лимиты и квоты нейросетей (/usage)"),
         BotCommand(command="auth", description="🔑 Просмотр и Hot Reload аккаунта Google"),
         BotCommand(command="resume", description="📂 Возобновить сессию из истории (/resume)"),
