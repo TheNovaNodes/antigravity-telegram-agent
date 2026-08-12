@@ -305,10 +305,10 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
-            self.child.setwinsize(6000, 120)
+            self.child.setwinsize(500, 120)
             self.spawn_auth_signature = current_auth_sig
 
-            screen = pyte.Screen(120, 6000)
+            screen = pyte.Screen(120, 500)
             stream = pyte.ByteStream(screen)
             idle_count = 0
             while idle_count < 3:
@@ -348,12 +348,13 @@ class AgySession:
                 await self._ensure_started()
                 self.child.send((clean_prompt + "\r\n").encode("utf-8"))
 
-            screen = pyte.Screen(120, 6000)
+            screen = pyte.Screen(120, 500)
             stream = pyte.ByteStream(screen)
 
             idle_count = 0
             total_timeout_count = 0
             received_bytes = False
+            is_actively_generating = False
 
             while True:
                 try:
@@ -364,33 +365,32 @@ class AgySession:
                         received_bytes = True
                         stream.feed(chunk)
                         idle_count = 0
-                    else:
-                        break
-                    await asyncio.sleep(0.01)
                 except pexpect.TIMEOUT:
                     total_timeout_count += 1
-                    
-                    # Inspect current screen content to see if model is still thinking or generating
-                    current_screen_text = "\n".join(_safe_screen_display(screen)).lower()
-                    is_actively_generating = any(k in current_screen_text for k in [
-                        "generating...", "thinking", "thought for", "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"
-                    ])
+                    idle_count += 1
+
+                    # Only scan screen for spinner indicators every 10 ticks to save CPU
+                    if total_timeout_count % 10 == 0:
+                        current_screen_text = "\n".join(_safe_screen_display(screen)).lower()
+                        is_actively_generating = any(k in current_screen_text for k in [
+                            "generating", "thinking", "thought for", "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"
+                        ])
 
                     if received_bytes:
-                        idle_count += 1
-                        # If still generating / thinking, allow up to 180 seconds of thinking time
+                        # If still generating / thinking, allow up to 120 seconds
                         if is_actively_generating:
-                            if total_timeout_count >= 1800:  # 180 seconds max
-                                logger.warning(f"Max generation timeout reached (180s) for chat_id={self.chat_id}")
+                            idle_count = 0  # reset silence counter while generating
+                            if total_timeout_count >= 1200:  # 120 seconds max
+                                logger.warning(f"Max generation timeout reached (120s) for chat_id={self.chat_id}")
                                 break
                         else:
-                            # Not generating indicator: wait for ~10 seconds of true silence (100 ticks of 0.1s)
-                            if idle_count >= 100:
+                            # Not generating: wait for ~3 seconds of true silence (30 ticks of 0.1s)
+                            if idle_count >= 30:
                                 break
-                    elif total_timeout_count >= 600:  # 60 seconds max timeout if initial bytes never arrived
+                    elif total_timeout_count >= 600:  # 60 seconds if no bytes at all
                         logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 60s)")
                         break
-                        
+
                     await asyncio.sleep(0.05)
                 except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
                     break
@@ -419,7 +419,7 @@ class AgySession:
             all_lines = []
 
             for _ in range(4):
-                screen = pyte.Screen(120, 6000)
+                screen = pyte.Screen(120, 500)
                 stream = pyte.ByteStream(screen)
                 idle_count = 0
                 while idle_count < 3:
