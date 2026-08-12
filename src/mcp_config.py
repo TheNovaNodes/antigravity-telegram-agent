@@ -166,7 +166,21 @@ class MCPConfigManager:
                     }
 
 
-        return {"mcpServers": mcp_servers}
+    def get_env_dict(self) -> Dict[str, str]:
+        """Returns environment variables dictionary for child CLI processes."""
+        env_dict = {}
+        servers = self.config.get("servers", {})
+        if "anythingllm" in servers:
+            s = servers["anythingllm"]
+            if s.get("api_key"):
+                env_dict["ANYTHINGLLM_API_KEY"] = s["api_key"]
+            if s.get("url"):
+                env_dict["ANYTHINGLLM_URL"] = s["url"]
+        if "searxng" in servers:
+            s = servers["searxng"]
+            if s.get("url"):
+                env_dict["SEARXNG_URL"] = s["url"]
+        return env_dict
 
 
 mcp_config = MCPConfigManager()

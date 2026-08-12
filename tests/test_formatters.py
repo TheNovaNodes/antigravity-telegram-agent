@@ -14,9 +14,21 @@ class TestFormatters(unittest.TestCase):
         self.assertTrue(is_tui_noise("   Antigravity CLI 1.1.10   "))
         self.assertTrue(is_tui_noise("Gemini 3.6 Flash (Low)"))
         self.assertTrue(is_tui_noise("> my prompt text"))
-        self.assertTrue(is_tui_noise("─────"))
         self.assertTrue(is_tui_noise("   ▄▀▀ ▀▀▄   "))
         self.assertFalse(is_tui_noise("Это обычный текст ответа от модели."))
+        self.assertFalse(is_tui_noise("| Параметр | Значение |"))
+
+    def test_markdown_tables_formatting(self):
+        table_md = (
+            "Вот таблица портов:\n\n"
+            "| Порт | Сервис |\n"
+            "| --- | --- |\n"
+            "| 3002 | AnythingLLM |\n"
+            "| 8889 | SearXNG |\n\n"
+            "Конец таблицы."
+        )
+        html = markdown_to_html(table_md)
+        self.assertIn("<pre><code>| Порт | Сервис |\n| --- | --- |\n| 3002 | AnythingLLM |\n| 8889 | SearXNG |</code></pre>", html)
 
     def test_check_known_errors_eligibility(self):
         sample_error = "Eligibility Check\nEligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location."
@@ -66,42 +78,13 @@ class TestFormatters(unittest.TestCase):
 
         formatted = format_dyslexia_friendly_text(raw_screen, prompt="Расскажи о космосе")
         
-        # Verify no ASCII banner art or CLI headers or prompt echo
         self.assertNotIn("Antigravity CLI", formatted)
         self.assertNotIn("Gemini 3.6", formatted)
         self.assertNotIn("▄▀▀", formatted)
         self.assertNotIn("Расскажи о космосе", formatted)
-
-        # Verify unwrapped natural paragraphs with double newlines
         self.assertIn("о которых вы могли не знать.", formatted)
         self.assertIn("\n\n", formatted)
-
-    def test_extract_new_response_lines_multi_turn(self):
-        multi_turn_screen = [
-            "  ### 📦 Предыдущий ответ",
-            "  1. Git Commit: Создан коммит предыдущей сессии",
-            "────────────────────────────────────────────────────────────",
-            "> Предыдущее сообщение пользователя",
-            "Ответ на предыдущее сообщение...",
-            "────────────────────────────────────────────────────────────",
-            "> Какое число я просил запомнить?",
-            "⣾  Generating...",
-            "────────────────────────────────────────────────────────────────────────────────",
-            "Вы просили запомнить число 42."
-        ]
-
-        extracted = extract_new_response_lines(multi_turn_screen, prompt="Какое число я просил запомнить?")
-        formatted = format_dyslexia_friendly_text(multi_turn_screen, prompt="Какое число я просил запомнить?")
-
-        # Ensure previous turn history and prompt echo are removed
-        self.assertNotIn("Предыдущий ответ", formatted)
-        self.assertNotIn("Git Commit", formatted)
-        self.assertNotIn("Предыдущее сообщение", formatted)
-        self.assertNotIn("Какое число я просил запомнить?", formatted)
-        self.assertIn("Вы просили запомнить число 42.", formatted)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -2,11 +2,11 @@
   "enabled": true,
   "servers": {
     "anythingllm": {
-      "name": "AnythingLLM Semantic Memory",
+      "name": "AnythingLLM Semantic Memory Gateway",
       "type": "memory",
       "plane": "data",
       "enabled": true,
-      "url": "http://127.0.0.1:8091/sse",
+      "url": "http://127.0.0.1:3002",
       "api_key": "",
       "workspace": "default"
     },
@@ -15,23 +15,32 @@
       "type": "admin",
       "plane": "control",
       "enabled": true,
-      "url": "http://127.0.0.1:8091/sse",
-      "api_key": ""
+      "url": "http://127.0.0.1:3002",
+      "api_key": "",
+      "command": "/root/lab/thenovanodes/anythingllm-mcp-control/.venv/bin/python",
+      "args": [
+        "-m",
+        "anythingllm_mcp_control.server"
+      ],
+      "env": {
+        "ANYTHINGLLM_BASE_URL": "http://127.0.0.1:3002/api/v1",
+        "ANYTHINGLLM_API_KEY": ""
+      }
     },
     "searxng": {
-      "name": "SearXNG Web Search",
+      "name": "SearXNG Web Search Gateway",
       "type": "search",
       "plane": "data",
       "enabled": true,
       "url": "http://127.0.0.1:8889",
-      "engines": "google,bing,duckduckgo"
+      "engines": "google,bing,duckduckgo,brave,github,stackoverflow,arxiv,wikipedia,qwant"
     },
     "nextcloud": {
       "name": "Nextcloud User CRM Gateway",
       "type": "crm",
       "plane": "data",
       "enabled": true,
-      "url": "http://127.0.0.1:8000/mcp/sse",
+      "url": "http://127.0.0.1:8000",
       "username": "",
       "app_password": ""
     },
@@ -40,9 +49,25 @@
       "type": "admin",
       "plane": "control",
       "enabled": false,
-      "url": "http://127.0.0.1:8000/mcp/sse",
+      "url": "http://127.0.0.1:8000",
       "username": "",
       "app_password": ""
+    },
+    "searxng-control": {
+      "name": "SearXNG Control Plane",
+      "type": "admin",
+      "plane": "control",
+      "enabled": true,
+      "command": "/root/lab/thenovanodes/searxng-mcp-control/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.server"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://127.0.0.1:8889",
+        "SEARXNG_SETTINGS_PATH": "/root/lab/shared/searxng/settings.yml",
+        "SEARXNG_CONTAINER_NAME": "searxng"
+      }
     },
     "google-jules-doctormes": {
       "name": "Google Jules AI Agent (Doctormes)",

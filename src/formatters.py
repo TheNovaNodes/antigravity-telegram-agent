@@ -10,8 +10,12 @@ def is_tui_noise(line: str, prompt: str = "") -> bool:
     if not s:
         return True
 
+    # Allow Markdown table lines starting with pipe
+    if s.startswith("|"):
+        return False
+
     # Filter ASCII art characters and TUI box borders
-    if any(c in s for c in ["▄", "▀", "█", "▌", "▐", "│", "─", "┌", "┐", "└", "┘", "├", "┤", "────"]):
+    if any(c in s for c in ["▄", "▀", "█", "▌", "▐", "┌", "┐", "└", "┘", "├", "┤", "────"]):
         return True
 
     lower = s.lower()
@@ -76,10 +80,18 @@ def check_known_errors(text: str) -> str | None:
 
 def highlight_tech_terms(text: str) -> str:
     """Highlight standalone technical terms, filenames, and paths in mono font for dyslexia readability."""
-    # Pattern matching file paths and files with extensions like src/db.py, config.json, main.py
     path_pattern = r'(?<![A-Za-z0-9_/<>&;`"])(\b[a-zA-Z0-9_\-\.]+\/[a-zA-Z0-9_\-\./\.]+\b|\b[a-zA-Z0-9_\-]+\.(?:py|json|md|txt|sh|html|css|js|yml|yaml|toml|service)\b)(?![A-Za-z0-9_/<>&;`"])'
     text = re.sub(path_pattern, r'<code>\1</code>', text)
     return text
+
+
+def format_table_block(table_lines: list[str]) -> str:
+    """Format markdown table lines into clean monospace Rich Text HTML."""
+    if not table_lines:
+        return ""
+    joined = "\n".join(table_lines)
+    escaped = joined.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<pre><code>{escaped}</code></pre>"
 
 
 def markdown_to_html(text: str) -> str:
@@ -87,6 +99,7 @@ def markdown_to_html(text: str) -> str:
 
     Handles:
     - Code blocks ```lang ... ``` -> <pre><code class="language-lang">...</code></pre>
+    - Tables | col | col | -> <pre><code>...</code></pre>
     - Inline code `code` -> <code>code</code>
     - Bold **text** / __text__ -> <b>text</b>
     - Italic *text* -> <i>text</i>
@@ -104,20 +117,15 @@ def markdown_to_html(text: str) -> str:
     def save_code_block(match):
         lang = match.group(1) or ""
         code_content = match.group(2)
-        # Escape code block content safely
         escaped_code = code_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         idx = len(code_blocks)
         class_attr = f' class="language-{lang.strip()}"' if lang.strip() else ""
         code_blocks.append(f'<pre><code{class_attr}>{escaped_code}</code></pre>')
         return f"__CODE_BLOCK_{idx}__"
 
-    # Extract ```lang\ncode``` blocks first
     text_processed = re.sub(r"```(\w*)\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
-
-    # Safe HTML escaping for main text
     escaped = text_processed.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    # Restore code blocks back (their contents are already safely escaped)
     for idx, cb in enumerate(code_blocks):
         escaped = escaped.replace(f"__CODE_BLOCK_{idx}__", cb)
 
@@ -125,6 +133,7 @@ def markdown_to_html(text: str) -> str:
     processed_lines = []
     in_quote = False
     quote_buffer = []
+    table_buffer = []
 
     def flush_quote():
         nonlocal quote_buffer, in_quote
@@ -134,9 +143,24 @@ def markdown_to_html(text: str) -> str:
             quote_buffer = []
         in_quote = False
 
+    def flush_table():
+        nonlocal table_buffer
+        if table_buffer:
+            t_text = "\n".join(table_buffer)
+            processed_lines.append(f"<pre><code>{t_text}</code></pre>")
+            table_buffer = []
+
     for line in lines:
         l = line.rstrip()
         stripped = l.strip()
+
+        # Handle Markdown Tables (lines starting with '|')
+        if stripped.startswith("|") and stripped.endswith("|"):
+            flush_quote()
+            table_buffer.append(stripped)
+            continue
+        elif table_buffer:
+            flush_table()
 
         # Check separator lines
         if stripped in ("---", "***", "___", "───────────────"):
@@ -157,7 +181,6 @@ def markdown_to_html(text: str) -> str:
         header_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         if header_match:
             header_text = header_match.group(2)
-            # Format header clearly for reading
             l = f"<b><u>{header_text}</u></b>"
             processed_lines.append("")
             processed_lines.append(l)
@@ -165,36 +188,26 @@ def markdown_to_html(text: str) -> str:
 
         # Convert Markdown formatting outside code blocks
         if "__CODE_BLOCK_" not in l and "<pre>" not in l:
-            # Convert **bold** -> <b>bold</b>
             l = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", l)
             l = re.sub(r"__(.*?)__", r"<b>\1</b>", l)
-            # Convert `code` -> <code>code</code>
             l = re.sub(r"`(.*?)`", r"<code>\1</code>", l)
-            # Convert [text](url) -> <a href="url">text</a>
             l = re.sub(r"\[(.*?)\]\((https?://\S+)\)", r'<a href="\2">\1</a>', l)
-            # Convert *italic* -> <i>italic</i>
             l = re.sub(r"(?<!\w)\*(.*?)\*(?!\w)", r"<i>\1</i>", l)
-
-            # Auto-highlight standalone tech terms and file paths if not already in HTML tags
             l = highlight_tech_terms(l)
 
         processed_lines.append(l)
 
     flush_quote()
+    flush_table()
     return "\n".join(processed_lines)
 
 
 def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") -> list[str]:
-    """Isolate and extract ONLY the new response generated after the user's prompt.
-
-    Discards leftover screen buffer from previous turns and prompt echoes.
-    """
+    """Isolate and extract ONLY the new response generated after the user's prompt."""
     if not raw_screen_display:
         return []
 
     clean_prompt = prompt.replace("\n", " ").strip() if prompt else ""
-
-    # 1. Find the anchor line index where the user's prompt appears in raw_screen_display
     prompt_idx = -1
 
     if clean_prompt:
@@ -206,7 +219,6 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
                 prompt_idx = idx
                 break
 
-    # 2. Fallback search for last prompt marker (> ...)
     if prompt_idx == -1:
         for idx in range(len(raw_screen_display) - 1, -1, -1):
             line = raw_screen_display[idx].strip()
@@ -214,13 +226,11 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
                 prompt_idx = idx
                 break
 
-    # 3. Slice display lines starting AFTER the prompt anchor
     if prompt_idx != -1:
         start_idx = prompt_idx + 1
         while start_idx < len(raw_screen_display):
             line = raw_screen_display[start_idx].strip()
             line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
-            # Check if this line is part of a multi-line wrapped prompt continuation
             if clean_prompt and line_clean and len(line_clean) > 3 and line_clean in clean_prompt:
                 start_idx += 1
             else:
@@ -231,15 +241,7 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
 
 
 def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "") -> str:
-    """Transform raw PTY terminal screen lines into clean, dyslexia-friendly formatted text.
-
-    1. Slices screen buffer to discard previous turn history and prompt echo.
-    2. Filters TUI banners, prompt echoes, status lines.
-    3. Intercepts eligibility & auth errors with friendly instructions.
-    4. Unwraps mid-sentence terminal line wraps into natural flowing paragraphs.
-    5. Applies generous spacing (double newlines) and clean bullet points for low cognitive load.
-    6. Converts to Telegram-safe Rich Text HTML formatting.
-    """
+    """Transform raw PTY terminal screen lines into clean, dyslexia-friendly formatted text with Rich Text tables."""
     raw_joined = "\n".join(raw_screen_display)
     known_err = check_known_errors(raw_joined)
     if known_err:
@@ -253,7 +255,6 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "
         if is_tui_noise(l, prompt):
             continue
 
-        # Strip leading TUI margins
         if l.startswith("    "):
             l = l[4:]
         elif l.startswith("   "):
@@ -266,7 +267,7 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "
     if not cleaned_lines:
         return ""
 
-    # Paragraph unwrapping and formatting
+    # Paragraph unwrapping and table preserving
     paragraphs = []
     curr = []
 
@@ -275,7 +276,16 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "
             curr.append(line)
         else:
             prev = curr[-1]
-            # Paragraph boundary triggers: sentence end punctuation, list items, headers, code blocks
+            # If current or previous is a table row, keep table lines contiguous
+            if line.startswith("|") or prev.startswith("|"):
+                if line.startswith("|") and prev.startswith("|"):
+                    curr.append(line)
+                else:
+                    paragraphs.append("\n".join(curr) if prev.startswith("|") else " ".join(curr))
+                    curr = [line]
+                continue
+
+            # Paragraph boundary triggers
             if (
                 prev.endswith((".", "!", "?", ":", "```")) or
                 line.startswith(("-", "*", "•", "1.", "2.", "3.", "4.", "5.", "#", ">")) or
@@ -287,7 +297,7 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "
                 curr.append(line)
 
     if curr:
-        paragraphs.append(" ".join(curr))
+        paragraphs.append("\n".join(curr) if curr[0].startswith("|") else " ".join(curr))
 
     joined_text = "\n\n".join(paragraphs).strip()
     return markdown_to_html(joined_text)
@@ -309,7 +319,6 @@ def format_usage_response(lines, email: str = "") -> str:
 
     for line in lines_list:
         l_strip = line.strip()
-        # Clean terminal box drawing characters
         for c in ["│", "─", "┌", "┐", "└", "┘", "├", "┤", "┼", "▐", "▌", "█", "▄", "▀"]:
             l_strip = l_strip.replace(c, "")
         l_strip = l_strip.strip()
@@ -359,4 +368,3 @@ def format_usage_response(lines, email: str = "") -> str:
         )
 
     return "\n".join(output_parts)
-
