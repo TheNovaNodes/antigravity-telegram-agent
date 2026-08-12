@@ -315,7 +315,7 @@ class AgySession:
                         stream.feed(chunk)
                         idle_count = 0
                         banner_text = "\n".join(_safe_screen_display(screen)).lower()
-                        if any(phrase in banner_text for phrase in ["arrow keys to navigate", "enter to select", "press enter"]):
+                        if any(phrase in banner_text for phrase in ["arrow keys to navigate", "use arrow keys", "what would you like to do"]):
                             logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
                             self.child.send(b"\r\n")
                             screen.reset()
