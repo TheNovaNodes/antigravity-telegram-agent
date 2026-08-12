@@ -390,7 +390,7 @@ class AgySession:
                                 l_str = l.strip()
                                 if l_str:
                                     clean_l = re.sub(r'\x1b\[.*?m', '', l_str)
-                                    if clean_l == ">" or clean_l == "❯" or clean_l.startswith("> ") or clean_l.startswith("❯ "):
+                                    if clean_l == ">" or clean_l == "❯" or clean_l.startswith("> ") or clean_l.startswith("❯ ") or clean_l.startswith("? "):
                                         is_prompt_ready = True
                                     break
                                     
