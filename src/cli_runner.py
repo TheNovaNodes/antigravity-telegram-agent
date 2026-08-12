@@ -15,7 +15,7 @@ import pyte
 from src.config import AGY_BINARY_PATH
 from src.db import save_user_session
 from src.mcp_config import mcp_config
-from src.formatters import format_dyslexia_friendly_text
+from src.formatters import format_dyslexia_friendly_text, extract_new_response_lines, is_tui_noise
 
 logger = logging.getLogger(__name__)
 
@@ -383,25 +383,28 @@ class AgySession:
                     )
                     if chunk:
                         stream.feed(chunk)
-                        if len(chunk) > 6:
-                            received_content_bytes = True
                 except pexpect.TIMEOUT:
                     total_timeout_count += 1
 
-                    # Check content stability & stream updates every 15 ticks (~1.5s)
-                    if total_timeout_count % 15 == 0:
-                        content_lines = [l for l in _safe_screen_display(screen) if l.strip()]
-                        content_hash = hash(tuple(content_lines))
-                        
-                        if received_content_bytes:
-                            formatted = format_dyslexia_friendly_text(list(_safe_screen_display(screen)), prompt=prompt)
+                    # Check content stability & stream updates every 10 ticks (~1s)
+                    if total_timeout_count % 10 == 0:
+                        raw_lines = _safe_screen_display(screen)
+                        new_lines = extract_new_response_lines(raw_lines, prompt=prompt)
+                        has_content = any(l.strip() and not is_tui_noise(l, prompt) for l in new_lines)
+
+                        if has_content:
+                            received_content_bytes = True
+                            formatted = format_dyslexia_friendly_text(list(raw_lines), prompt=prompt)
                             if formatted.strip() and formatted != last_yielded_text:
                                 last_yielded_text = formatted
                                 yield formatted
 
+                        content_lines = [l for l in raw_lines if l.strip()]
+                        content_hash = hash(tuple(content_lines))
+
                         if received_content_bytes and content_hash == last_content_hash:
                             content_stable_ticks += 1
-                            if content_stable_ticks >= 2:  # ~3 sec total stability
+                            if content_stable_ticks >= 2:  # ~2 sec stability
                                 break
                         else:
                             content_stable_ticks = 0
