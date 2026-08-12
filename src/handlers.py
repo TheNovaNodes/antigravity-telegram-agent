@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 def is_allowed(user_id: int) -> bool:
+    if not ALLOWED_USER_IDS:
+        return True
     return user_id in ALLOWED_USER_IDS
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
@@ -426,9 +428,15 @@ async def cmd_track_jules(message: Message):
 
 
 def get_workspace_keyboard() -> InlineKeyboardMarkup:
-    """Build an interactive inline keyboard listing project folders in /root and /root/LabDoctorM."""
+    """Build an interactive inline keyboard listing project folders in /root/lab and subdirectories."""
     import hashlib
-    dirs_to_check = [Path("/root"), Path("/root/LabDoctorM/projects"), Path("/root/LabDoctorM/workspaces")]
+    dirs_to_check = [
+        Path("/root/lab"),
+        Path("/root/lab/thedoctormes-hue"),
+        Path("/root/lab/thenovanodes"),
+        Path("/root/lab/playground"),
+        Path("/root")
+    ]
     buttons = []
     seen_paths = set()
 
@@ -460,7 +468,13 @@ async def process_workspace_callback(callback_query: CallbackQuery):
     
     if raw_hash != "home":
         import hashlib
-        dirs_to_check = [Path("/root"), Path("/root/LabDoctorM/projects"), Path("/root/LabDoctorM/workspaces")]
+        dirs_to_check = [
+            Path("/root/lab"),
+            Path("/root/lab/thedoctormes-hue"),
+            Path("/root/lab/thenovanodes"),
+            Path("/root/lab/playground"),
+            Path("/root")
+        ]
         found = False
         for base in dirs_to_check:
             if base.exists() and base.is_dir():

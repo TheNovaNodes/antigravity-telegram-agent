@@ -160,7 +160,7 @@ class MCPConfigManager:
                     env_var_name = f"JULES_API_KEY_{env_var_suffix}"
                     env_val = os.environ.get(env_var_name, "")
                     mcp_servers[key] = {
-                        "command": "/root/LabDoctorM/projects/google-jules-mcp/.venv/bin/google-jules-mcp",
+                        "command": "/root/lab/thenovanodes/google-jules-mcp/.venv/bin/google-jules-mcp",
                         "args": [],
                         "env": {"JULES_API_KEY": env_val} if env_val else {}
                     }

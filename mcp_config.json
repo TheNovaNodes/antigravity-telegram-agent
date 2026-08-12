@@ -50,7 +50,7 @@
       "plane": "data",
       "enabled": true,
       "url": "local",
-      "command": "/root/LabDoctorM/projects/google-jules-mcp/.venv/bin/google-jules-mcp"
+      "command": "/root/lab/thenovanodes/google-jules-mcp/.venv/bin/google-jules-mcp"
     },
     "google-jules-novanodes": {
       "name": "Google Jules AI Agent (TheNovaNodes)",
@@ -58,7 +58,7 @@
       "plane": "data",
       "enabled": true,
       "url": "local",
-      "command": "/root/LabDoctorM/projects/google-jules-mcp/.venv/bin/google-jules-mcp"
+      "command": "/root/lab/thenovanodes/google-jules-mcp/.venv/bin/google-jules-mcp"
     }
   }
 }
