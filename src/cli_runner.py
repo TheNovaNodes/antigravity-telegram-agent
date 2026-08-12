@@ -369,10 +369,10 @@ class AgySession:
             screen = pyte.Screen(120, 500)
             stream = pyte.ByteStream(screen)
 
-            idle_count = 0
             total_timeout_count = 0
-            received_bytes = False
-            is_actively_generating = False
+            received_content_bytes = False
+            last_content_hash = None
+            content_stable_ticks = 0
 
             while True:
                 try:
@@ -380,32 +380,34 @@ class AgySession:
                         self.child.read_nonblocking, size=4096, timeout=0.1
                     )
                     if chunk:
-                        received_bytes = True
                         stream.feed(chunk)
-                        idle_count = 0
+                        # Only count non-spinner chunks (>6 bytes) as real content
+                        if len(chunk) > 6:
+                            received_content_bytes = True
                 except pexpect.TIMEOUT:
                     total_timeout_count += 1
-                    idle_count += 1
 
-                    # Only scan screen for spinner indicators every 10 ticks to save CPU
+                    # Every 10 ticks (~1s), check content stability
                     if total_timeout_count % 10 == 0:
-                        current_screen_text = "\n".join(_safe_screen_display(screen)).lower()
-                        is_actively_generating = any(k in current_screen_text for k in [
-                            "generating", "thinking", "thought for", "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"
-                        ])
-
-                    if received_bytes:
-                        # If still generating / thinking, allow up to 120 seconds
-                        if is_actively_generating:
-                            idle_count = 0  # reset silence counter while generating
-                            if total_timeout_count >= 1200:  # 120 seconds max
-                                logger.warning(f"Max generation timeout reached (120s) for chat_id={self.chat_id}")
+                        content_lines = [l for l in _safe_screen_display(screen) if l.strip()]
+                        content_hash = hash(tuple(content_lines))
+                        
+                        if received_content_bytes and content_hash == last_content_hash:
+                            content_stable_ticks += 1
+                            # Content unchanged for ~3 seconds = response complete
+                            if content_stable_ticks >= 3:
                                 break
                         else:
-                            # Not generating: wait for ~3 seconds of true silence (30 ticks of 0.1s)
-                            if idle_count >= 30:
-                                break
-                    elif total_timeout_count >= 600:  # 60 seconds if no bytes at all
+                            content_stable_ticks = 0
+                        last_content_hash = content_hash
+
+                    # Hard timeout: 120 seconds max
+                    if total_timeout_count >= 1200:
+                        logger.warning(f"Max timeout reached (120s) for chat_id={self.chat_id}")
+                        break
+
+                    # No content at all after 60 seconds = agy failed to respond
+                    if not received_content_bytes and total_timeout_count >= 600:
                         logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 60s)")
                         break
 
