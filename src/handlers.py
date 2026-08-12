@@ -737,6 +737,16 @@ async def check_and_send_artifacts(message: Message, session):
 
     for artifact in unique_artifacts:
         try:
+            # Ensure UTF-8 BOM for text files so Cyrillic renders correctly in Telegram/Windows viewers
+            if artifact.suffix.lower() in ['.md', '.txt', '.csv', '.json']:
+                try:
+                    content = artifact.read_bytes()
+                    if not content.startswith(b'\xef\xbb\xbf'):
+                        content.decode('utf-8')  # verify it is valid UTF-8
+                        artifact.write_bytes(b'\xef\xbb\xbf' + content)
+                except Exception:
+                    pass
+
             file_size_kb = artifact.stat().st_size / 1024
             input_file = FSInputFile(str(artifact), filename=artifact.name)
             caption = f"📦 <b>Артефакт сессии</b>\n📄 <code>{artifact.name}</code> ({file_size_kb:.1f} KB)"
