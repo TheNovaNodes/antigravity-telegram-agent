@@ -64,7 +64,7 @@ def check_known_errors(text: str) -> str | None:
             "Текущая модель исчерпала суточный лимит запросов.\n\n"
             "💡 <b>Решение</b>: Нажмите команду `/models` в боте и переключитесь на другую модель (например, <code>claude-sonnet</code> или <code>gemini-flash-high</code>)."
         )
-    if "select login method" in lower or "oauth-callback" in lower or "accounts.google.com/o/oauth2" in lower:
+    if "select login method" in lower or "accounts.google.com/o/oauth2" in lower:
         return (
             "⚠️ <b>Требуется авторизация Google</b>\n\n"
             "На вашем сервере не завершен вход в аккаунт Antigravity CLI.\n\n"

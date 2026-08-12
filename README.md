@@ -63,6 +63,10 @@ Open Telegram, find your bot, and send **/start**.
   git pull && sudo systemctl restart antigravity-telegram-agent
   ```
 
+### 4. False positive "Требуется авторизация Google"
+* **Cause:** The LLM generated a response containing authentication-related keywords (like `oauth-callback` before version 1.1.x) and the text parser mistakenly interpreted it as the CLI requesting auth.
+* **Solution:** This issue has been resolved. Run `git pull` and `sudo systemctl restart antigravity-telegram-agent` to apply the patch.
+
 ---
 
 ## 🚀 Recommended AI Stack and MCP Architecture
