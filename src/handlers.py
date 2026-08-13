@@ -35,16 +35,8 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"📂 {session.workspace if session.workspace else 'Home Dir'}", callback_data="menu:workspace")
         ],
         [
-            InlineKeyboardButton(text=f"🔑 {btn_email}", callback_data="menu:account"),
-            InlineKeyboardButton(text="📊 Квоты (/usage)", callback_data="menu:usage")
-        ],
-        [
-            InlineKeyboardButton(text="🔌 MCP Серверы", callback_data="menu:mcp"),
-            InlineKeyboardButton(text="🔄 Сбросить сессию", callback_data="menu:reset")
-        ],
-        [
-            InlineKeyboardButton(text="⚡ Статус системы", callback_data="menu:status"),
-            InlineKeyboardButton(text="♻️ Reboot AGY", callback_data="menu:reboot")
+            InlineKeyboardButton(text="🔌 MCP Servers", callback_data="menu:mcp"),
+            InlineKeyboardButton(text="🔄 Reset Session", callback_data="menu:reset")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -53,10 +45,10 @@ from src.conversations import get_available_conversations, get_conversation_titl
 from src.jules_monitor import ACTIVE_JULES_SESSIONS
 
 def get_menu_text(session, is_start=False) -> str:
-    active_session_title = "Новая сессия (изолированная)"
+    active_session_title = "New Session (Isolated)"
     if session.conversation_id:
         if session.conversation_id == "latest":
-            active_session_title = "Последняя активная сессия (--continue)"
+            active_session_title = "Latest Active Session (--continue)"
         else:
             title = get_conversation_title(session.conversation_id)
             active_session_title = f"{title} ({session.conversation_id[:8]})" if title else f"ID: {session.conversation_id[:8]}"
@@ -67,15 +59,15 @@ def get_menu_text(session, is_start=False) -> str:
     email = get_active_account_email()
     health_emoji = "✅" if agy_exists and email != "Not Logged In" else "⚠️"
 
-    header = "👋 <b>Добро пожаловать в Antigravity Telegram Agent!</b>\n\nЯ — твой мобильный интерфейс к <b>Google Antigravity (agy)</b>. Отправь мне промпт, и я выполню его в твоём рабочем пространстве.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
+    header = "👋 <b>Welcome to Antigravity Telegram Agent!</b>\n\nI am your mobile interface to <b>Google Antigravity (agy)</b>. Send me a prompt, and I will execute it in your workspace.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
     
     text = (
         f"{header}"
         f"<b>System Status:</b> {health_emoji}\n"
         f"• CLI Binary: <code>{AGY_BINARY_PATH}</code>\n"
         f"• Authenticated as: <code>{email}</code>\n\n"
-        f"💬 <b>Активная сессия:</b> <code>{active_session_title}</code>\n"
-        f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
+        f"💬 <b>Active Session:</b> <code>{active_session_title}</code>\n"
+        f"🤖 <b>Model:</b> <code>{session.model_name}</code>\n"
         f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
         f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
         f"📂 <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
@@ -83,18 +75,18 @@ def get_menu_text(session, is_start=False) -> str:
     
     if is_start:
         text += (
-            "<b>Доступные команды:</b>\n"
-            "• /menu — Главное меню управления\n"
-            "• /cd — Изменить рабочую папку (workspace)\n"
-            "• /resume — Возобновить сохраненный диалог из истории\n"
-            "• /mcp — Управление MCP серверами\n"
-            "• /models — Выбор нейросетевой модели\n"
-            "• /effort — Настройка глубины рассуждений\n"
-            "• /mode — Режим работы (Standard/Plan)\n"
-            "• /reset — Сброс сессии\n"
+            "<b>Available Commands:</b>\n"
+            "• /menu — Control Center\n"
+            "• /cd — Change workspace directory\n"
+            "• /resume — Resume saved conversation\n"
+            "• /mcp — Manage MCP Servers\n"
+            "• /models — Select AI Model\n"
+            "• /effort — Set Reasoning Effort\n"
+            "• /mode — Execution Mode (Standard/Plan)\n"
+            "• /reset — Reset active session\n"
         )
     else:
-        text += "Выбери параметр для настройки:"
+        text += "Select an option to configure:"
         
     return text
 
@@ -280,40 +272,9 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             f"нажмите кнопку ниже для принудительного обновления."
         )
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    elif action == "usage":
-        await callback_query.bot.send_chat_action(chat_id=callback_query.message.chat.id, action=ChatAction.TYPING)
-        await callback_query.answer("Запрашиваю полную информацию по квотам...")
-        session = session_manager.get_session(callback_query.message.chat.id)
-        formatted = await session.get_usage_info()
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]])
-        try:
-            await callback_query.message.edit_text(formatted, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            await safe_edit_text(callback_query.message, formatted)
-    elif action == "reboot":
-        await callback_query.message.edit_text("⏳ <i>Запуск agy... ожидайте</i>", parse_mode="HTML")
-        session.close()
-        await session._ensure_started()
-        pid = getattr(session.child, 'pid', 'N/A')
-        text = f"🔄 <b>agy сессия (PID: {pid}) активна</b>\n\nНачинаем новую сессию или хотите продолжить?"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🆕 Новая сессия", callback_data="menu:reset")],
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
-        ])
-        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
         email = get_active_account_email()
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
-
-@router.message(Command("usage"))
-async def cmd_usage(message: Message):
-    if not is_allowed(message.from_user.id):
-        return
-    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    placeholder = await message.answer("📊 <i>Запрашиваю полную информацию по квотам моделей...</i>", parse_mode="HTML")
-    session = session_manager.get_session(message.chat.id)
-    formatted = await session.get_usage_info()
-    await safe_edit_text(placeholder, formatted)
 
 @router.message(Command("auth"))
 @router.message(Command("account"))

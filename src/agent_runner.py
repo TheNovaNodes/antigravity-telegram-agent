@@ -154,8 +154,8 @@ class AgySession:
             # To ensure the process returns JSON in utf-8
             env["PYTHONIOENCODING"] = "utf-8"
             
-            from src.mcp_manager import mcp_manager
-            mcp_env = mcp_manager.get_env_dict()
+            from src.mcp_config import mcp_config
+            mcp_env = mcp_config.get_env_dict()
             env.update(mcp_env)
 
             proc = await asyncio.create_subprocess_exec(
