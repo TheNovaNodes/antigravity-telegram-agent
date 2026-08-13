@@ -221,12 +221,7 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
                     prompt_idx = idx
                     break
 
-    if prompt_idx == -1:
-        for idx in range(len(raw_screen_display) - 1, -1, -1):
-            line = raw_screen_display[idx].strip()
-            if line.startswith(">") or line.startswith("›") or line.startswith("❯") or line.startswith("»"):
-                prompt_idx = idx
-                break
+
 
     if prompt_idx != -1:
         start_idx = prompt_idx + 1

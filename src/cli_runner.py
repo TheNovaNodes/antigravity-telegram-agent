@@ -390,12 +390,12 @@ class AgySession:
 
             clean_prompt = prompt.replace("\n", " ").strip()
             try:
-                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
+                self.child.send((clean_prompt + "\n").encode("utf-8"))
             except (pexpect.EOF, pexpect.ExceptionPexpect, OSError) as e:
                 logger.warning(f"Failed to send prompt to agy process for chat_id={self.chat_id}: {e}")
                 self.close()
                 await self._ensure_started()
-                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
+                self.child.send((clean_prompt + "\n").encode("utf-8"))
 
             screen = pyte.Screen(120, 500)
             stream = pyte.ByteStream(screen)
@@ -435,7 +435,7 @@ class AgySession:
                         content_lines = [l for l in raw_lines if l.strip()]
                         content_hash = hash(tuple(content_lines))
 
-                        if received_content_bytes and content_hash == last_content_hash:
+                        if content_hash == last_content_hash:
                             content_stable_ticks += 1
                             
                             is_prompt_ready = False
@@ -449,7 +449,10 @@ class AgySession:
                                         is_prompt_ready = True
                                     break
                                     
-                            if is_prompt_ready and content_stable_ticks >= 2:
+                            if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
+                                break
+                            elif content_stable_ticks >= 600 and not received_content_bytes:
+                                logger.warning(f"No response timeout (60s) for chat_id={self.chat_id}")
                                 break
                             elif content_stable_ticks >= 600:  # 60 seconds fallback for long tool calls
                                 logger.warning(f"Timeout fallback triggered for chat_id={self.chat_id} (60s stable without prompt)")
