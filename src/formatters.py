@@ -44,36 +44,36 @@ def check_known_errors(text: str) -> str | None:
     lower = text.lower()
     if "eligibility check failed" in lower or "not eligible for antigravity" in lower:
         return (
-            "⚠️ <b>Account Access Error (Eligibility Check)</b>\n\n"
-            "The current Google account or your server's region is not supported by Antigravity.\n\n"
+            "⚠️ <b>Ошибка доступа к аккаунту (Eligibility Check)</b>\n\n"
+            "Текущий аккаунт Google или регион вашего сервера не поддерживается сервисом Antigravity.\n\n"
             "───────────────\n\n"
-            "📌 <b>What happened:</b>\n"
-            "Google restricts access to Antigravity for certain geolocations and account types.\n\n"
-            "💡 <b>How to solve this (3 simple steps):</b>\n\n"
-            "1. <b>Log in to another account on the server</b>:\n"
-            "   Run this command in your server terminal:\n"
+            "📌 <b>Что произошло:</b>\n"
+            "Google ограничивает доступ к Antigravity для определенных геолокаций и типов аккаунтов.\n\n"
+            "💡 <b>Как решить эту проблему (3 простых шага):</b>\n\n"
+            "1. <b>Войдите в другой аккаунт на сервере</b>:\n"
+            "   Выполните в терминале сервера команду:\n"
             "   <code>agy auth login</code>\n\n"
-            "2. <b>Check your proxy or VPN</b>:\n"
-            "   Ensure your network traffic goes through a supported region.\n\n"
-            "3. <b>Automatic update</b>:\n"
-            "   After logging in, the bot will automatically pick up the new account thanks to Hot Reload!"
+            "2. <b>Проверьте прокси или VPN</b>:\n"
+            "   Убедитесь, что сетевой трафик идет через поддерживаемый регион.\n\n"
+            "3. <b>Автоматическое обновление</b>:\n"
+            "   После входа бот автоматически подхватит новый аккаунт благодаря Hot Reload!"
         )
     if "quota exceeded" in lower or "resource has been exhausted" in lower:
         return (
-            "⚠️ <b>Request limit reached (Quota Exceeded)</b>\n\n"
-            "The current model has exhausted its daily request quota.\n\n"
-            "💡 <b>Solution</b>: Use the `/models` command in the bot and switch to another model (e.g., <code>claude-sonnet</code> or <code>gemini-flash-high</code>)."
+            "⚠️ <b>Лимит запросов исчерпан (Quota Exceeded)</b>\n\n"
+            "Текущая модель исчерпала суточный лимит запросов.\n\n"
+            "💡 <b>Решение</b>: Нажмите команду `/models` в боте и переключитесь на другую модель (например, <code>claude-sonnet</code> или <code>gemini-flash-high</code>)."
         )
     if "select login method" in lower or "accounts.google.com/o/oauth2" in lower:
         return (
-            "⚠️ <b>Google authorization required</b>\n\n"
-            "Login to Antigravity CLI account is not completed on your server.\n\n"
+            "⚠️ <b>Требуется авторизация Google</b>\n\n"
+            "На вашем сервере не завершен вход в аккаунт Antigravity CLI.\n\n"
             "───────────────\n\n"
-            "💡 <b>How to log in (2 simple steps):</b>\n\n"
-            "1. <b>Run in your server terminal:</b>\n"
+            "💡 <b>Как войти (2 простых шага):</b>\n\n"
+            "1. <b>Выполните в терминале сервера:</b>\n"
             "   <code>agy auth login</code>\n\n"
-            "2. <b>Follow the link from the console</b> and authorize in Google.\n\n"
-            "After logging in, the bot will automatically pick up your account!"
+            "2. <b>Перейдите по ссылке из консоли</b> и авторизуйтесь в Google.\n\n"
+            "После входа бот автоматически подхватит ваш аккаунт!"
         )
     return None
 
@@ -349,8 +349,8 @@ def format_usage_response(lines, email: str = "") -> str:
             unique_models.append(m)
 
     output_parts = [
-        "📊 <b>Detailed report on model quotas and limits</b>\n",
-        f"👤 <b>Account:</b> <code>{email}</code>\n" if email else ""
+        "📊 <b>Подробный отчет по квотам и лимитам моделей</b>\n",
+        f"👤 <b>Аккаунт:</b> <code>{email}</code>\n" if email else ""
     ]
 
     for m in unique_models:
@@ -358,10 +358,10 @@ def format_usage_response(lines, email: str = "") -> str:
         pct = m["pct"]
         ref = m["refreshes"]
         
-        ref_text = f"\n   • <i>Refreshes in:</i> <code>{ref}</code>" if ref else ""
+        ref_text = f"\n   • <i>Сброс через:</i> <code>{ref}</code>" if ref else ""
         output_parts.append(
             f"🔹 <b>{name}</b>\n"
-            f"   Remaining: <b>{pct}%</b>{ref_text}\n"
+            f"   Остаток: <b>{pct}%</b>{ref_text}\n"
         )
 
     return "\n".join(output_parts)

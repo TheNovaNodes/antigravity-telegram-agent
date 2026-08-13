@@ -8,7 +8,7 @@ from aiogram.enums import ChatAction
 
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
-from src.agent_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
+from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
 from src.mcp_manager import mcp_manager
 from src.audit import log_audit_event
 
@@ -35,8 +35,16 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"📂 {session.workspace if session.workspace else 'Home Dir'}", callback_data="menu:workspace")
         ],
         [
+            InlineKeyboardButton(text=f"🔑 {btn_email}", callback_data="menu:account"),
+            InlineKeyboardButton(text="📊 Quotas (/usage)", callback_data="menu:usage")
+        ],
+        [
             InlineKeyboardButton(text="🔌 MCP Servers", callback_data="menu:mcp"),
             InlineKeyboardButton(text="🔄 Reset Session", callback_data="menu:reset")
+        ],
+        [
+            InlineKeyboardButton(text="⚡ System Status", callback_data="menu:status"),
+            InlineKeyboardButton(text="♻️ Reboot AGY", callback_data="menu:reboot")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -257,24 +265,55 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
     elif action == "reset":
         session_manager.new_session(callback_query.message.chat.id)
-        await callback_query.message.edit_text("🔄 <b>Сессия сброшена!</b> Следующий запрос начнет новый диалог в текущем процессе.", parse_mode="HTML")
+        await callback_query.message.edit_text("🔄 <b>Session Reset!</b> Next prompt will start a new conversation context in the background process.", parse_mode="HTML")
     elif action == "account":
         email = get_active_account_email()
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Переподключить авторизацию (Hot Reload)", callback_data="account:reload")],
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+            [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
+            [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
         ])
         text = (
-            f"🔑 <b>Авторизация Antigravity CLI</b>\n\n"
-            f"👤 <b>Текущий аккаунт:</b> <code>{email}</code>\n"
-            f"⚙️ <b>Подхват авторизации:</b> Автоматический (Hot Reload)\n\n"
-            f"Если вы сменили аккаунт через <code>agy auth login</code> в терминале сервера, "
-            f"нажмите кнопку ниже для принудительного обновления."
+            f"🔑 <b>Antigravity CLI Authorization</b>\n\n"
+            f"👤 <b>Current account:</b> <code>{email}</code>\n"
+            f"⚙️ <b>Auth Pickup:</b> Automatic (Hot Reload)\n\n"
+            f"If you changed your account via <code>agy auth login</code> in the server terminal, "
+            f"click the button below to force an update."
         )
+        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    elif action == "usage":
+        await callback_query.bot.send_chat_action(chat_id=callback_query.message.chat.id, action=ChatAction.TYPING)
+        await callback_query.answer("Requesting full quota information...")
+        session = session_manager.get_session(callback_query.message.chat.id)
+        formatted = await session.get_usage_info()
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
+        try:
+            await callback_query.message.edit_text(formatted, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await safe_edit_text(callback_query.message, formatted)
+    elif action == "reboot":
+        await callback_query.message.edit_text("⏳ <i>Starting agy... please wait</i>", parse_mode="HTML")
+        session.close()
+        await session._ensure_started()
+        pid = getattr(session.child, 'pid', 'N/A')
+        text = f"🔄 <b>agy session (PID: {pid}) active</b>\n\nStart a new session or continue?"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🆕 New Session", callback_data="menu:reset")],
+            [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
+        ])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
         email = get_active_account_email()
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
+
+@router.message(Command("usage"))
+async def cmd_usage(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+    placeholder = await message.answer("📊 <i>Requesting full quota information...</i>", parse_mode="HTML")
+    session = session_manager.get_session(message.chat.id)
+    formatted = await session.get_usage_info()
+    await safe_edit_text(placeholder, formatted)
 
 @router.message(Command("auth"))
 @router.message(Command("account"))
@@ -283,15 +322,15 @@ async def cmd_account(message: Message):
         return
     email = get_active_account_email()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Переподключить авторизацию (Hot Reload)", callback_data="account:reload")],
-        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
+        [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
     ])
     text = (
-        f"🔑 <b>Авторизация Antigravity CLI</b>\n\n"
-        f"👤 <b>Текущий аккаунт:</b> <code>{email}</code>\n"
-        f"⚙️ <b>Подхват авторизации:</b> Автоматический (Hot Reload)\n\n"
-        f"Если вы сменили аккаунт через <code>agy auth login</code> в терминале сервера, "
-        f"нажмите кнопку ниже для принудительного обновления."
+        f"🔑 <b>Antigravity CLI Authorization</b>\n\n"
+        f"👤 <b>Current account:</b> <code>{email}</code>\n"
+        f"⚙️ <b>Auth Pickup:</b> Automatic (Hot Reload)\n\n"
+        f"If you changed your account via <code>agy auth login</code> in the server terminal, "
+        f"click the button below to force an update."
     )
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
@@ -533,11 +572,11 @@ async def process_workspace_callback(callback_query: CallbackQuery):
     session.set_workspace(new_ws)
 
     display_ws = new_ws if new_ws else "Home Directory (/root)"
-    await callback_query.answer(f"Workspace изменен на {display_ws}")
+    await callback_query.answer(f"Workspace changed to {display_ws}")
     await callback_query.message.edit_text(
-        f"✅ <b>Workspace успешно закреплен на всю сессию!</b>\n\n"
-        f"📂 <b>Текущий проект/папка:</b> <code>{display_ws}</code>\n\n"
-        f"Все последующие действия бота и CLI выполняются в этой папке до нажатия <b>/reset</b>.",
+        f"✅ <b>Workspace successfully pinned!</b>\n\n"
+        f"📂 <b>Current Directory:</b> <code>{display_ws}</code>\n\n"
+        f"All subsequent commands will execute in this directory until you press <b>/reset</b>.",
         reply_markup=get_main_menu_keyboard(session),
         parse_mode="HTML"
     )
@@ -553,8 +592,8 @@ async def cmd_cd(message: Message):
     
     if len(parts) < 2:
         await message.answer(
-            f"📂 <b>Текущий Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
-            "Выбери проект/папку из списка ниже или отправь <code>/cd /путь/к/папке</code>:",
+            f"📂 <b>Current Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
+            "Select a project folder below or send <code>/cd /path/to/folder</code>:",
             reply_markup=get_workspace_keyboard(),
             parse_mode="HTML"
         )
@@ -565,16 +604,34 @@ async def cmd_cd(message: Message):
         target_path = None
     else:
         p = Path(raw_path).expanduser().resolve()
+        
+        # Security check: must be under one of WORKSPACE_BASE_PATHS
+        from src.config import config
+        valid = False
+        allowed_bases = config.get("WORKSPACE_BASE_PATHS", ["/root/lab", "/root/projects"])
+        for base in allowed_bases:
+            try:
+                base_path = Path(base).expanduser().resolve()
+                if p.is_relative_to(base_path):
+                    valid = True
+                    break
+            except Exception:
+                pass
+                
+        if not valid:
+            await message.answer(f"❌ <b>Access Denied!</b>\nPath <code>{raw_path}</code> is outside allowed workspace roots.", parse_mode="HTML")
+            return
+            
         if not p.exists() or not p.is_dir():
-            await message.answer(f"❌ <b>Папка не найдена!</b>\nПуть <code>{raw_path}</code> не существует или не является директорией.", parse_mode="HTML")
+            await message.answer(f"❌ <b>Folder not found!</b>\nPath <code>{raw_path}</code> does not exist or is not a directory.", parse_mode="HTML")
             return
         target_path = str(p)
     
     session.set_workspace(target_path)
     display_ws = target_path if target_path else "Home Directory (/root)"
     await message.answer(
-        f"✅ <b>Workspace закреплен на всю сессию!</b>\n\n"
-        f"📂 <b>Новая рабочая папка:</b> <code>{display_ws}</code>",
+        f"✅ <b>Workspace pinned for session!</b>\n\n"
+        f"📂 <b>New Workspace Directory:</b> <code>{display_ws}</code>",
         parse_mode="HTML"
     )
 
@@ -788,19 +845,9 @@ async def check_and_send_artifacts(message: Message, session):
 
     for artifact in unique_artifacts:
         try:
-            # Ensure UTF-8 BOM for text files so Cyrillic renders correctly in Telegram/Windows viewers
-            if artifact.suffix.lower() in ['.md', '.txt', '.csv', '.json']:
-                try:
-                    content = artifact.read_bytes()
-                    if not content.startswith(b'\xef\xbb\xbf'):
-                        content.decode('utf-8')  # verify it is valid UTF-8
-                        artifact.write_bytes(b'\xef\xbb\xbf' + content)
-                except Exception:
-                    pass
-
             file_size_kb = artifact.stat().st_size / 1024
             input_file = FSInputFile(str(artifact), filename=artifact.name)
-            caption = f"📦 <b>Артефакт сессии</b>\n📄 <code>{artifact.name}</code> ({file_size_kb:.1f} KB)"
+            caption = f"📦 <b>Session Artifact</b>\n📄 <code>{artifact.name}</code> ({file_size_kb:.1f} KB)"
             await message.answer_document(document=input_file, caption=caption, parse_mode="HTML")
             logger.info(f"✅ Delivered artifact {artifact.name} ({file_size_kb:.1f} KB) to chat_id={message.chat.id}")
         except Exception as e:

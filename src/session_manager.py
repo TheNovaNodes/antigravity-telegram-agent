@@ -2,7 +2,7 @@ import asyncio
 import time
 import logging
 from typing import Dict
-from src.agent_runner import AgySession
+from src.cli_runner import AgySession
 from src.db import load_user_session, delete_user_session, save_user_session
 
 logger = logging.getLogger(__name__)
