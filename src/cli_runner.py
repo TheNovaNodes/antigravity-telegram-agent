@@ -357,6 +357,8 @@ class AgySession:
                         for l in reversed(raw_lines):
                             clean_l = l.strip()
                             clean_l_no_ansi = re.sub(r'\x1b\[.*?m', '', clean_l)
+                            if not clean_l_no_ansi:
+                                continue
                             if (clean_l_no_ansi.startswith("? ") and "for shortcuts" in clean_l_no_ansi) or "───" in clean_l_no_ansi:
                                 continue
                             if clean_l_no_ansi in (">", "❯", "›") or clean_l_no_ansi.startswith("> ") or clean_l_no_ansi.startswith("❯ ") or clean_l_no_ansi.startswith("› ") or clean_l_no_ansi.startswith("? "):
