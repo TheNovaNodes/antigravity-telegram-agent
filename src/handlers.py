@@ -43,7 +43,8 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Сбросить сессию", callback_data="menu:reset")
         ],
         [
-            InlineKeyboardButton(text="⚡ Статус системы", callback_data="menu:status")
+            InlineKeyboardButton(text="⚡ Статус системы", callback_data="menu:status"),
+            InlineKeyboardButton(text="♻️ Reboot AGY", callback_data="menu:reboot")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -280,6 +281,17 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             await callback_query.message.edit_text(formatted, reply_markup=kb, parse_mode="HTML")
         except Exception:
             await safe_edit_text(callback_query.message, formatted)
+    elif action == "reboot":
+        await callback_query.message.edit_text("⏳ <i>Запуск agy... ожидайте</i>", parse_mode="HTML")
+        session.close()
+        await session._ensure_started()
+        pid = getattr(session.child, 'pid', 'N/A')
+        text = f"🔄 <b>agy сессия (PID: {pid}) активна</b>\n\nНачинаем новую сессию или хотите продолжить?"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🆕 Новая сессия", callback_data="menu:reset")],
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        ])
+        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
         email = get_active_account_email()
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
