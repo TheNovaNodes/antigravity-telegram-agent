@@ -43,7 +43,7 @@ class SessionManager:
         session = self.sessions.get(chat_id)
         if session:
             session.clear_context()
-            session.save_to_db()
+            save_user_session(chat_id, session.model_name, session.effort, session.mode, session.conversation_id, session.workspace)
             self.last_accessed[chat_id] = time.time()
             return session
         else:
