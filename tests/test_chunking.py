@@ -41,11 +41,11 @@ class TestChunking(unittest.TestCase):
 
         # Check placeholder edit contains notice
         placeholder.edit_text.assert_called_once()
-        self.assertIn("[Ответ слишком большой. Полная версия в файле ниже]", placeholder.edit_text.call_args[0][0])
+        self.assertIn("[Response too large. Full version in the file below]", placeholder.edit_text.call_args[0][0])
 
         # Check document attachment was sent
         message.answer_document.assert_called_once()
-        self.assertIn("10000 символов", message.answer_document.call_args[1]["caption"])
+        self.assertIn("10000 chars", message.answer_document.call_args[1]["caption"])
 
 
 if __name__ == "__main__":

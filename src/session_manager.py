@@ -2,7 +2,7 @@ import asyncio
 import time
 import logging
 from typing import Dict
-from src.cli_runner import AgySession
+from src.agent_runner import AgySession
 from src.db import load_user_session, delete_user_session, save_user_session
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,6 @@ class SessionManager:
             except Exception as e:
                 logger.error(f"Error in idle session cleanup loop: {e}", exc_info=True)
 
-session_manager = SessionManager(idle_ttl_seconds=0)
+session_manager = SessionManager(idle_ttl_seconds=1800)
 
 

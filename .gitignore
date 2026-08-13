@@ -10,3 +10,7 @@ data/
 *.db-wal
 *.db-shm
 logs/
+
+raw_output.txt
+data.db
+*.log

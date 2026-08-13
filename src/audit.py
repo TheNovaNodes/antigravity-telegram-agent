@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +11,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 AUDIT_LOG_PATH = LOGS_DIR / "audit.log"
 
 
-def log_audit_event(user_id: int, chat_id: int, model_name: str, effort: str, mode: str, prompt: str, response_length: int):
+async def log_audit_event(user_id: int, chat_id: int, model_name: str, effort: str, mode: str, prompt: str, response_length: int):
     """Record structured JSON audit log entry for security and telemetry."""
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -25,7 +26,11 @@ def log_audit_event(user_id: int, chat_id: int, model_name: str, effort: str, mo
             "prompt_length": len(prompt),
             "response_length": response_length
         }
-        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        
+        def write_log():
+            with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                
+        await asyncio.to_thread(write_log)
     except Exception as e:
         logger.error(f"Failed to write audit log: {e}", exc_info=True)

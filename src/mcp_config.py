@@ -164,6 +164,7 @@ class MCPConfigManager:
                         "args": [],
                         "env": {"JULES_API_KEY": env_val} if env_val else {}
                     }
+        return {"mcpServers": mcp_servers}
 
 
     def get_env_dict(self) -> Dict[str, str]:

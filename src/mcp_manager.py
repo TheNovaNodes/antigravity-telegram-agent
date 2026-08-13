@@ -15,12 +15,12 @@ class MCPManager:
     def get_status_report(self) -> str:
         """Generates a human-readable Telegram report on MCP server statuses."""
         cfg = self.config_manager.config
-        global_enabled = "🟢 Включено" if cfg.get("enabled") else "🔴 Отключено"
+        global_enabled = "🟢 Enabled" if cfg.get("enabled") else "🔴 Disabled"
         
         report = [
-            "🧠 <b>Model Context Protocol (MCP) Статус</b>",
-            f"Статус службы: {global_enabled}\n",
-            "<b>Подключенные серверы:</b>"
+            "🧠 <b>Model Context Protocol (MCP) Status</b>",
+            f"Service Status: {global_enabled}\n",
+            "<b>Connected servers:</b>"
         ]
 
         servers = cfg.get("servers", {})
@@ -32,7 +32,7 @@ class MCPManager:
 
         for key, srv in servers.items():
             icon = icons.get(key, "🔌")
-            state = "✅ Активен" if srv.get("enabled") else "⚪ Отключен"
+            state = "✅ Active" if srv.get("enabled") else "⚪ Disabled"
             name = srv.get("name", key)
             url = srv.get("url", "N/A")
             report.append(f"{icon} <b>{name}</b>: {state}\n   URL: <code>{url}</code>")

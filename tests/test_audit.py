@@ -14,7 +14,8 @@ class TestAudit(unittest.TestCase):
             with patch("src.audit.AUDIT_LOG_PATH", temp_path), \
                  patch("src.audit.LOGS_DIR", Path(temp_dir)):
                 
-                log_audit_event(
+                import asyncio
+                asyncio.run(log_audit_event(
                     user_id=12345,
                     chat_id=67890,
                     model_name="gemini-3.6-flash-high",
@@ -22,7 +23,7 @@ class TestAudit(unittest.TestCase):
                     mode="default",
                     prompt="Hello test prompt",
                     response_length=150
-                )
+                ))
 
                 self.assertTrue(temp_path.exists())
                 lines = temp_path.read_text(encoding="utf-8").strip().split("\n")

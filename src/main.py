@@ -35,20 +35,20 @@ async def main():
 
     # Register Telegram native slash command menu
     await bot.set_my_commands([
-        BotCommand(command="menu", description="🎛️ Главный центр управления AntigravityTelegramAgent"),
-        BotCommand(command="new", description="✨ Начать новую сессию агента (/new или /reset)"),
-        BotCommand(command="usage", description="📊 Лимиты и квоты нейросетей (/usage)"),
-        BotCommand(command="auth", description="🔑 Просмотр и Hot Reload аккаунта Google"),
-        BotCommand(command="resume", description="📂 Возобновить сессию из истории (/resume)"),
-        BotCommand(command="rename", description="✏️ Переименовать текущую сессию (/rename Новое Имя)"),
-        BotCommand(command="mcp", description="🔌 Управление MCP серверами (Память, Поиск, CRM)"),
-        BotCommand(command="models", description="🤖 Выбор нейросети (Gemini, Claude, GPT)"),
-        BotCommand(command="effort", description="⚡ Глубина рассуждений (low/medium/high)"),
-        BotCommand(command="mode", description="🎯 Режим работы (Plan / Auto-Edits / Standard)"),
-        BotCommand(command="cd", description="📂 Изменить рабочую папку (workspace)"),
-        BotCommand(command="reset", description="🔄 Сбросить сессию агента"),
-        BotCommand(command="debug", description="🔍 Debug: состояние сессии и PTY"),
-        BotCommand(command="start", description="👋 Справка и старт"),
+        BotCommand(command="menu", description="🎛️ AntigravityTelegramAgent Control Center"),
+        BotCommand(command="new", description="✨ Start new agent session (/new or /reset)"),
+        BotCommand(command="usage", description="📊 AI limits and quotas (/usage)"),
+        BotCommand(command="auth", description="🔑 View and Hot Reload Google account"),
+        BotCommand(command="resume", description="📂 Resume session from history (/resume)"),
+        BotCommand(command="rename", description="✏️ Rename current session (/rename New Name)"),
+        BotCommand(command="mcp", description="🔌 Manage MCP servers (Memory, Search, CRM)"),
+        BotCommand(command="models", description="🤖 Select AI model (Gemini, Claude, GPT)"),
+        BotCommand(command="effort", description="⚡ Reasoning effort (low/medium/high)"),
+        BotCommand(command="mode", description="🎯 Working mode (Plan / Auto-Edits / Standard)"),
+        BotCommand(command="cd", description="📂 Change workspace directory"),
+        BotCommand(command="reset", description="🔄 Reset agent session"),
+        BotCommand(command="debug", description="🔍 Debug: session state and PTY"),
+        BotCommand(command="start", description="👋 Help and start"),
     ])
 
     logger.info("🚀 Starting AntigravityTelegramAgent (Control Center & Pyte PTY Architecture)...")

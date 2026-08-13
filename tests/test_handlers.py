@@ -49,16 +49,16 @@ class TestHandlers(unittest.TestCase):
         message.bot = AsyncMock()
 
         mock_session = AsyncMock()
-        mock_session.get_response = AsyncMock(return_value="Agent response text")
+        async def mock_stream_response(prompt):
+            yield "Agent response text"
+        mock_session.stream_response = mock_stream_response
         mock_session.model_name = "gemini-3.6-flash-high"
         mock_session.effort = "high"
         mock_session.mode = "default"
         mock_sm.get_session.return_value = mock_session
 
         asyncio.run(handle_message(message))
-
-        mock_session.get_response.assert_called_once_with("Hello agent")
-        placeholder.edit_text.assert_called_once_with("Agent response text", parse_mode="HTML")
+        placeholder.edit_text.assert_any_call("Agent response text", parse_mode="HTML")
         mock_audit.assert_called_once()
         mock_artifacts.assert_called_once()
 

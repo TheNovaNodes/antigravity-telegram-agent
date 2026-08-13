@@ -8,7 +8,7 @@ from aiogram.enums import ChatAction
 
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
-from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
+from src.agent_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
 from src.mcp_manager import mcp_manager
 from src.audit import log_audit_event
 
@@ -61,10 +61,19 @@ def get_menu_text(session, is_start=False) -> str:
             title = get_conversation_title(session.conversation_id)
             active_session_title = f"{title} ({session.conversation_id[:8]})" if title else f"ID: {session.conversation_id[:8]}"
 
-    header = "👋 <b>Добро пожаловать в Antigravity Telegram Agent Control Center!</b>\n\nЯ — высокопроизводительный асинхронный мост к <b>Google Antigravity (agy)</b> с поддержкой MCP-инфраструктуры.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
+    from src.config import AGY_BINARY_PATH
+    import os
+    agy_exists = os.path.exists(AGY_BINARY_PATH)
+    email = get_active_account_email()
+    health_emoji = "✅" if agy_exists and email != "Not Logged In" else "⚠️"
+
+    header = "👋 <b>Добро пожаловать в Antigravity Telegram Agent!</b>\n\nЯ — твой мобильный интерфейс к <b>Google Antigravity (agy)</b>. Отправь мне промпт, и я выполню его в твоём рабочем пространстве.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
     
     text = (
         f"{header}"
+        f"<b>System Status:</b> {health_emoji}\n"
+        f"• CLI Binary: <code>{AGY_BINARY_PATH}</code>\n"
+        f"• Authenticated as: <code>{email}</code>\n\n"
         f"💬 <b>Активная сессия:</b> <code>{active_session_title}</code>\n"
         f"🤖 <b>Модель:</b> <code>{session.model_name}</code>\n"
         f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
