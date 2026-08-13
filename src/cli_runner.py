@@ -357,9 +357,12 @@ class AgySession:
                         for l in reversed(raw_lines):
                             clean_l = l.strip()
                             clean_l_no_ansi = re.sub(r'\x1b\[.*?m', '', clean_l)
+                            if clean_l_no_ansi.startswith("? ") and "for shortcuts" in clean_l_no_ansi:
+                                continue
                             if clean_l_no_ansi in (">", "❯", "›") or clean_l_no_ansi.startswith("> ") or clean_l_no_ansi.startswith("❯ ") or clean_l_no_ansi.startswith("› ") or clean_l_no_ansi.startswith("? "):
                                 logger.info("Ready prompt detected after cold start.")
                                 return
+                            break
                     else:
                         break
                     await asyncio.sleep(0.01)
@@ -430,12 +433,13 @@ class AgySession:
                         if received_content_bytes and content_hash == last_content_hash:
                             content_stable_ticks += 1
                             
-                            # Check if the CLI prompt marker is at the bottom, indicating readiness
                             is_prompt_ready = False
                             for l in reversed(raw_lines):
                                 l_str = l.strip()
                                 if l_str:
                                     clean_l = re.sub(r'\x1b\[.*?m', '', l_str)
+                                    if clean_l.startswith("? ") and "for shortcuts" in clean_l:
+                                        continue
                                     if clean_l in (">", "❯", "›") or clean_l.startswith("> ") or clean_l.startswith("❯ ") or clean_l.startswith("› ") or clean_l.startswith("? "):
                                         is_prompt_ready = True
                                     break

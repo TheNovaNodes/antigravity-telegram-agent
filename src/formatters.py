@@ -23,7 +23,7 @@ def is_tui_noise(line: str, prompt: str = "") -> bool:
     if any(pattern in lower for pattern in [
         "antigravity cli", "gemini 3.", "claude-", "gpt-", "esc to cancel",
         "generating...", "ctrl+c", "reasoning effort", "execution mode",
-        "thought for", "prioritizing tool", "tool usage"
+        "thought for", "prioritizing tool", "tool usage", "? for shortcuts"
     ]):
         return True
 
@@ -214,10 +214,12 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
         prompt_snippet = clean_prompt[:30].strip()
         for idx in range(len(raw_screen_display) - 1, -1, -1):
             line = raw_screen_display[idx].strip()
-            line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
-            if prompt_snippet and len(prompt_snippet) >= 5 and prompt_snippet in line_clean:
-                prompt_idx = idx
-                break
+            # Only consider actual prompt lines to avoid matching AI responses that repeat the prompt
+            if line.startswith("> ") or line.startswith("› ") or line.startswith("❯ ") or line.startswith("» "):
+                line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
+                if prompt_snippet and len(prompt_snippet) >= 5 and prompt_snippet in line_clean:
+                    prompt_idx = idx
+                    break
 
     if prompt_idx == -1:
         for idx in range(len(raw_screen_display) - 1, -1, -1):
