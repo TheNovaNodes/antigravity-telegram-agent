@@ -85,6 +85,9 @@ class SessionManager:
 
     def cleanup_idle_sessions(self):
         """Close PTY processes for sessions idle longer than idle_ttl_seconds."""
+        if self.idle_ttl_seconds <= 0:
+            return  # Disabled, run permanently
+
         now = time.time()
         expired_chats = [
             chat_id for chat_id, last_time in self.last_accessed.items()
@@ -109,6 +112,6 @@ class SessionManager:
             except Exception as e:
                 logger.error(f"Error in idle session cleanup loop: {e}", exc_info=True)
 
-session_manager = SessionManager()
+session_manager = SessionManager(idle_ttl_seconds=0)
 
 
