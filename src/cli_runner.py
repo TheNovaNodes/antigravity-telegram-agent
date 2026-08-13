@@ -407,6 +407,9 @@ class AgySession:
             last_yielded_text = ""
 
             while True:
+                if self.child is None or not self.child.isalive():
+                    yield "\n\n⚠️ *Процесс прерван или конфигурация изменена. Запрос отменен.*"
+                    break
                 try:
                     chunk = await asyncio.to_thread(
                         self.child.read_nonblocking, size=4096, timeout=0.1
