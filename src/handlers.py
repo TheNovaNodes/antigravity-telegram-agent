@@ -255,8 +255,8 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         report = mcp_manager.get_status_report()
         await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
     elif action == "reset":
-        session_manager.reset_session(callback_query.message.chat.id)
-        await callback_query.message.edit_text("🔄 <b>Сессия сброшена!</b> Следующий запрос начнет новый диалог.", parse_mode="HTML")
+        session_manager.new_session(callback_query.message.chat.id)
+        await callback_query.message.edit_text("🔄 <b>Сессия сброшена!</b> Следующий запрос начнет новый диалог в текущем процессе.", parse_mode="HTML")
     elif action == "account":
         email = get_active_account_email()
         kb = InlineKeyboardMarkup(inline_keyboard=[

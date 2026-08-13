@@ -541,6 +541,16 @@ class AgySession:
             email = get_active_account_email()
             return format_usage_response(all_lines, email)
 
+    def clear_context(self):
+        """Send the /clear command to the active PTY to reset the conversation without killing the process."""
+        self.conversation_id = None
+        if self.child and self.child.isalive():
+            try:
+                self.child.sendline("/clear")
+                logger.info(f"Sent /clear to PTY for chat_id={self.chat_id}")
+            except Exception as e:
+                logger.error(f"Failed to send /clear: {e}")
+                
     def close(self):
         """Terminates active agy process cleanly and forcefully."""
         child = self.child

@@ -39,17 +39,13 @@ class SessionManager:
         return self.sessions[chat_id]
 
     def new_session(self, chat_id: int) -> 'AgySession':
-        """Create a new conversation while preserving user preferences (model, effort, mode, workspace)."""
-        old_session = self.sessions.get(chat_id)
-        # Preserve user preferences from current session or load from DB
-        if old_session:
-            preserved = {
-                "model_name": old_session.model_name,
-                "effort": old_session.effort,
-                "mode": old_session.mode,
-                "workspace": old_session.workspace,
-            }
-            old_session.close()
+        """Create a new conversation or reset existing one while preserving user preferences."""
+        session = self.sessions.get(chat_id)
+        if session:
+            session.clear_context()
+            session.save_to_db()
+            self.last_accessed[chat_id] = time.time()
+            return session
         else:
             saved = load_user_session(chat_id)
             preserved = {
