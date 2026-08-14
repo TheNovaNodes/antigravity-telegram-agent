@@ -184,9 +184,17 @@ class AgySession:
 
         if self.model_name != new_model:
             self.model_name = new_model
-            logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name}")
+            
+            # Automatically adjust effort to match model tier to prevent agy startup crashes
+            if "high" in new_model.lower():
+                self.effort = "high"
+            elif "low" in new_model.lower():
+                self.effort = "low"
+                
+            logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name} (effort: {self.effort})")
             if self.child and self.child.isalive():
                 self.child.sendline(f"/model {self.model_name}")
+                self.child.sendline(f"/effort {self.effort}")
             save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
 
