@@ -13,7 +13,7 @@ class TestFormatters(unittest.TestCase):
     def test_is_tui_noise(self):
         self.assertTrue(is_tui_noise("   Antigravity CLI 1.1.10   "))
         self.assertTrue(is_tui_noise("Gemini 3.6 Flash (Low)"))
-        self.assertTrue(is_tui_noise("> my prompt text"))
+        self.assertTrue(is_tui_noise("> my prompt text", prompt="my prompt text"))
         self.assertTrue(is_tui_noise("   ▄▀▀ ▀▀▄   "))
         self.assertFalse(is_tui_noise("This is regular response text from the model."))
         self.assertFalse(is_tui_noise("| Parameter | Value |"))

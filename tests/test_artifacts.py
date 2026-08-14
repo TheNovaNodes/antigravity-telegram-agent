@@ -69,7 +69,7 @@ class TestArtifactDelivery(unittest.TestCase):
                     # Verify document was sent
                     message.answer_document.assert_called_once()
                     call_kwargs = message.answer_document.call_args
-                    self.assertIn("Session artifact", call_kwargs.kwargs.get("caption", ""))
+                    self.assertIn("Session Artifact", call_kwargs.kwargs.get("caption", ""))
 
     def test_check_and_send_artifacts_skips_system_dirs(self):
         """Test that artifacts inside .system_generated, scratch, .user_uploaded are skipped."""

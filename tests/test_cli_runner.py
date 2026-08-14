@@ -18,7 +18,7 @@ class TestCliRunner(unittest.TestCase):
 
     @patch("src.cli_runner.save_user_session")
     def test_set_model(self, mock_save):
-        session = AgySession(12345)
+        session = AgySession(12345, effort="high")
         
         # Test valid alias
         res = session.set_model("claude-sonnet")

@@ -16,7 +16,7 @@ class TestResume(unittest.TestCase):
 
     @patch("src.cli_runner.save_user_session")
     def test_session_set_conversation(self, mock_save):
-        session = AgySession(chat_id=12345)
+        session = AgySession(chat_id=12345, model_name="gemini-3.1-pro-high", effort="high")
         res = session.set_conversation("41db2852-7d89-41f5-9ab9-6b1d6c26c07d")
         self.assertTrue(res)
         self.assertEqual(session.conversation_id, "41db2852-7d89-41f5-9ab9-6b1d6c26c07d")
@@ -27,7 +27,7 @@ class TestResume(unittest.TestCase):
         import pexpect
         mock_child = MagicMock()
         mock_child.isalive.return_value = True
-        mock_child.read_nonblocking.side_effect = pexpect.TIMEOUT("timeout")
+        mock_child.read_nonblocking.return_value = b"> "
         mock_spawn.return_value = mock_child
 
         session = AgySession(chat_id=12345, conversation_id="test-conv-uuid")

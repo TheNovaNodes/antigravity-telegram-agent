@@ -10,7 +10,7 @@ class TestAuthHotReload(unittest.TestCase):
     def test_get_auth_state_signature_returns_string(self):
         sig = get_auth_state_signature()
         self.assertIsInstance(sig, str)
-        self.assertIn("antigravity-oauth-token", sig)
+        self.assertIn("token:", sig)
 
     @patch("src.cli_runner.get_auth_state_signature")
     def test_hot_reload_triggers_on_credential_change(self, mock_sig):

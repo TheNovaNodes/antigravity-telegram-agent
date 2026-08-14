@@ -233,7 +233,7 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
                 break
         return raw_screen_display[start_idx:]
 
-    return []
+    return raw_screen_display
 
 
 def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "") -> str:
