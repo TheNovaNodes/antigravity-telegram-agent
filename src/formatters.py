@@ -15,7 +15,7 @@ def is_tui_noise(line: str, prompt: str = "") -> bool:
         return False
 
     # Filter ASCII art characters and TUI box borders
-    if any(c in s for c in ["▄", "▀", "█", "▌", "▐", "┌", "┐", "└", "┘", "├", "┤", "────"]):
+    if any(c in s for c in ["▄", "▀", "█", "▌", "▐", "┌", "┐", "└", "┘", "├", "┤", "────", "│", "─", "╭", "╮", "╰", "╯"]):
         return True
 
     lower = s.lower()
@@ -217,9 +217,10 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
             # Only consider actual prompt lines to avoid matching AI responses that repeat the prompt
             if line.startswith("> ") or line.startswith("› ") or line.startswith("❯ ") or line.startswith("» "):
                 line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
-                if prompt_snippet and len(prompt_snippet) >= 5 and prompt_snippet in line_clean:
-                    prompt_idx = idx
-                    break
+                if prompt_snippet:
+                    if (len(prompt_snippet) >= 3 and prompt_snippet in line_clean) or line_clean.strip() == clean_prompt.strip():
+                        prompt_idx = idx
+                        break
 
 
 
@@ -234,7 +235,7 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
                 break
         return raw_screen_display[start_idx:]
 
-    return raw_screen_display
+    return []
 
 
 def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "") -> str:

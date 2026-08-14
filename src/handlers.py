@@ -882,7 +882,7 @@ async def handle_message(message: Message):
                 await safe_edit_text(placeholder, disp_text)
 
         # Log structured execution audit log
-        log_audit_event(
+        await log_audit_event(
             user_id=message.from_user.id,
             chat_id=message.chat.id,
             model_name=session.model_name,
