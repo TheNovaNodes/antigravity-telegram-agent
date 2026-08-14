@@ -214,13 +214,11 @@ def extract_new_response_lines(raw_screen_display: list[str], prompt: str = "") 
         prompt_snippet = clean_prompt[:30].strip()
         for idx in range(len(raw_screen_display) - 1, -1, -1):
             line = raw_screen_display[idx].strip()
-            # Only consider actual prompt lines to avoid matching AI responses that repeat the prompt
-            if line.startswith("> ") or line.startswith("› ") or line.startswith("❯ ") or line.startswith("» "):
-                line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
-                if prompt_snippet:
-                    if (len(prompt_snippet) >= 3 and prompt_snippet in line_clean) or line_clean.strip() == clean_prompt.strip():
-                        prompt_idx = idx
-                        break
+            line_clean = re.sub(r"^[>›»❯\?]\s*", "", line)
+            if prompt_snippet:
+                if (len(prompt_snippet) >= 3 and prompt_snippet in line_clean) or line_clean.strip() == clean_prompt.strip():
+                    prompt_idx = idx
+                    break
 
 
 
