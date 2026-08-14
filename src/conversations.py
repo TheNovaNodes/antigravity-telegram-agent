@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+from contextlib import closing
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -16,7 +17,7 @@ def get_available_conversations(limit: int = 8) -> List[Dict[str, str]]:
         return conversations
 
     try:
-        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT conversation_id, preview, title, step_count, last_modified_time
@@ -60,7 +61,7 @@ def rename_conversation(conversation_id: str, new_title: str) -> bool:
         return False
     
     try:
-        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
             conn.execute(
                 "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
                 (new_title, conversation_id)
@@ -76,7 +77,7 @@ def get_latest_conversation_id() -> Optional[str]:
     if not DB_PATH.exists():
         return None
     try:
-        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
             row = conn.execute(
                 "SELECT conversation_id FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 1"
             ).fetchone()
@@ -91,7 +92,7 @@ def get_conversation_title(conversation_id: str) -> Optional[str]:
     if not conversation_id or not DB_PATH.exists():
         return None
     try:
-        with sqlite3.connect(str(DB_PATH), timeout=5.0) as conn:
+        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT preview, title FROM conversation_summaries WHERE conversation_id = ?",

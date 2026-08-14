@@ -2,6 +2,7 @@ import sqlite3
 import logging
 from pathlib import Path
 from typing import Optional, Dict
+from contextlib import closing
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ def _get_connection() -> sqlite3.Connection:
 
 def init_db():
     """Initialize database tables idempotently and run migrations."""
-    with _get_connection() as conn:
+    with closing(_get_connection()) as conn, conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_sessions (
                 chat_id INTEGER PRIMARY KEY,
@@ -47,7 +48,7 @@ def init_db():
 def save_user_session(chat_id: int, model_name: str, effort: str, mode: str, conversation_id: Optional[str] = None, workspace: Optional[str] = None):
     """Save or update user session settings in SQLite."""
     try:
-        with _get_connection() as conn:
+        with closing(_get_connection()) as conn, conn:
             conn.execute("""
                 INSERT INTO user_sessions (chat_id, model_name, effort, mode, conversation_id, workspace, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -68,7 +69,7 @@ def save_user_session(chat_id: int, model_name: str, effort: str, mode: str, con
 def load_user_session(chat_id: int) -> Optional[Dict[str, Optional[str]]]:
     """Load saved user session settings from SQLite."""
     try:
-        with _get_connection() as conn:
+        with closing(_get_connection()) as conn, conn:
             cursor = conn.execute(
                 "SELECT model_name, effort, mode, conversation_id, workspace FROM user_sessions WHERE chat_id = ?",
                 (chat_id,)
@@ -90,7 +91,7 @@ def load_user_session(chat_id: int) -> Optional[Dict[str, Optional[str]]]:
 def delete_user_session(chat_id: int):
     """Delete saved user session settings from SQLite."""
     try:
-        with _get_connection() as conn:
+        with closing(_get_connection()) as conn, conn:
             conn.execute("DELETE FROM user_sessions WHERE chat_id = ?", (chat_id,))
             conn.commit()
         logger.debug(f"Deleted session from DB for chat_id={chat_id}")

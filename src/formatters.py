@@ -28,7 +28,7 @@ def is_tui_noise(line: str, prompt: str = "") -> bool:
         return True
 
     # Filter prompt echoes and shell path prompts
-    if s.startswith(">") or s.startswith("›") or s.startswith("❯") or s.startswith("»") or "~/" in s or "labdoctorm" in lower or "projects" in lower:
+    if s.startswith("›") or s.startswith("❯") or s.startswith("»") or "~/" in s or "labdoctorm" in lower:
         return True
 
     if prompt:

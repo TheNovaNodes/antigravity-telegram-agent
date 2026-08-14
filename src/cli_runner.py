@@ -321,10 +321,10 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
-            self.child.setwinsize(500, 120)
+            self.child.setwinsize(3000, 120)
             self.spawn_auth_signature = current_auth_sig
 
-            screen = pyte.Screen(120, 500)
+            screen = pyte.Screen(120, 3000)
             stream = pyte.ByteStream(screen)
             idle_count = 0
             menu_confirmed = False
@@ -397,7 +397,7 @@ class AgySession:
                 await self._ensure_started()
                 self.child.send((clean_prompt + "\n").encode("utf-8"))
 
-            screen = pyte.Screen(120, 500)
+            screen = pyte.Screen(120, 3000)
             stream = pyte.ByteStream(screen)
 
             total_timeout_count = 0
@@ -449,7 +449,7 @@ class AgySession:
                                         is_prompt_ready = True
                                     break
                                     
-                            if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
+                            if is_prompt_ready and content_stable_ticks >= 15 and received_content_bytes:
                                 break
                             elif content_stable_ticks >= 600 and not received_content_bytes:
                                 logger.warning(f"No response timeout (60s) for chat_id={self.chat_id}")
@@ -512,7 +512,7 @@ class AgySession:
             all_lines = []
 
             for _ in range(4):
-                screen = pyte.Screen(120, 500)
+                screen = pyte.Screen(120, 3000)
                 stream = pyte.ByteStream(screen)
                 idle_count = 0
                 while idle_count < 3:

@@ -24,8 +24,8 @@ class SessionManager:
                 logger.info(f"Restored session configuration from DB for chat_id={chat_id}: {saved}")
                 session = AgySession(
                     chat_id,
-                    model_name=saved.get("model_name", "gemini-3.1-pro-high"),
-                    effort=saved.get("effort", "high"),
+                    model_name=saved.get("model_name", "gemini-3.6-flash-low"),
+                    effort=saved.get("effort", "low"),
                     mode=saved.get("mode", "default"),
                     conversation_id=saved.get("conversation_id"),
                     workspace=saved.get("workspace")
