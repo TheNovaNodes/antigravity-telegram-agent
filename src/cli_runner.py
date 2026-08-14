@@ -332,6 +332,9 @@ class AgySession:
             menu_confirmed = False
             # MCP servers can take a while to initialize, wait up to 60 seconds (120 * 0.5s)
             while idle_count < 120:
+                if self.child is None or not self.child.isalive():
+                    logger.error("CLI process died during startup")
+                    break
                 try:
                     chunk = await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
                     if chunk:
@@ -345,7 +348,7 @@ class AgySession:
                             if "select login method" in banner_text:
                                 logger.error(f"Auth lost detected for chat_id={self.chat_id}. Aborting.")
                                 self.close()
-                                raise RuntimeError("⚠️ <b>Агент потерял авторизацию!</b>\nПожалуйста, зайдите на сервер через SSH от пользователя root и выполните команду <code>agy auth login</code>, затем повторите запрос.")
+                                raise RuntimeError("⚠️ <b>Agent lost authorization!</b>\nPlease log in to the server via SSH as the root user and execute the <code>agy auth login</code> command, then repeat your request.")
 
                             if any(phrase in banner_text for phrase in ["arrow keys to navigate", "use arrow keys", "what would you like to do"]):
                                 logger.info("Auto-confirming initial agy CLI interactive prompt with Enter")
@@ -379,7 +382,7 @@ class AgySession:
             # If we exited the loop without returning, we timed out or hit EOF
             logger.error(f"Failed to detect ready prompt for chat_id={self.chat_id}. PTY might be hung.")
             self.close()
-            raise RuntimeError("⚠️ <b>Ошибка запуска:</b> Процесс CLI не смог корректно стартовать или завис. Пожалуйста, попробуйте сбросить сессию через <code>/new</code>.")
+            raise RuntimeError("⚠️ <b>Startup Error:</b> The CLI process could not start correctly or hung. Please try to reset the session via <code>/new</code>.")
 
     async def stream_response(self, prompt: str):
         """Yields progressive formatted text chunks as agy generates content on screen."""
@@ -387,7 +390,7 @@ class AgySession:
             await self._ensure_started()
 
             if not self.child or not self.child.isalive():
-                yield "⚠️ Не удалось запустить CLI-процесс. Попробуйте /new и повторите запрос."
+                yield "⚠️ Failed to launch CLI process. Try /new and repeat the request."
                 return
 
             clean_prompt = prompt.replace("\n", " ").strip()
@@ -410,7 +413,7 @@ class AgySession:
 
             while True:
                 if self.child is None or not self.child.isalive():
-                    yield "\n\n⚠️ *Процесс прерван или конфигурация изменена. Запрос отменен.*"
+                    yield "\n\n⚠️ *Process interrupted or configuration changed. Request cancelled.*"
                     break
                 try:
                     chunk = await asyncio.to_thread(

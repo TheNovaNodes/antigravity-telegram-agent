@@ -103,7 +103,7 @@ def get_models_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for alias, full_name in AVAILABLE_MODELS.items():
         buttons.append([InlineKeyboardButton(text=f"🤖 {alias} ({full_name})", callback_data=f"set_model:{alias}")])
-    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -111,8 +111,8 @@ def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMa
     """Build resume keyboard with current session indicator and new session button."""
     conversations = get_available_conversations(limit=15)
     buttons = [
-        [InlineKeyboardButton(text="🆕 Новая сессия (чистый диалог)", callback_data="resume_set:new")],
-        [InlineKeyboardButton(text="🔄 Продолжить последнюю сессию (--continue)", callback_data="resume_set:latest")]
+        [InlineKeyboardButton(text="🆕 New Session (Clean Chat)", callback_data="resume_set:new")],
+        [InlineKeyboardButton(text="🔄 Resume Latest Session (--continue)", callback_data="resume_set:latest")]
     ]
     for conv in conversations:
         date_part = f" ({conv['date']})" if conv['date'] else ""
@@ -121,26 +121,26 @@ def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMa
         label = f"{marker}{conv['summary'][:28]}{date_part}"
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"resume_set:{conv['id']}")])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_effort_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text="⚡ Low (Быстрый)", callback_data="set_effort:low"),
-            InlineKeyboardButton(text="🧠 Medium (Баланс)", callback_data="set_effort:medium"),
-            InlineKeyboardButton(text="🚀 High (Глубокий)", callback_data="set_effort:high")
+            InlineKeyboardButton(text="⚡ Low (Fast)", callback_data="set_effort:low"),
+            InlineKeyboardButton(text="🧠 Medium (Balanced)", callback_data="set_effort:medium"),
+            InlineKeyboardButton(text="🚀 High (Deep)", callback_data="set_effort:high")
         ],
-        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_mode_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="💬 Standard Chat", callback_data="set_mode:default")],
-        [InlineKeyboardButton(text="📋 Planning Mode (Планирование)", callback_data="set_mode:plan")],
-        [InlineKeyboardButton(text="⚡ Auto-Edits Mode (Авто-правки)", callback_data="set_mode:accept-edits")],
-        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
+        [InlineKeyboardButton(text="📋 Planning Mode", callback_data="set_mode:plan")],
+        [InlineKeyboardButton(text="⚡ Auto-Edits Mode", callback_data="set_mode:accept-edits")],
+        [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -149,8 +149,8 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     
     icons = {
-        "anythingllm": "🧠 AnythingLLM (Память)",
-        "searxng": "🔍 SearXNG (Поиск)",
+        "anythingllm": "🧠 AnythingLLM (Memory)",
+        "searxng": "🔍 SearXNG (Search)",
         "nextcloud": "💼 Nextcloud (CRM)",
         "anythingllm-control": "⚙️ AnythingLLM (Control)",
         "nextcloud-control": "⚙️ Nextcloud (Control)"
@@ -164,7 +164,7 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
             btn_text = btn_text[:27] + "..."
         buttons.append([InlineKeyboardButton(text=f"{btn_text}: {state_icon}", callback_data=f"toggle_mcp:{key}")])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @router.message(Command("start"), Command("help"))
@@ -204,8 +204,8 @@ async def cmd_models(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        f"🎯 <b>Текущая модель:</b> <code>{session.model_name}</code>\n\n"
-        "Выбери модель для переключения:",
+        f"🎯 <b>Current Model:</b> <code>{session.model_name}</code>\n\n"
+        "Select a model to switch:",
         reply_markup=get_models_keyboard(),
         parse_mode="HTML"
     )
@@ -216,8 +216,8 @@ async def cmd_effort(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        f"⚡ <b>Текущий Reasoning Effort:</b> <code>{session.effort}</code>\n\n"
-        "Выбери глубинное усилие рассуждения агента:",
+        f"⚡ <b>Current Reasoning Effort:</b> <code>{session.effort}</code>\n\n"
+        "Select the agent's reasoning effort depth:",
         reply_markup=get_effort_keyboard(),
         parse_mode="HTML"
     )
@@ -228,8 +228,8 @@ async def cmd_mode(message: Message):
         return
     session = session_manager.get_session(message.chat.id)
     await message.answer(
-        f"🎯 <b>Текущий Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
-        "Выбери режим исполнения:",
+        f"🎯 <b>Current Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+        "Select execution mode:",
         reply_markup=get_mode_keyboard(),
         parse_mode="HTML"
     )
@@ -248,15 +248,15 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             parse_mode="HTML"
         )
     elif action == "models":
-        await callback_query.message.edit_text("🎯 <b>Выбор нейросетевой модели:</b>", reply_markup=get_models_keyboard(), parse_mode="HTML")
+        await callback_query.message.edit_text("🎯 <b>AI Model Selection:</b>", reply_markup=get_models_keyboard(), parse_mode="HTML")
     elif action == "effort":
-        await callback_query.message.edit_text("⚡ <b>Выбор глубинного уровня рассуждений (Effort):</b>", reply_markup=get_effort_keyboard(), parse_mode="HTML")
+        await callback_query.message.edit_text("⚡ <b>Reasoning Effort Selection:</b>", reply_markup=get_effort_keyboard(), parse_mode="HTML")
     elif action == "mode":
-        await callback_query.message.edit_text("🎯 <b>Выбор режима выполнения (Execution Mode):</b>", reply_markup=get_mode_keyboard(), parse_mode="HTML")
+        await callback_query.message.edit_text("🎯 <b>Execution Mode Selection:</b>", reply_markup=get_mode_keyboard(), parse_mode="HTML")
     elif action == "workspace":
         await callback_query.message.edit_text(
-            f"📂 <b>Текущий Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
-            "Выбери проект/папку для закрепления на всю сессию:",
+            f"📂 <b>Current Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
+            "Select a project/folder to pin for the session:",
             reply_markup=get_workspace_keyboard(),
             parse_mode="HTML"
         )
@@ -342,11 +342,11 @@ async def process_account_reload_callback(callback_query: CallbackQuery):
     session.close()
     email = get_active_account_email()
     text = (
-        f"⚡ <b>Авторизация успешно перезагружена!</b>\n\n"
-        f"👤 <b>Активный аккаунт:</b> <code>{email}</code>\n\n"
-        f"Следующий запрос пойдет с новыми учетными данными."
+        f"⚡ <b>Authorization successfully reloaded!</b>\n\n"
+        f"👤 <b>Active Account:</b> <code>{email}</code>\n\n"
+        f"The next request will use the new credentials."
     )
-    await callback_query.answer("Авторизация перезагружена!")
+    await callback_query.answer("Authorization reloaded!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
@@ -355,8 +355,8 @@ async def process_mcp_toggle_callback(callback_query: CallbackQuery):
         return
     key = callback_query.data.split(":")[1]
     new_state = mcp_manager.toggle_server(key)
-    state_str = "включен ✅" if new_state else "отключен ⚪"
-    await callback_query.answer(f"MCP сервер {key} {state_str}")
+    state_str = "enabled ✅" if new_state else "disabled ⚪"
+    await callback_query.answer(f"MCP server {key} {state_str}")
     report = mcp_manager.get_status_report()
     await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
 
@@ -367,14 +367,14 @@ async def process_model_callback(callback_query: CallbackQuery):
     alias = callback_query.data.split(":")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_model(alias):
-        await callback_query.answer("Модель изменена!")
+        await callback_query.answer("Model changed!")
         await callback_query.message.edit_text(
-            f"✅ <b>Модель успешно изменена!</b>\nНовая модель: <code>{session.model_name}</code>",
+            f"✅ <b>Model successfully changed!</b>\nNew model: <code>{session.model_name}</code>",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
     else:
-        await callback_query.answer("Эта модель уже выбрана!")
+        await callback_query.answer("This model is already selected!")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_effort:"))
 async def process_effort_callback(callback_query: CallbackQuery):
@@ -383,14 +383,14 @@ async def process_effort_callback(callback_query: CallbackQuery):
     level = callback_query.data.split(":")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_effort(level):
-        await callback_query.answer("Effort изменен!")
+        await callback_query.answer("Effort changed!")
         await callback_query.message.edit_text(
-            f"✅ <b>Effort успешно изменен!</b>\nУровень рассуждений: <code>{session.effort.upper()}</code>",
+            f"✅ <b>Effort successfully changed!</b>\nReasoning level: <code>{session.effort.upper()}</code>",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
     else:
-        await callback_query.answer("Этот effort уже выбран!")
+        await callback_query.answer("This effort is already selected!")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_mode:"))
 async def process_mode_callback(callback_query: CallbackQuery):
@@ -399,14 +399,14 @@ async def process_mode_callback(callback_query: CallbackQuery):
     mode_key = callback_query.data.split(":")[1]
     session = session_manager.get_session(callback_query.message.chat.id)
     if session.set_mode(mode_key):
-        await callback_query.answer("Режим изменен!")
+        await callback_query.answer("Mode changed!")
         await callback_query.message.edit_text(
-            f"✅ <b>Execution Mode успешно изменен!</b>\nРежим: <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>",
+            f"✅ <b>Execution Mode successfully changed!</b>\nMode: <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>",
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
     else:
-        await callback_query.answer("Этот режим уже выбран!")
+        await callback_query.answer("This mode is already selected!")
 
 @router.message(Command("reset"), Command("new"), Command("clear"))
 async def cmd_reset(message: Message):
@@ -415,9 +415,9 @@ async def cmd_reset(message: Message):
     chat_id = message.chat.id
     new = session_manager.new_session(chat_id)
     await message.answer(
-        f"✨ <b>Новая сессия создана!</b>\n\n"
-        f"Настройки сохранены: <code>{new.model_name}</code> / <code>{new.effort}</code> / <code>{AVAILABLE_MODES.get(new.mode, new.mode)}</code>\n"
-        f"Следующий запрос начнёт чистый диалог.",
+        f"✨ <b>New session created!</b>\n\n"
+        f"Settings saved: <code>{new.model_name}</code> / <code>{new.effort}</code> / <code>{AVAILABLE_MODES.get(new.mode, new.mode)}</code>\n"
+        f"The next request will start a clean chat.",
         parse_mode="HTML"
     )
 
@@ -429,12 +429,12 @@ async def cmd_rename(message: Message):
     
     session = session_manager.get_session(message.chat.id)
     if not session.conversation_id:
-        await message.answer("⚠️ Нет активной сессии для переименования. Сначала начните диалог или выберите через /resume.", parse_mode="HTML")
+        await message.answer("⚠️ No active session to rename. First start a chat or select one via /resume.", parse_mode="HTML")
         return
         
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("ℹ️ <b>Как использовать:</b>\nОтправьте <code>/rename Новое Имя Сессии</code>", parse_mode="HTML")
+        await message.answer("ℹ️ <b>How to use:</b>\nSend <code>/rename New Session Name</code>", parse_mode="HTML")
         return
         
     new_title = parts[1].strip()
@@ -444,9 +444,9 @@ async def cmd_rename(message: Message):
     success = rename_conversation(session.conversation_id, new_title)
     
     if success:
-        await message.answer(f"✅ <b>Сессия переименована!</b>\nНовое имя: <i>{new_title}</i>", parse_mode="HTML")
+        await message.answer(f"✅ <b>Session renamed!</b>\nNew name: <i>{new_title}</i>", parse_mode="HTML")
     else:
-        await message.answer("❌ Ошибка при переименовании. База данных недоступна или ID не найден.", parse_mode="HTML")
+        await message.answer("❌ Error renaming. Database unavailable or ID not found.", parse_mode="HTML")
 
 @router.message(Command("track_jules"))
 async def cmd_track_jules(message: Message):
@@ -455,13 +455,13 @@ async def cmd_track_jules(message: Message):
         
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("ℹ️ <b>Как использовать:</b>\nОтправьте <code>/track_jules ИмяСессииJules</code>", parse_mode="HTML")
+        await message.answer("ℹ️ <b>How to use:</b>\nSend <code>/track_jules JulesSessionName</code>", parse_mode="HTML")
         return
         
     session_name = parts[1].strip()
     ACTIVE_JULES_SESSIONS[session_name] = message.chat.id
     
-    await message.answer(f"✅ <b>Jules сессия добавлена в мониторинг!</b>\nИмя: <code>{session_name}</code>\n\nВы получите уведомление, когда она завершится.", parse_mode="HTML")
+    await message.answer(f"✅ <b>Jules session added to monitoring!</b>\nName: <code>{session_name}</code>\n\nYou will receive a notification when it finishes.", parse_mode="HTML")
 
 
 @router.message(Command("debug"))
@@ -530,8 +530,8 @@ def get_workspace_keyboard() -> InlineKeyboardMarkup:
                         path_hash = hashlib.sha256(p_str.encode()).hexdigest()[:16]
                         buttons.append([InlineKeyboardButton(text=label, callback_data=f"set_ws:{path_hash}")])
 
-    buttons.append([InlineKeyboardButton(text="🏠 Домашняя директория (/root)", callback_data="set_ws:home")])
-    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="🏠 Home directory (/root)", callback_data="set_ws:home")])
+    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -565,7 +565,7 @@ async def process_workspace_callback(callback_query: CallbackQuery):
                 break
         
         if not found:
-            await callback_query.answer("❌ Ошибка: Папка не найдена", show_alert=True)
+            await callback_query.answer("❌ Error: Folder not found", show_alert=True)
             return
 
     session = session_manager.get_session(callback_query.message.chat.id)
@@ -645,11 +645,11 @@ async def cmd_resume(message: Message):
     current_info = ""
     if session.conversation_id:
         if session.conversation_id == "latest":
-            current_info = "\n\n💬 <b>Текущая:</b> Последняя активная (--continue)"
+            current_info = "\n\n💬 <b>Current:</b> Latest active (--continue)"
         else:
-            current_info = f"\n\n💬 <b>Текущая:</b> <code>{session.conversation_id[:8]}...</code>"
+            current_info = f"\n\n💬 <b>Current:</b> <code>{session.conversation_id[:8]}...</code>"
     await message.answer(
-        f"📂 <b>Выберите сохраненную сессию из истории agy CLI для возобновления:</b>{current_info}",
+        f"📂 <b>Select a saved session from agy CLI history to resume:</b>{current_info}",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -664,17 +664,17 @@ async def process_resume_callback(callback_query: CallbackQuery):
 
     if conv_id == "new":
         session_manager.new_session(callback_query.message.chat.id)
-        text = f"✨ <b>Новая чистая сессия создана!</b>\nНастройки сохранены. Следующий запрос начнёт новый диалог."
+        text = f"✨ <b>New clean session created!</b>\nSettings saved. The next request will start a new chat."
     elif conv_id == "latest":
         session.set_conversation("latest")
-        text = "🔄 <b>Возобновлена последняя активная сессия agy CLI (<code>--continue</code>)!</b>"
+        text = "🔄 <b>Resumed latest active agy CLI session (<code>--continue</code>)!</b>"
     else:
         session.set_conversation(conv_id)
         title = get_conversation_title(conv_id)
-        title_display = f"\n📝 <b>Название:</b> <i>{title}</i>" if title else ""
-        text = f"✅ <b>Сессия возобновлена!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nСледующий запрос продолжится в контексте выбранного диалога."
+        title_display = f"\n📝 <b>Name:</b> <i>{title}</i>" if title else ""
+        text = f"✅ <b>Session resumed!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nThe next request will continue in the context of the selected chat."
 
-    await callback_query.answer("Сессия переключена!")
+    await callback_query.answer("Session switched!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
 
 from aiogram.exceptions import TelegramBadRequest
@@ -707,7 +707,7 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
     
     # Threshold for document attachment (8000 chars)
     if total_len > 8000:
-        preview_text = text[:2000].rstrip() + "\n\n...\n\n📄 <i>[Ответ слишком большой. Полная версия в файле ниже]</i>"
+        preview_text = text[:2000].rstrip() + "\n\n...\n\n📄 <i>[Response too large. Full version in the file below]</i>"
         await safe_edit_text(placeholder, preview_text)
         
         # Prepare .md file attachment
@@ -715,7 +715,7 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
         doc_file = BufferedInputFile(file_bytes, filename="agent_response.md")
         await message.answer_document(
             document=doc_file,
-            caption=f"📄 <b>Полный ответ AntigravityTelegramAgent</b> ({total_len} символов)",
+            caption=f"📄 <b>Full AntigravityTelegramAgent response</b> ({total_len} chars)",
             parse_mode="HTML"
         )
         return
@@ -863,7 +863,7 @@ async def handle_message(message: Message):
 
     # Trigger Telegram typing action
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    placeholder = await message.answer("🤔 Думаю...")
+    placeholder = await message.answer("🤔 Thinking...")
     session = session_manager.get_session(message.chat.id)
 
     last_edit_time = 0
@@ -878,7 +878,7 @@ async def handle_message(message: Message):
             if now - last_edit_time > 1.5 and partial_text.strip() and partial_text != last_text:
                 last_edit_time = now
                 last_text = partial_text
-                disp_text = partial_text[:3800] + "\n\n<i>⏳ Печатаю...</i>" if len(partial_text) > 3800 else partial_text + "\n\n<i>⏳ Печатаю...</i>"
+                disp_text = partial_text[:3800] + "\n\n<i>⏳ Typing...</i>" if len(partial_text) > 3800 else partial_text + "\n\n<i>⏳ Typing...</i>"
                 await safe_edit_text(placeholder, disp_text)
 
         # Log structured execution audit log
@@ -896,13 +896,13 @@ async def handle_message(message: Message):
             await send_response_chunks(message, placeholder, response_text)
         else:
             await placeholder.edit_text(
-                "⚠️ <b>Агент отработал молча или не вернул текст.</b>\n\n"
-                "📌 <i>Возможные причины:</i>\n"
-                f"• Модель <code>{session.model_name}</code> или <code>high</code> effort скрыла фазу мышления или превысила таймаут PTY-экрана.\n"
-                "• На серверах модели возникла кратковременная пауза (Capacity/Thinking suppression).\n\n"
-                "💡 <b>Решение:</b>\n"
-                "1. Повторите запрос или используйте <code>/models</code> для выбора другой модели.\n"
-                "2. Или снизите <code>/effort</code> до <code>medium</code>.",
+                "⚠️ <b>Agent executed silently or returned no text.</b>\n\n"
+                "📌 <i>Possible reasons:</i>\n"
+                f"• The model <code>{session.model_name}</code> or <code>high</code> effort hid the reasoning phase or exceeded the PTY screen timeout.\n"
+                "• There was a temporary pause on the model servers (Capacity/Thinking suppression).\n\n"
+                "💡 <b>Solution:</b>\n"
+                "1. Repeat the request or use <code>/models</code> to select a different model.\n"
+                "2. Or lower the <code>/effort</code> to <code>medium</code>.",
                 parse_mode="HTML"
             )
 
@@ -912,7 +912,7 @@ async def handle_message(message: Message):
     except Exception as e:
         logger.error(f"Error handling message for chat_id={message.chat.id}: {e}", exc_info=True)
         try:
-            await safe_edit_text(placeholder, f"❌ <b>Произошла ошибка:</b> {e}")
+            await safe_edit_text(placeholder, f"❌ <b>An error occurred:</b> {e}")
         except Exception:
             pass
 
