@@ -452,14 +452,20 @@ class AgySession:
                                         continue
                                     if clean_l in (">", "❯", "›") or clean_l.startswith("> ") or clean_l.startswith("❯ ") or clean_l.startswith("› ") or clean_l.startswith("? "):
                                         is_prompt_ready = True
+                                        break
+                                    # Don't break if we hit menu items like "Settings" or "Exit"
+                                    if clean_l in ("Chat", "Settings", "Exit", "New session", "Resume session", "❯ Chat", "❯ Settings", "❯ Exit"):
+                                        continue
+                                    
+                                    # If it's some other non-empty line, we haven't reached the prompt
                                     break
                                     
-                            if is_prompt_ready and content_stable_ticks >= 15 and received_content_bytes:
+                            if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
                                 break
-                            elif content_stable_ticks >= 600 and not received_content_bytes:
+                            elif content_stable_ticks >= 60 and not received_content_bytes:
                                 logger.warning(f"No response timeout (60s) for chat_id={self.chat_id}")
                                 break
-                            elif content_stable_ticks >= 600:  # 60 seconds fallback for long tool calls
+                            elif content_stable_ticks >= 60:  # 60 seconds fallback for long tool calls
                                 logger.warning(f"Timeout fallback triggered for chat_id={self.chat_id} (60s stable without prompt)")
                                 break
                         else:
