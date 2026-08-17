@@ -30,7 +30,12 @@ class TestAuthHotReload(unittest.TestCase):
 
         # Call get_auth_state_signature check
         import asyncio
-        asyncio.run(session._ensure_started())
+        with patch("src.cli_runner.pexpect.spawn") as mock_spawn:
+            mock_new_child = MagicMock()
+            mock_new_child.isalive.return_value = True
+            mock_new_child.read_nonblocking.return_value = "> "
+            mock_spawn.return_value = mock_new_child
+            asyncio.run(session._ensure_started())
 
         # Assert session.close() was called to terminate old stale PTY process
         session.close.assert_called_once()
