@@ -410,12 +410,12 @@ class AgySession:
 
             clean_prompt = prompt.replace("\n", " ").strip()
             try:
-                self.child.send((clean_prompt + "\n").encode("utf-8"))
+                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
             except (pexpect.EOF, pexpect.ExceptionPexpect, OSError) as e:
                 logger.warning(f"Failed to send prompt to agy process for chat_id={self.chat_id}: {e}")
                 self.close()
                 await self._ensure_started()
-                self.child.send((clean_prompt + "\n").encode("utf-8"))
+                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
 
             screen = pyte.Screen(122, 3000)
             stream = pyte.ByteStream(screen)
@@ -473,7 +473,7 @@ class AgySession:
                                         continue
                                     
                                     # If it's some other non-empty line, we haven't reached the prompt
-                                    continue
+                                    break
                                     
                             if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
                                 break
