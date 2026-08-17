@@ -107,10 +107,43 @@ class TestCliRunner(unittest.TestCase):
         self.assertEqual(mock_child1.send.call_count, 1)
         self.assertEqual(mock_child2.send.call_count, 1)
 
+    @patch("src.cli_runner.AgySession._ensure_started")
+    @patch("src.cli_runner.pyte")
+    def test_soul_bootstrap_injection(self, mock_pyte, mock_ensure_started):
+        import asyncio
+        import pexpect
+
+        session = AgySession(12345)
+        mock_child = MagicMock()
+        mock_child.isalive.return_value = True
+        mock_child.read_nonblocking.side_effect = pexpect.EOF("done")
+
+        async def fake_ensure():
+            session.child = mock_child
+
+        mock_ensure_started.side_effect = fake_ensure
+        mock_screen = MagicMock()
+        mock_screen.display = ["Ready"]
+        mock_pyte.Screen.return_value = mock_screen
+
+        # Consume generator
+        async def run_stream():
+            chunks = []
+            async for chunk in session.stream_response("Tell me a story"):
+                chunks.append(chunk)
+            return chunks
+
+        asyncio.run(run_stream())
+        self.assertTrue(mock_child.send.called)
+        sent_bytes = mock_child.send.call_args[0][0]
+        sent_text = sent_bytes.decode("utf-8")
+        self.assertIn("SYSTEM INSTRUCTION / SOUL BOOTSTRAP", sent_text)
+        self.assertIn("ТРИКСТЕР", sent_text)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

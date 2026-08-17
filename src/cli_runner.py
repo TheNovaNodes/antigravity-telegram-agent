@@ -404,6 +404,7 @@ class AgySession:
     async def stream_response(self, prompt: str):
         """Yields progressive formatted text chunks as agy generates content on screen."""
         async with self._lock:
+            is_first_launch = not bool(self.child and self.child.isalive())
             await self._ensure_started()
 
             if not self.child or not self.child.isalive():
@@ -411,6 +412,17 @@ class AgySession:
                 return
 
             clean_prompt = prompt.replace("\n", " ").strip()
+            
+            # Bootstrap Trickster's Soul & identity if this is a newly spawned conversation session
+            if is_first_launch and not self.conversation_id:
+                soul_file = Path(__file__).parent.parent / "SOUL.md"
+                if soul_file.exists():
+                    try:
+                        soul_content = soul_file.read_text(encoding="utf-8").strip()
+                        clean_prompt = f"SYSTEM INSTRUCTION / SOUL BOOTSTRAP:\n{soul_content}\n\nUSER REQUEST:\n{clean_prompt}"
+                    except Exception as e:
+                        logger.warning(f"Could not load SOUL.md: {e}")
+
             try:
                 self.child.send((clean_prompt + "\r\n").encode("utf-8"))
             except (pexpect.EOF, pexpect.ExceptionPexpect, OSError) as e:
