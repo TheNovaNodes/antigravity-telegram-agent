@@ -30,7 +30,9 @@ def _safe_screen_display(screen) -> list[str]:
             s = re.sub(r"esc to cancel.*?(low|high|pro|sonnet|opus|haiku)", "", s, flags=re.IGNORECASE)
             s = re.sub(r"\? for shortcuts.*?(low|high|pro|sonnet|opus|haiku)", "", s, flags=re.IGNORECASE)
             s = re.sub(r"Gemini 3\..*?(low|high|pro)", "", s, flags=re.IGNORECASE)
-            s = re.sub(r"● Bash.*?(expand\))", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"· \d+ task\(s\) · /tasks", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"· \d+ task\(s\)", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"● \[\d+:\d+:\d+\].*", "", s, flags=re.IGNORECASE)
             clean.append(s)
         return clean
     except Exception as e:
