@@ -19,16 +19,23 @@ from src.formatters import format_dyslexia_friendly_text, extract_new_response_l
 
 logger = logging.getLogger(__name__)
 
-def _safe_screen_display(screen):
+def _safe_screen_display(screen) -> list[str]:
+    """Extract pyte screen lines reliably without throwing exceptions."""
     try:
-        return screen.display
-    except IndexError:
-        for y in range(screen.lines):
-            for x in range(screen.columns):
-                char = screen.buffer[y][x]
-                if not char.data:
-                    screen.buffer[y][x] = char._replace(data=" ")
-        return screen.display
+        raw = screen.display
+        clean = []
+        for l in raw:
+            s = l.rstrip()
+            # Scrub Pyte wrap garble artifacts
+            s = re.sub(r"esc to cancel.*?(low|high|pro|sonnet|opus|haiku)", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"\? for shortcuts.*?(low|high|pro|sonnet|opus|haiku)", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"Gemini 3\..*?(low|high|pro)", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"● Bash.*?(expand\))", "", s, flags=re.IGNORECASE)
+            clean.append(s)
+        return clean
+    except Exception as e:
+        logger.error(f"Error reading pyte screen display: {e}")
+        return []
 
 AVAILABLE_MODELS = {
     "gemini-flash-high": "gemini-3.6-flash-high",
@@ -334,7 +341,7 @@ class AgySession:
             self.child.setwinsize(3000, 120)
             self.spawn_auth_signature = current_auth_sig
 
-            screen = pyte.Screen(120, 3000)
+            screen = pyte.Screen(122, 3000)
             stream = pyte.ByteStream(screen)
             idle_count = 0
             menu_confirmed = False
@@ -377,7 +384,7 @@ class AgySession:
                             if clean_l_no_ansi in (">", "❯", "›") or clean_l_no_ansi.startswith("> ") or clean_l_no_ansi.startswith("❯ ") or clean_l_no_ansi.startswith("› ") or clean_l_no_ansi.startswith("? "):
                                 logger.info("Ready prompt detected after cold start.")
                                 return
-                            break
+                            continue
                     else:
                         break
                     await asyncio.sleep(0.01)
@@ -410,7 +417,7 @@ class AgySession:
                 await self._ensure_started()
                 self.child.send((clean_prompt + "\n").encode("utf-8"))
 
-            screen = pyte.Screen(120, 3000)
+            screen = pyte.Screen(122, 3000)
             stream = pyte.ByteStream(screen)
 
             total_timeout_count = 0
@@ -466,7 +473,7 @@ class AgySession:
                                         continue
                                     
                                     # If it's some other non-empty line, we haven't reached the prompt
-                                    break
+                                    continue
                                     
                             if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
                                 break

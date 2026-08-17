@@ -21,11 +21,14 @@ def is_tui_noise(line: str, prompt: str = "") -> bool:
     lower = s.lower()
     # Filter CLI header banners, status bars, and reasoning traces
     if any(pattern in lower for pattern in [
-        "antigravity cli", "gemini 3.", "claude-", "gpt-", "esc to cancel",
+        "antigravity cli", "claude-", "gpt-", "gemini",
         "generating...", "ctrl+c", "reasoning effort", "execution mode",
         "thought for", "prioritizing tool", "tool usage", "? for shortcuts"
     ]):
-        return True
+        # Check if the line ONLY contains the noise, or if it's mixed with actual content
+        # If it's too long, it might contain actual content appended to it!
+        if len(s) < 80:
+            return True
 
     # Filter prompt echoes and shell path prompts
     if s.startswith("›") or s.startswith("❯") or s.startswith("»") or "~/" in s or "labdoctorm" in lower:
@@ -94,6 +97,8 @@ def format_table_block(table_lines: list[str]) -> str:
     return f"<pre><code>{escaped}</code></pre>"
 
 
+import uuid
+
 def markdown_to_html(text: str) -> str:
     """Convert Markdown syntax to full Telegram-compatible Rich Text HTML safely.
 
@@ -113,6 +118,7 @@ def markdown_to_html(text: str) -> str:
 
     # Preserve multi-line code blocks during escaping
     code_blocks = []
+    placeholder_prefix = f"__CODE_BLOCK_{uuid.uuid4().hex[:8]}_"
 
     def save_code_block(match):
         lang = match.group(1) or ""
@@ -121,13 +127,13 @@ def markdown_to_html(text: str) -> str:
         idx = len(code_blocks)
         class_attr = f' class="language-{lang.strip()}"' if lang.strip() else ""
         code_blocks.append(f'<pre><code{class_attr}>{escaped_code}</code></pre>')
-        return f"__CODE_BLOCK_{idx}__"
+        return f"{placeholder_prefix}{idx}__"
 
     text_processed = re.sub(r"```(\w*)\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
     escaped = text_processed.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     for idx, cb in enumerate(code_blocks):
-        escaped = escaped.replace(f"__CODE_BLOCK_{idx}__", cb)
+        escaped = escaped.replace(f"{placeholder_prefix}{idx}__", cb)
 
     lines = escaped.split("\n")
     processed_lines = []
@@ -248,6 +254,13 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "
     cleaned_lines = []
     for line in lines_to_process:
         l = line.rstrip()
+        
+        # Scrub Pyte wrap garble artifacts
+        l = re.sub(r"esc to cancel.*?(low|high|pro|sonnet|opus|haiku)", "", l, flags=re.IGNORECASE)
+        l = re.sub(r"\? for shortcuts.*?(low|high|pro|sonnet|opus|haiku)", "", l, flags=re.IGNORECASE)
+        l = re.sub(r"Gemini 3\..*?(low|high|pro)", "", l, flags=re.IGNORECASE)
+        l = re.sub(r"● Bash.*?(expand\))", "", l, flags=re.IGNORECASE)
+        
         if is_tui_noise(l, prompt):
             continue
 

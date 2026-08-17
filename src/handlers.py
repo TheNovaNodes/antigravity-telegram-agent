@@ -459,7 +459,9 @@ async def cmd_track_jules(message: Message):
         return
         
     session_name = parts[1].strip()
-    ACTIVE_JULES_SESSIONS[session_name] = message.chat.id
+    from src.jules_monitor import ACTIVE_JULES_SESSIONS, ACTIVE_JULES_SESSIONS_LOCK
+    async with ACTIVE_JULES_SESSIONS_LOCK:
+        ACTIVE_JULES_SESSIONS[session_name] = message.chat.id
     
     await message.answer(f"✅ <b>Jules session added to monitoring!</b>\nName: <code>{session_name}</code>\n\nYou will receive a notification when it finishes.", parse_mode="HTML")
 
@@ -677,23 +679,39 @@ async def process_resume_callback(callback_query: CallbackQuery):
     await callback_query.answer("Session switched!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 async def safe_edit_text(target: Message, text: str):
-    """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text."""
+    """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text. Handles Rate Limits."""
     try:
         await target.edit_text(text, parse_mode="HTML")
+    except TelegramRetryAfter as e:
+        logger.warning(f"Rate limited by Telegram. Waiting {e.retry_after} seconds...")
+        await asyncio.sleep(e.retry_after)
+        await safe_edit_text(target, text)
     except TelegramBadRequest as e:
         logger.warning(f"HTML parse mode failed for edit_text, falling back to plain text: {e}")
-        await target.edit_text(text, parse_mode=None)
+        try:
+            await target.edit_text(text, parse_mode=None)
+        except TelegramRetryAfter as retry_e:
+            await asyncio.sleep(retry_e.retry_after)
+            await target.edit_text(text, parse_mode=None)
 
 async def safe_answer(target: Message, text: str):
-    """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text."""
+    """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text. Handles Rate Limits."""
     try:
         await target.answer(text, parse_mode="HTML")
+    except TelegramRetryAfter as e:
+        logger.warning(f"Rate limited by Telegram. Waiting {e.retry_after} seconds...")
+        await asyncio.sleep(e.retry_after)
+        await safe_answer(target, text)
     except TelegramBadRequest as e:
         logger.warning(f"HTML parse mode failed for answer, falling back to plain text: {e}")
-        await target.answer(text, parse_mode=None)
+        try:
+            await target.answer(text, parse_mode=None)
+        except TelegramRetryAfter as retry_e:
+            await asyncio.sleep(retry_e.retry_after)
+            await target.answer(text, parse_mode=None)
 
 from aiogram.types import BufferedInputFile
 
