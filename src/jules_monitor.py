@@ -10,6 +10,13 @@ logger = logging.getLogger(__name__)
 ACTIVE_JULES_SESSIONS = {}
 ACTIVE_JULES_SESSIONS_LOCK = asyncio.Lock()
 
+# In-memory storage for pending patches: session_id_hash -> patch_text
+PENDING_JULES_PATCHES = {}
+
+def make_session_hash(session_name: str) -> str:
+    import hashlib
+    return hashlib.sha256(session_name.encode('utf-8')).hexdigest()[:12]
+
 async def monitor_jules_sessions(bot: Bot, interval_seconds: int = 15):
     """Background task to poll active Jules sessions and notify users upon completion."""
     if not os.environ.get("JULES_API_KEY"):
@@ -70,9 +77,20 @@ async def monitor_jules_sessions(bot: Bot, interval_seconds: int = 15):
                         await bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
                         
                         if patch_text:
+                            sess_hash = make_session_hash(session_name)
+                            PENDING_JULES_PATCHES[sess_hash] = {
+                                "session_name": session_name,
+                                "patch_text": patch_text
+                            }
+                            
+                            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                            test_kb = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🧪 Apply Patch & Run Pytest", callback_data=f"jules_test:{sess_hash}")]
+                            ])
+                            
                             if len(patch_text) <= 3000:
                                 patch_msg = f"📄 <b>Git Patch:</b>\n<pre><code class=\"language-diff\">{patch_text}</code></pre>"
-                                await bot.send_message(chat_id=chat_id, text=patch_msg, parse_mode="HTML")
+                                await bot.send_message(chat_id=chat_id, text=patch_msg, reply_markup=test_kb, parse_mode="HTML")
                             else:
                                 from aiogram.types import BufferedInputFile
                                 patch_bytes = patch_text.encode("utf-8")
@@ -82,6 +100,7 @@ async def monitor_jules_sessions(bot: Bot, interval_seconds: int = 15):
                                     chat_id=chat_id,
                                     document=doc,
                                     caption=f"📄 Git Patch for session <code>{session_name}</code>",
+                                    reply_markup=test_kb,
                                     parse_mode="HTML"
                                 )
                         

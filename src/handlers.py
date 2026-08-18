@@ -150,10 +150,13 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
     
     icons = {
         "anythingllm": "🧠 AnythingLLM (Memory)",
-        "searxng": "🔍 SearXNG (Search)",
-        "nextcloud": "💼 Nextcloud (CRM)",
         "anythingllm-control": "⚙️ AnythingLLM (Control)",
-        "nextcloud-control": "⚙️ Nextcloud (Control)"
+        "searxng": "🔍 SearXNG (Search)",
+        "searxng-control": "⚙️ SearXNG (Control)",
+        "nextcloud": "💼 Nextcloud (CRM)",
+        "nextcloud-control": "⚙️ Nextcloud (Control)",
+        "google-jules-doctormes": "🤖 Jules (Doctormes)",
+        "google-jules-novanodes": "🤖 Jules (TheNovaNodes)"
     }
 
     for key, srv in servers.items():
@@ -164,6 +167,7 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
             btn_text = btn_text[:27] + "..."
         buttons.append([InlineKeyboardButton(text=f"{btn_text}: {state_icon}", callback_data=f"toggle_mcp:{key}")])
 
+    buttons.append([InlineKeyboardButton(text="🧪 Health Check", callback_data="mcp_health_check")])
     buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -349,6 +353,26 @@ async def process_account_reload_callback(callback_query: CallbackQuery):
     await callback_query.answer("Authorization reloaded!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
 
+@router.callback_query(lambda c: c.data == "mcp_health_check")
+async def process_mcp_health_check_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    await callback_query.answer("Running MCP endpoint health checks...")
+    results = await mcp_manager.health_check_all()
+
+    report_lines = [
+        "🧪 <b>MCP Health Check Results</b>\n"
+    ]
+    for key, info in results.items():
+        status_icon = "✅" if info.get("ok") else ("⚪" if info.get("status") == "disabled" else "❌")
+        name = info.get("name", key)
+        status = info.get("status", "unknown").upper()
+        target = info.get("target", "N/A")
+        report_lines.append(f"{status_icon} <b>{name}</b> ({status})\n   Target: <code>{target}</code>")
+
+    report = "\n".join(report_lines)
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+
 @router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
 async def process_mcp_toggle_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
@@ -464,6 +488,93 @@ async def cmd_track_jules(message: Message):
         ACTIVE_JULES_SESSIONS[session_name] = message.chat.id
     
     await message.answer(f"✅ <b>Jules session added to monitoring!</b>\nName: <code>{session_name}</code>\n\nYou will receive a notification when it finishes.", parse_mode="HTML")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("jules_test:"))
+async def process_jules_test_callback(callback_query: CallbackQuery):
+    if not is_allowed(callback_query.from_user.id):
+        return
+    
+    sess_hash = callback_query.data.split(":")[1]
+    from src.jules_monitor import PENDING_JULES_PATCHES
+    
+    patch_data = PENDING_JULES_PATCHES.get(sess_hash)
+    if not patch_data:
+        await callback_query.answer("❌ Patch data expired or not found.", show_alert=True)
+        return
+        
+    await callback_query.answer("🧪 Applying patch & running pytest...")
+    status_msg = await callback_query.message.reply("⏳ <b>Applying Jules patch & running tests...</b>", parse_mode="HTML")
+    
+    import tempfile
+    import os
+    session_name = patch_data["session_name"]
+    patch_text = patch_data["patch_text"]
+    
+    session = session_manager.get_session(callback_query.message.chat.id)
+    target_dir = session.workspace if session.workspace else os.getcwd()
+    
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as tmp:
+            tmp.write(patch_text)
+            tmp_path = tmp.name
+            
+        # 1. Apply patch using git apply
+        apply_proc = await asyncio.create_subprocess_exec(
+            "git", "apply", tmp_path,
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        apply_out, apply_err = await apply_proc.communicate()
+        
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+        if apply_proc.returncode != 0:
+            err_text = apply_err.decode('utf-8', errors='ignore') or apply_out.decode('utf-8', errors='ignore')
+            await status_msg.edit_text(
+                f"❌ <b>Failed to apply Jules patch!</b>\n"
+                f"📌 <b>Session:</b> <code>{session_name}</code>\n\n"
+                f"<pre><code>{err_text[:2000]}</code></pre>",
+                parse_mode="HTML"
+            )
+            return
+
+        # 2. Run pytest
+        pytest_bin = os.path.join(target_dir, ".venv", "bin", "pytest")
+        if not os.path.exists(pytest_bin):
+            pytest_cmd = ["python3", "-m", "pytest"]
+        else:
+            pytest_cmd = [pytest_bin]
+            
+        test_proc = await asyncio.create_subprocess_exec(
+            *pytest_cmd,
+            cwd=target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        test_out, test_err = await test_proc.communicate()
+        
+        output_str = test_out.decode('utf-8', errors='ignore') + "\n" + test_err.decode('utf-8', errors='ignore')
+        output_str = output_str.strip()
+        
+        status_icon = "✅" if test_proc.returncode == 0 else "❌"
+        verdict = "Pytest Passed Successfully!" if test_proc.returncode == 0 else "Pytest Failed!"
+        
+        result_text = (
+            f"{status_icon} <b>Jules Patch Tested: {verdict}</b>\n"
+            f"📌 <b>Session:</b> <code>{session_name}</code>\n"
+            f"📁 <b>Directory:</b> <code>{target_dir}</code>\n\n"
+            f"<b>Output:</b>\n<pre><code>{output_str[-3000:]}</code></pre>"
+        )
+        await safe_edit_text(status_msg, result_text)
+        
+    except Exception as e:
+        logger.error(f"Error applying patch for {session_name}: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ <b>Error running test pipeline:</b> {e}", parse_mode="HTML")
 
 
 @router.message(Command("debug"))

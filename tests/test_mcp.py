@@ -53,6 +53,19 @@ class TestMCPIntegration(unittest.TestCase):
         self.assertIn("Google Jules AI Agent", report)
         self.assertIn("[DATA]", report)
 
+    def test_health_check_all(self):
+        import asyncio
+        config_manager = MCPConfigManager(config_path=self.config_file)
+        manager = MCPManager(manager=config_manager)
+        results = asyncio.run(manager.health_check_all())
+        self.assertIn("anythingllm", results)
+        self.assertIn("searxng", results)
+        self.assertIn("nextcloud", results)
+        self.assertIn("google-jules-doctormes", results)
+        self.assertIn("google-jules-novanodes", results)
+        self.assertIn("ok", results["anythingllm"])
+        self.assertIn("status", results["anythingllm"])
+
 
 if __name__ == "__main__":
     unittest.main()
