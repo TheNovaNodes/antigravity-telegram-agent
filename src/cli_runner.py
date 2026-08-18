@@ -340,10 +340,10 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
-            self.child.setwinsize(3000, 120)
+            self.child.setwinsize(3000, 500)
             self.spawn_auth_signature = current_auth_sig
 
-            screen = pyte.Screen(122, 3000)
+            screen = pyte.Screen(500, 3000)
             stream = pyte.ByteStream(screen)
             idle_count = 0
             menu_confirmed = False
@@ -431,8 +431,7 @@ class AgySession:
                 self.close()
                 await self._ensure_started()
                 self.child.send((clean_prompt + "\r\n").encode("utf-8"))
-
-            screen = pyte.Screen(122, 3000)
+            screen = pyte.Screen(500, 3000)
             stream = pyte.ByteStream(screen)
 
             total_timeout_count = 0
@@ -440,6 +439,7 @@ class AgySession:
             last_content_hash = None
             content_stable_ticks = 0
             last_yielded_text = ""
+            timeout_reason = None
 
             while True:
                 if self.child is None or not self.child.isalive():
@@ -450,7 +450,11 @@ class AgySession:
                         self.child.read_nonblocking, size=4096, timeout=0.1
                     )
                     if chunk:
-                        chunk = chunk.replace(b"\x1b[=1;1u", b"").replace(b"\x1b[>4;2m", b"")
+                        chunk = re.sub(
+                            br'\x1b\[[=>?]*[0-9;]*[a-zA-Z]',
+                            lambda m: b'' if m.group(0) in [b'\x1b[=1;1u', b'\x1b[>4;2m'] else m.group(0),
+                            chunk
+                        )
                         stream.feed(chunk)
                 except pexpect.TIMEOUT:
                     total_timeout_count += 1
@@ -494,9 +498,11 @@ class AgySession:
                                 break
                             elif content_stable_ticks >= 60 and not received_content_bytes:
                                 logger.warning(f"No response timeout (60s) for chat_id={self.chat_id}")
+                                timeout_reason = "⚠️ *Timeout:* No response from the agent (60s). It might be waiting for MCP or the external gateway."
                                 break
                             elif content_stable_ticks >= 60:  # 60 seconds fallback for long tool calls
                                 logger.warning(f"Timeout fallback triggered for chat_id={self.chat_id} (60s stable without prompt)")
+                                timeout_reason = "⚠️ *Timeout:* The response took too long to complete. Output might be partial."
                                 break
                         else:
                             content_stable_ticks = 0
@@ -505,11 +511,13 @@ class AgySession:
                     # Hard timeout: 1800 seconds max (30 min)
                     if total_timeout_count >= 18000:
                         logger.warning(f"Max timeout reached (1800s) for chat_id={self.chat_id}")
+                        timeout_reason = "⚠️ *Critical Timeout (1800s).* The command exceeded the maximum execution time."
                         break
 
                     # No content at all after 900 seconds = agy failed to respond or is stuck loading huge context
                     if not received_content_bytes and total_timeout_count >= 9000:
                         logger.warning(f"CLI timeout for chat_id={self.chat_id} (no response after 900s)")
+                        timeout_reason = "⚠️ *No Response (900s).* The agent failed to generate any output."
                         break
 
                     await asyncio.sleep(0.05)
@@ -525,7 +533,11 @@ class AgySession:
             lines = list(_safe_screen_display(screen))
             final_formatted = format_dyslexia_friendly_text(lines, prompt=prompt)
             if not final_formatted.strip():
-                logger.warning(f"Empty or thinking-suppressed response detected from model {self.model_name} for chat_id={self.chat_id}")
+                if timeout_reason:
+                    final_formatted = timeout_reason
+                else:
+                    logger.warning(f"Empty or thinking-suppressed response detected from model {self.model_name} for chat_id={self.chat_id}")
+                    final_formatted = "⚠️ *Empty response.* The agent returned no text, or the output was suppressed."
 
             self._detect_conversation_id()
             yield final_formatted

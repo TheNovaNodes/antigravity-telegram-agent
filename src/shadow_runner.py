@@ -26,11 +26,11 @@ async def run_shadow_prompt(prompt: str, workspace: Optional[str] = None, timeou
         cmd,
         encoding="utf-8",
         codec_errors="replace",
-        dimensions=(40, 120),
+        dimensions=(40, 500),
         env=env,
         timeout=timeout
     )
-    screen = pyte.Screen(120, 40)
+    screen = pyte.Screen(500, 40)
     stream = pyte.Stream(screen)
 
     try:
