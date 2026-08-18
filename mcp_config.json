@@ -5,16 +5,16 @@
       "name": "AnythingLLM Semantic Memory Gateway",
       "type": "memory",
       "plane": "data",
-      "enabled": false,
+      "enabled": true,
       "url": "http://127.0.0.1:3002",
-      "api_key": "",
+      "api_key": "8f1cde5a87c74a0d9dd742c2c77884c9-anythingllm",
       "workspace": "default"
     },
     "anythingllm-control": {
       "name": "TheNovaNodes AnythingLLM Control Plane",
       "type": "admin",
       "plane": "control",
-      "enabled": false,
+      "enabled": true,
       "url": "http://127.0.0.1:3002",
       "api_key": "",
       "command": "/root/lab/thenovanodes/anythingllm-mcp-control/.venv/bin/python",
@@ -24,14 +24,14 @@
       ],
       "env": {
         "ANYTHINGLLM_BASE_URL": "http://127.0.0.1:3002/api/v1",
-        "ANYTHINGLLM_API_KEY": ""
+        "ANYTHINGLLM_API_KEY": "8f1cde5a87c74a0d9dd742c2c77884c9-anythingllm"
       }
     },
     "searxng": {
       "name": "SearXNG Web Search Gateway",
       "type": "search",
       "plane": "data",
-      "enabled": false,
+      "enabled": true,
       "url": "http://127.0.0.1:8889",
       "engines": "google,bing,duckduckgo,brave,github,stackoverflow,arxiv,wikipedia,qwant"
     },
@@ -39,7 +39,7 @@
       "name": "SearXNG Control Plane",
       "type": "admin",
       "plane": "control",
-      "enabled": false,
+      "enabled": true,
       "url": "http://127.0.0.1:8889",
       "command": "/root/lab/thenovanodes/searxng-mcp-control/.venv/bin/python",
       "args": [

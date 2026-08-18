@@ -1,1 +1,3 @@
-{}
+{
+  "test_live_shadow.py::test_live_shadow_sentinel": true
+}

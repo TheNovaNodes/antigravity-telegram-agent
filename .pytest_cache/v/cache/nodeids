@@ -1,4 +1,5 @@
 [
+  "test_live_shadow.py::test_live_shadow_sentinel",
   "tests/test_artifacts.py::TestArtifactDelivery::test_check_and_send_artifacts_deduplicates_by_filename",
   "tests/test_artifacts.py::TestArtifactDelivery::test_check_and_send_artifacts_delivers_recent_files",
   "tests/test_artifacts.py::TestArtifactDelivery::test_check_and_send_artifacts_no_brain_dir",
@@ -17,6 +18,7 @@
   "tests/test_cli_runner.py::TestCliRunner::test_set_effort",
   "tests/test_cli_runner.py::TestCliRunner::test_set_mode",
   "tests/test_cli_runner.py::TestCliRunner::test_set_model",
+  "tests/test_cli_runner.py::TestCliRunner::test_soul_bootstrap_injection",
   "tests/test_config.py::TestConfig::test_config_defaults",
   "tests/test_config.py::TestConfig::test_is_allowed",
   "tests/test_db_persistence.py::TestDBPersistence::test_reset_session_removes_from_db",
@@ -24,6 +26,8 @@
   "tests/test_db_persistence.py::TestDBPersistence::test_session_manager_auto_restoration",
   "tests/test_formatters.py::TestFormatters::test_check_known_errors_eligibility",
   "tests/test_formatters.py::TestFormatters::test_format_dyslexia_friendly_text_unwrapping",
+  "tests/test_formatters.py::TestFormatters::test_format_usage_response_both_groups",
+  "tests/test_formatters.py::TestFormatters::test_format_usage_response_no_russian",
   "tests/test_formatters.py::TestFormatters::test_highlight_tech_terms",
   "tests/test_formatters.py::TestFormatters::test_is_tui_noise",
   "tests/test_formatters.py::TestFormatters::test_markdown_tables_formatting",
@@ -31,7 +35,10 @@
   "tests/test_handlers.py::TestHandlers::test_cmd_menu_allowed",
   "tests/test_handlers.py::TestHandlers::test_cmd_menu_denied",
   "tests/test_handlers.py::TestHandlers::test_handle_message_success",
+  "tests/test_jules_patch_trigger.py::TestJulesPatchTrigger::test_process_jules_test_callback_success",
+  "tests/test_jules_patch_trigger.py::TestJulesPatchTrigger::test_session_hash",
   "tests/test_mcp.py::TestMCPIntegration::test_generate_agy_mcp_settings",
+  "tests/test_mcp.py::TestMCPIntegration::test_health_check_all",
   "tests/test_mcp.py::TestMCPIntegration::test_mcp_config_defaults",
   "tests/test_mcp.py::TestMCPIntegration::test_mcp_manager_status_report",
   "tests/test_mcp.py::TestMCPIntegration::test_mcp_toggle_server",
@@ -40,5 +47,7 @@
   "tests/test_resume.py::TestResume::test_session_set_conversation",
   "tests/test_session_manager.py::TestSessionManager::test_cleanup_idle_sessions",
   "tests/test_session_manager.py::TestSessionManager::test_get_session_new",
-  "tests/test_session_manager.py::TestSessionManager::test_reset_session"
+  "tests/test_session_manager.py::TestSessionManager::test_reset_session",
+  "tests/test_shadow_sentinel.py::test_sentinel_scheduler_job_lifecycle",
+  "tests/test_shadow_sentinel.py::test_shadow_runner_execution"
 ]

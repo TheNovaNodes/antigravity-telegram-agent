@@ -126,8 +126,8 @@ def get_active_account_email() -> str:
             email = settings_data.get("email") or settings_data.get("user", {}).get("email")
             if email:
                 return email
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to read or parse settings.json for email: {e}")
 
     return ""
 
@@ -144,8 +144,8 @@ def get_auth_state_signature() -> str:
             content = token_file.read_bytes()
             h = hashlib.sha256(content).hexdigest()
             sig_parts.append(f"token:{st.st_mtime}:{h}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to read auth token for signature: {e}")
             
     settings_file = base_dir / "settings.json"
     if settings_file.exists():
@@ -154,8 +154,8 @@ def get_auth_state_signature() -> str:
             content = settings_file.read_bytes()
             h = hashlib.sha256(content).hexdigest()
             sig_parts.append(f"settings:{st.st_mtime}:{h}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to read settings for signature: {e}")
 
     return "|".join(sig_parts) if sig_parts else "none"
 
@@ -538,7 +538,7 @@ class AgySession:
         return res
 
     async def get_usage_info(self) -> str:
-        """Sends /usage to agy, scrolls modal overlay to capture all model quotas, and closes modal cleanly."""
+        """Sends /usage to agy, captures full modal overlay with all model quotas, and closes modal cleanly."""
         from src.formatters import format_usage_response
         async with self._lock:
             await self._ensure_started()
@@ -550,42 +550,70 @@ class AgySession:
                 await self._ensure_started()
                 self.child.send(b"/usage\r\n")
 
-            all_lines = []
+            # Single persistent screen to accumulate ALL terminal output
+            screen = pyte.Screen(122, 3000)
+            stream = pyte.ByteStream(screen)
 
-            for _ in range(4):
-                screen = pyte.Screen(120, 3000)
-                stream = pyte.ByteStream(screen)
-                idle_count = 0
-                while idle_count < 3:
+            # Phase 1: Wait for the modal to fully render (up to 5 seconds)
+            idle_count = 0
+            while idle_count < 10:
+                try:
+                    chunk = await asyncio.to_thread(self.child.read_nonblocking, size=4096, timeout=0.5)
+                    if chunk:
+                        chunk = chunk.replace(b"\x1b[=1;1u", b"").replace(b"\x1b[>4;2m", b"")
+                        stream.feed(chunk)
+                        idle_count = 0
+                    else:
+                        break
+                    await asyncio.sleep(0.01)
+                except (pexpect.TIMEOUT, pexpect.EOF, OSError):
+                    idle_count += 1
+
+            # Collect initial lines
+            all_lines = []
+            for line in _safe_screen_display(screen):
+                s = line.strip()
+                if s and s not in all_lines:
+                    all_lines.append(s)
+
+            # Phase 2: Scroll down with PageDown to capture any content below the fold
+            for _ in range(3):
+                try:
+                    self.child.send(b"\x1b[6~")
+                except Exception as e:
+                    logger.debug(f"Failed to send PageDown to modal: {e}")
+                await asyncio.sleep(0.5)
+
+                # Read any new output after scroll
+                scroll_idle = 0
+                while scroll_idle < 3:
                     try:
                         chunk = await asyncio.to_thread(self.child.read_nonblocking, size=4096, timeout=0.3)
                         if chunk:
                             chunk = chunk.replace(b"\x1b[=1;1u", b"").replace(b"\x1b[>4;2m", b"")
                             stream.feed(chunk)
-                            idle_count = 0
+                            scroll_idle = 0
                         else:
-                            break
-                        await asyncio.sleep(0.01)
-                    except (pexpect.TIMEOUT, pexpect.EOF, OSError):
-                        idle_count += 1
-
+                            scroll_idle += 1
+                    except pexpect.TIMEOUT:
+                        scroll_idle += 1
+                    except Exception as e:
+                        logger.warning(f"Unexpected error reading PTY during modal scroll: {e}")
+                        break
+                    
                 for line in _safe_screen_display(screen):
                     s = line.strip()
                     if s and s not in all_lines:
                         all_lines.append(s)
 
-                try:
-                    self.child.send(b"\x1b[6~")
-                except Exception:
-                    pass
-                await asyncio.sleep(0.3)
-
+            # Close the modal overlay with Escape
             try:
                 self.child.send(b"\x1b")
                 await asyncio.sleep(0.3)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to send Escape to close modal: {e}")
 
+            logger.debug(f"Usage modal captured {len(all_lines)} unique lines")
             email = get_active_account_email()
             return format_usage_response(all_lines, email)
 
@@ -617,8 +645,8 @@ class AgySession:
                             os.kill(pid, signal.SIGTERM)
                             import time; time.sleep(0.1)
                             os.kill(pid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.warning(f"OS error killing agy process {pid}: {e}")
             except Exception as e:
                 logger.warning(f"Error closing agy session for chat_id={self.chat_id}: {e}")
 

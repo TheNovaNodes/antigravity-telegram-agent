@@ -38,6 +38,9 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 Account & Quotas", callback_data="menu:account")
         ],
         [
+            InlineKeyboardButton(text="🛡️ Autonomous Sentinel (Auto-Pilot)", callback_data="sentinel:menu")
+        ],
+        [
             InlineKeyboardButton(text="🔄 Start New Session", callback_data="menu:reset")
         ]
     ]
@@ -587,6 +590,104 @@ async def process_jules_test_callback(callback_query: CallbackQuery):
         await status_msg.edit_text(f"❌ <b>Error running test pipeline:</b> {e}", parse_mode="HTML")
 
 
+@router.callback_query(lambda c: c.data and c.data.startswith("sentinel:"))
+async def handle_sentinel_callbacks(callback: CallbackQuery):
+    if not is_allowed(callback.from_user.id):
+        await callback.answer("Access denied", show_alert=True)
+        return
+
+    data = callback.data
+    chat_id = callback.message.chat.id
+
+    if data == "sentinel:menu":
+        jobs = sentinel_scheduler.list_jobs()
+        text = (
+            "🛡️ <b>Autonomous Sentinel (Auto-Pilot Control Center)</b>\n\n"
+            "Here you can set up pro-active background AI monitors that run autonomously without interrupting your active chat session.\n\n"
+        )
+        if jobs:
+            text += f"📊 <b>Active Autonomous Jobs ({len(jobs)}):</b>\n"
+            for j in jobs:
+                text += f"• <code>{j['id']}</code> (Next: {j['next_run_time']})\n"
+        else:
+            text += "<i>No active scheduled jobs currently running.</i>"
+
+        buttons = [
+            [
+                InlineKeyboardButton(text="➕ Add Preset: Morning Briefing (09:00)", callback_data="sentinel:preset:morning"),
+            ],
+            [
+                InlineKeyboardButton(text="⚡ Add Preset: 6-Hour Health Check", callback_data="sentinel:preset:health6h"),
+            ],
+            [
+                InlineKeyboardButton(text="🗑️ Manage / Delete Active Jobs", callback_data="sentinel:manage_delete"),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Back to Main Menu", callback_data="menu:main")
+            ]
+        ]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+        await callback.answer()
+
+    elif data.startswith("sentinel:preset:"):
+        preset_type = data.split(":")[-1]
+        if preset_type == "morning":
+            job_id = f"morning_brief_{chat_id}"
+            cron_expr = "0 9 * * *"
+            prompt = "Provide a high-level morning repo health check, git status, and key action items."
+            title = "Morning Briefing (Daily at 09:00)"
+        else:
+            job_id = f"health_6h_{chat_id}"
+            cron_expr = "0 */6 * * *"
+            prompt = "Run routine health check on codebase, tests, and active tasks."
+            title = "6-Hour Codebase Sentinel"
+
+        try:
+            sentinel_scheduler.add_sentinel_job(
+                job_id=job_id,
+                chat_id=chat_id,
+                prompt=prompt,
+                cron_expression=cron_expr
+            )
+            await callback.answer(f"✅ Created: {title}!", show_alert=True)
+        except Exception as e:
+            await callback.answer(f"❌ Error: {e}", show_alert=True)
+
+        # Refresh menu
+        await handle_sentinel_callbacks(callback)
+
+    elif data == "sentinel:manage_delete":
+        jobs = sentinel_scheduler.list_jobs()
+        if not jobs:
+            await callback.answer("No jobs to delete", show_alert=True)
+            return
+
+        buttons = []
+        for j in jobs:
+            buttons.append([
+                InlineKeyboardButton(text=f"❌ Delete: {j['id']}", callback_data=f"sentinel:delete_job:{j['id']}")
+            ])
+        buttons.append([InlineKeyboardButton(text="◀️ Back to Sentinel Menu", callback_data="sentinel:menu")])
+        
+        await callback.message.edit_text(
+            "🗑️ <b>Select a Sentinel Job to remove:</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+
+    elif data.startswith("sentinel:delete_job:"):
+        job_id = data.replace("sentinel:delete_job:", "")
+        removed = sentinel_scheduler.remove_sentinel_job(job_id)
+        if removed:
+            await callback.answer(f"Deleted job {job_id}", show_alert=True)
+        else:
+            await callback.answer("Job not found", show_alert=True)
+
+        callback.data = "sentinel:menu"
+        await handle_sentinel_callbacks(callback)
+
+
 @router.message(Command("debug"))
 async def cmd_debug(message: Message):
     """Debug command: shows full session state for troubleshooting."""
@@ -738,8 +839,8 @@ async def cmd_cd(message: Message):
                 if p.is_relative_to(base_path):
                     valid = True
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to resolve workspace base {base}: {e}")
                 
         if not valid:
             await message.answer(f"❌ <b>Access Denied!</b>\nPath <code>{raw_path}</code> is outside allowed workspace roots.", parse_mode="HTML")
@@ -959,8 +1060,8 @@ async def check_and_send_artifacts(message: Message, session):
                 try:
                     if now - d.stat().st_mtime < 120:
                         scan_dirs.append(d)
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.debug(f"Could not stat directory {d}: {e}")
     except Exception as e:
         logger.warning(f"Failed to scan brain base directory: {e}")
 
@@ -981,8 +1082,8 @@ async def check_and_send_artifacts(message: Message, session):
                 try:
                     if now - item.stat().st_mtime < 120:
                         artifacts_to_send.append(item)
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.debug(f"Could not stat artifact {item}: {e}")
         except Exception as e:
             logger.warning(f"Failed to scan brain directory {brain_dir}: {e}")
 
@@ -1006,6 +1107,89 @@ async def check_and_send_artifacts(message: Message, session):
             logger.info(f"✅ Delivered artifact {artifact.name} ({file_size_kb:.1f} KB) to chat_id={message.chat.id}")
         except Exception as e:
             logger.error(f"❌ Failed to send artifact {artifact.name} to Telegram: {e}", exc_info=True)
+
+
+from src.scheduler import sentinel_scheduler
+
+@router.message(Command("sentinel_add"))
+async def handle_sentinel_add(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    
+    # Usage: /sentinel_add <job_id> "<cron_expression>" <prompt>
+    # Example: /sentinel_add morning_brief "0 8 * * *" Daily morning health check and repo briefing
+    args = message.text.split(maxsplit=3)
+    if len(args) < 4:
+        await message.answer(
+            "🤖 <b>Autonomous Sentinel — Add Job</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/sentinel_add &lt;job_id&gt; \"&lt;cron_expression&gt;\" &lt;prompt&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/sentinel_add morning_brief \"0 8 * * *\" Give me a morning repo health check.</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    job_id = args[1]
+    cron_expr = args[2].strip('"\'')
+    prompt = args[3]
+
+    try:
+        sentinel_scheduler.add_sentinel_job(
+            job_id=job_id,
+            chat_id=message.chat.id,
+            prompt=prompt,
+            cron_expression=cron_expr
+        )
+        await message.answer(
+            f"✅ <b>Sentinel Job Added!</b>\n\n"
+            f"• <b>ID:</b> <code>{job_id}</code>\n"
+            f"• <b>Cron:</b> <code>{cron_expr}</code>\n"
+            f"• <b>Prompt:</b> <code>{prompt}</code>\n\n"
+            f"<i>Execution will run in background Shadow PTY without affecting your current interactive chat.</i>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ <b>Failed to add Sentinel Job:</b> {e}", parse_mode="HTML")
+
+
+@router.message(Command("sentinel_list"))
+async def handle_sentinel_list(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+
+    jobs = sentinel_scheduler.list_jobs()
+    if not jobs:
+        await message.answer("🤖 <b>Autonomous Sentinel:</b> No active scheduled jobs.", parse_mode="HTML")
+        return
+
+    text = "🤖 <b>Autonomous Sentinel Active Jobs:</b>\n\n"
+    for j in jobs:
+        text += (
+            f"• <b>ID:</b> <code>{j['id']}</code>\n"
+            f"  Next Run: <code>{j['next_run_time']}</code>\n"
+            f"  Target Chat: <code>{j['args'][0]}</code>\n\n"
+        )
+    await message.answer(text, parse_mode="HTML")
+
+
+@router.message(Command("sentinel_remove"))
+async def handle_sentinel_remove(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Usage: <code>/sentinel_remove &lt;job_id&gt;</code>", parse_mode="HTML")
+        return
+
+    job_id = args[1].strip()
+    removed = sentinel_scheduler.remove_sentinel_job(job_id)
+    if removed:
+        await message.answer(f"✅ Sentinel Job <code>{job_id}</code> removed.", parse_mode="HTML")
+    else:
+        await message.answer(f"⚠️ Sentinel Job <code>{job_id}</code> not found.", parse_mode="HTML")
+
 
 
 @router.message()
@@ -1067,6 +1251,6 @@ async def handle_message(message: Message):
         logger.error(f"Error handling message for chat_id={message.chat.id}: {e}", exc_info=True)
         try:
             await safe_edit_text(placeholder, f"❌ <b>An error occurred:</b> {e}")
-        except Exception:
-            pass
+        except Exception as fallback_e:
+            logger.error(f"Failed to deliver fallback error message to Telegram: {fallback_e}")
 

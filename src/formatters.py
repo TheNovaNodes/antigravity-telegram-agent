@@ -333,9 +333,12 @@ def format_usage_response(lines, email: str = "") -> str:
         if not l_strip or "scroll" in l_lower or "esc close" in l_lower or l_lower.startswith("account:") or "welcome to" in l_lower:
             continue
 
-        # Group Headers (e.g. GEMINI MODELS, CLAUDE MODELS, GPT MODELS)
-        if "MODELS" in l_strip and not l_strip.startswith("Models within"):
-            group_name = l_strip.replace("MODELS", "").strip().title() + " Models"
+        # Group Headers (e.g. GEMINI MODELS, CLAUDE AND GPT MODELS)
+        if re.match(r"^[A-Z\s&]+MODELS$", l_strip):
+            group_name = l_strip.title()
+            # Special case for "Claude And Gpt Models" to "Claude/GPT Models" if requested, or just title case
+            group_name = group_name.replace("And", "&").replace("Gpt", "GPT")
+            
             current_group = {
                 "name": group_name,
                 "models": "",
@@ -352,27 +355,32 @@ def format_usage_response(lines, email: str = "") -> str:
             current_group["models"] = l_strip.replace("Models within this group:", "").strip()
             continue
 
-        if "Limit Remaining" in l_strip:
-            current_limit_type = l_strip.replace("Remaining", "").strip()
+        if l_strip in ["Weekly Limit Remaining", "Five Hour Limit Remaining"]:
+            type_str = l_strip.replace("Remaining", "").strip()
+            
+            # Setup for next lines
+            current_limit_type = type_str
+            current_group["limits"].append({
+                "type": type_str,
+                "val": "",
+                "refreshes": ""
+            })
             continue
 
-        # Match percentages & refresh times
-        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", l_strip)
-        if pct_match and current_limit_type:
-            val_pct = pct_match.group(1)
+        if current_limit_type:
+            # Look for percentage or disabled text
+            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", l_strip)
             ref_match = re.search(r"Refreshes in\s+([0-9h\s+m]+)", l_strip, re.IGNORECASE)
-            ref_str = ref_match.group(1).strip() if ref_match else ""
-
-            existing_limit = next((l for l in current_group["limits"] if l["type"] == current_limit_type), None)
-            if not existing_limit:
-                current_group["limits"].append({
-                    "type": current_limit_type,
-                    "val": val_pct,
-                    "refreshes": ref_str
-                })
-            else:
-                if ref_str and not existing_limit["refreshes"]:
-                    existing_limit["refreshes"] = ref_str
+            
+            target_limit = next((l for l in current_group["limits"] if l["type"] == current_limit_type), None)
+            if target_limit:
+                if pct_match and not target_limit["val"]:
+                    target_limit["val"] = f"{pct_match.group(1)}% remaining"
+                elif l_strip.startswith("Disabled:"):
+                    target_limit["val"] = "Disabled (Weekly limit reached)"
+                
+                if ref_match and not target_limit["refreshes"]:
+                    target_limit["refreshes"] = ref_match.group(1).strip()
 
     output_parts = [
         "📊 <b>Model Quotas & Limits Report</b>\n",
@@ -401,7 +409,7 @@ def format_usage_response(lines, email: str = "") -> str:
             val = lim["val"]
             ref = lim["refreshes"]
             ref_text = f" (Refreshes in <code>{ref}</code>)" if ref else ""
-            output_parts.append(f"   • {l_type}: <b>{val}% remaining</b>{ref_text}")
+            output_parts.append(f"   • {l_type}: <b>{val}</b>{ref_text}")
 
         output_parts.append("")
 

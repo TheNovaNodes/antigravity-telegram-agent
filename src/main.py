@@ -14,6 +14,7 @@ from src.db import init_db
 from src.handlers import router
 from src.session_manager import session_manager
 from src.jules_monitor import monitor_jules_sessions
+from src.scheduler import sentinel_scheduler
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL))
 logger = logging.getLogger(__name__)
@@ -27,6 +28,10 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     
+    # Initialize Autonomous Sentinel Scheduler with Bot instance
+    sentinel_scheduler.set_bot(bot)
+    sentinel_scheduler.start()
+    
     # Start Jules sessions monitor loop
     asyncio.create_task(monitor_jules_sessions(bot))
 
@@ -36,6 +41,9 @@ async def main():
     # Register Telegram native slash command menu
     await bot.set_my_commands([
         BotCommand(command="menu", description="🎛️ AntigravityTelegramAgent Control Center"),
+        BotCommand(command="sentinel_add", description="🤖 Schedule Autonomous Sentinel Job"),
+        BotCommand(command="sentinel_list", description="📋 List Active Sentinel Scheduled Jobs"),
+        BotCommand(command="sentinel_remove", description="🗑️ Remove Sentinel Scheduled Job"),
         BotCommand(command="new", description="✨ Start new agent session (/new or /reset)"),
         BotCommand(command="usage", description="📊 AI limits and quotas (/usage)"),
         BotCommand(command="auth", description="🔑 View and Hot Reload Google account"),

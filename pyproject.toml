@@ -11,6 +11,8 @@ dependencies = [
     "pexpect>=4.9.0",
     "pyte>=0.8.2",
     "aiohttp>=3.9.0",
+    "apscheduler>=3.10.4",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [build-system]
