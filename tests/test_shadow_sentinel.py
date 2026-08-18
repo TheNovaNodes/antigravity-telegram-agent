@@ -40,7 +40,14 @@ async def test_sentinel_scheduler_job_lifecycle():
         assert jobs[0]["id"] == "test_job_1"
 
         # Trigger execution directly
-        await scheduler.execute_sentinel_briefing(12345, "Health Check")
+        with patch("pexpect.spawn") as mock_spawn:
+            mock_child = MagicMock()
+            mock_child.read_nonblocking.side_effect = ["Output\n", ""]
+            mock_child.isalive.return_value = True
+            mock_spawn.return_value = mock_child
+            
+            await scheduler.execute_sentinel_briefing(12345, "Health Check")
+            
         mock_bot.send_message.assert_called_once()
         assert "Autonomous Sentinel Briefing" in mock_bot.send_message.call_args[1]["text"]
 
