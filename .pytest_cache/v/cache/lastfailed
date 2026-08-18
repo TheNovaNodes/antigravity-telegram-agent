@@ -1,3 +1,5 @@
 {
-  "test_live_shadow.py::test_live_shadow_sentinel": true
+  "test_live_shadow.py::test_live_shadow_sentinel": true,
+  "tests/test_formatters.py::TestFormatters::test_markdown_to_html_adjacent_links": true,
+  "tests/test_artificial.py::test_artificial_failure": true
 }

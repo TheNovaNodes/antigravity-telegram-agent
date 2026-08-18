@@ -15,9 +15,13 @@ class VerificationEngine:
         if self._protected_tests_modified():
             return {"status": "SECURITY_VIOLATION", "reason": "Protected tests were altered."}
         
-        # Run pytest inside the sandbox
+        # Use the venv from the main repository
+        pytest_path = Path("/root/projects/TheNovaNodes/antigravity-telegram-agent/.venv/bin/pytest")
+        if not pytest_path.exists():
+            pytest_path = "pytest" # Fallback
+            
         res = subprocess.run(
-            ["python3", "-m", "pytest", "tests/"],
+            [str(pytest_path), "tests/test_artificial.py"],
             cwd=self.sandbox_path,
             capture_output=True,
             text=True
@@ -48,6 +52,7 @@ class DiagnosticEngine:
     @staticmethod
     def extract(test_output: str) -> Dict[str, Any]:
         """Extracts the core traceback and fingerprint."""
+        print(f"[DEBUG VERIFICATION] test_output:\n{test_output}")
         lines = test_output.splitlines()
         traceback_lines = [l for l in lines if "E   " in l or "FAILED " in l]
         

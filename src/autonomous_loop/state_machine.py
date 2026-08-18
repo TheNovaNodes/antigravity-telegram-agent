@@ -1,6 +1,7 @@
 import uuid
 import time
 import logging
+import subprocess
 from typing import Dict, Any, List
 from .sandbox import Sandbox
 from .verification import VerificationEngine, DiagnosticEngine
@@ -30,10 +31,11 @@ class BoundedAutonomousLoop:
                 self.state = "AGENT_RUNNING"
                 
                 # Mock calling the LLM Agent
-                # In real flow, we'd pass diagnostic to the agent
                 patch_content = agent_patch_callback(attempt, self.history)
-                
                 self.state = "PATCH_RECEIVED"
+                
+                # Reset sandbox to clean state before applying new patch
+                subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=sandbox.worktree_path, capture_output=True)
                 
                 # Apply Patch
                 if not sandbox.apply_patch(patch_content):
