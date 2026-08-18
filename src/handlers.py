@@ -21,29 +21,24 @@ def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
-    email = get_active_account_email()
-    btn_email = email if len(email) <= 24 else email[:21] + "..."
     buttons = [
         [
             InlineKeyboardButton(text=f"🤖 Model: {session.model_name}", callback_data="menu:models")
         ],
         [
-            InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
-        ],
-        [
+            InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode"),
             InlineKeyboardButton(text=f"📂 {session.workspace if session.workspace else 'Home Dir'}", callback_data="menu:workspace")
         ],
         [
-            InlineKeyboardButton(text=f"🔑 {btn_email}", callback_data="menu:account"),
-            InlineKeyboardButton(text="📊 Quotas (/usage)", callback_data="menu:usage")
+            InlineKeyboardButton(text="💬 Resume / History", callback_data="menu:resume"),
+            InlineKeyboardButton(text="🤖 Jules & Subagents", callback_data="menu:jules")
         ],
         [
-            InlineKeyboardButton(text="🔌 MCP Servers", callback_data="menu:mcp"),
-            InlineKeyboardButton(text="🔄 Reset Session", callback_data="menu:reset")
+            InlineKeyboardButton(text="🔌 MCP Gateways", callback_data="menu:mcp"),
+            InlineKeyboardButton(text="📊 Account & Quotas", callback_data="menu:account")
         ],
         [
-            InlineKeyboardButton(text="⚡ System Status", callback_data="menu:status"),
-            InlineKeyboardButton(text="♻️ Reboot AGY", callback_data="menu:reboot")
+            InlineKeyboardButton(text="🔄 Start New Session", callback_data="menu:reset")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -267,18 +262,36 @@ async def process_menu_navigation(callback_query: CallbackQuery):
     elif action == "reset":
         session_manager.new_session(callback_query.message.chat.id)
         await callback_query.message.edit_text("🔄 <b>Session Reset!</b> Next prompt will start a new conversation context in the background process.", parse_mode="HTML")
+    elif action == "resume":
+        kb = get_resume_keyboard(session.conversation_id)
+        await callback_query.message.edit_text("💬 <b>Select a conversation to resume:</b>", reply_markup=kb, parse_mode="HTML")
+    elif action == "jules":
+        from src.jules_monitor import ACTIVE_JULES_SESSIONS
+        sessions_str = ""
+        if ACTIVE_JULES_SESSIONS:
+            sessions_str = "\n".join([f"• <code>{s}</code> (Chat: {c})" for s, c in ACTIVE_JULES_SESSIONS.items()])
+        else:
+            sessions_str = "<i>No active Jules sessions monitored.</i>"
+            
+        text = (
+            f"🤖 <b>Jules Subagent Dashboard</b>\n\n"
+            f"Active GitHub Task Sessions:\n{sessions_str}\n\n"
+            f"💡 <i>Jules automatically runs background tasks on GitHub and reports patches here.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
+        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "account":
         email = get_active_account_email()
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 View API Quotas & Usage", callback_data="menu:usage")],
             [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
             [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
         ])
         text = (
-            f"🔑 <b>Antigravity CLI Authorization</b>\n\n"
-            f"👤 <b>Current account:</b> <code>{email}</code>\n"
+            f"🔑 <b>Account & API Quotas Center</b>\n\n"
+            f"👤 <b>Authenticated Account:</b> <code>{email}</code>\n"
             f"⚙️ <b>Auth Pickup:</b> Automatic (Hot Reload)\n\n"
-            f"If you changed your account via <code>agy auth login</code> in the server terminal, "
-            f"click the button below to force an update."
+            f"Select an action below:"
         )
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "usage":
