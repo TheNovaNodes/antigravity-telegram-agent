@@ -314,7 +314,7 @@ def format_dyslexia_friendly_text(raw_screen_display: list[str], prompt: str = "
 
 
 def format_usage_response(lines, email: str = "") -> str:
-    """Format agy /usage raw screen lines into a comprehensive, dyslexia-friendly HTML Telegram report."""
+    """Format agy /usage raw screen lines into a clean, 100% English HTML Telegram report."""
     raw_joined = "\n".join(lines) if isinstance(lines, list) else str(lines)
     lines_list = raw_joined.split("\n")
 
@@ -323,14 +323,14 @@ def format_usage_response(lines, email: str = "") -> str:
     current_limit_type = None
 
     for line in lines_list:
-        # Strip ANSI borders & boxes
         l_strip = line.strip()
+        # Clean TUI border noise
         for c in ["│", "─", "┌", "┐", "└", "┘", "├", "┤", "┼", "▐", "▌", "█", "▄", "▀"]:
             l_strip = l_strip.replace(c, "")
         l_strip = l_strip.strip()
         l_lower = l_strip.lower()
 
-        if not l_strip or "scroll" in l_lower or "esc close" in l_lower or l_lower.startswith("account:"):
+        if not l_strip or "scroll" in l_lower or "esc close" in l_lower or l_lower.startswith("account:") or "welcome to" in l_lower:
             continue
 
         # Group Headers (e.g. GEMINI MODELS, CLAUDE MODELS, GPT MODELS)
@@ -356,14 +356,13 @@ def format_usage_response(lines, email: str = "") -> str:
             current_limit_type = l_strip.replace("Remaining", "").strip()
             continue
 
-        # Match percentages & refresh times (e.g. 56.35% or 56% remaining · Refreshes in 70h 13m)
+        # Match percentages & refresh times
         pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", l_strip)
         if pct_match and current_limit_type:
             val_pct = pct_match.group(1)
             ref_match = re.search(r"Refreshes in\s+([0-9h\s+m]+)", l_strip, re.IGNORECASE)
             ref_str = ref_match.group(1).strip() if ref_match else ""
 
-            # Avoid duplicating limits
             existing_limit = next((l for l in current_group["limits"] if l["type"] == current_limit_type), None)
             if not existing_limit:
                 current_group["limits"].append({
@@ -376,27 +375,32 @@ def format_usage_response(lines, email: str = "") -> str:
                     existing_limit["refreshes"] = ref_str
 
     output_parts = [
-        "📊 <b>Detailed Report on Quotas and Model Limits</b>\n",
+        "📊 <b>Model Quotas & Limits Report</b>\n",
         f"👤 <b>Account:</b> <code>{email}</code>\n" if email else ""
     ]
 
-    if not groups:
-        # Fallback formatting if screen parsing was plain text
-        output_parts.append(f"<pre><code>{raw_joined[:3000]}</code></pre>")
-        return "\n".join(output_parts)
+    # Filter out empty groups
+    valid_groups = [g for g in groups if g["limits"]]
 
-    for g in groups:
+    if not valid_groups:
+        # Fallback formatting if raw screen didn't capture structured modal
+        output_parts.append("<i>Could not parse modal overlay automatically. Raw view:</i>\n")
+        clean_raw = "\n".join([l for l in lines_list if l.strip() and "welcome to" not in l.lower() and "▄" not in l])
+        output_parts.append(f"<pre><code>{clean_raw[:2500]}</code></pre>")
+        return "\n".join(output_parts).strip()
+
+    for g in valid_groups:
         g_name = g["name"]
         g_models = g["models"]
         output_parts.append(f"🔹 <b>{g_name}</b>")
         if g_models:
-            output_parts.append(f"   <i>Included:</i> <code>{g_models}</code>")
+            output_parts.append(f"   • <i>Models:</i> <code>{g_models}</code>")
 
         for lim in g["limits"]:
             l_type = lim["type"]
             val = lim["val"]
             ref = lim["refreshes"]
-            ref_text = f" · <i>Refreshes in {ref}</i>" if ref else ""
+            ref_text = f" (Refreshes in <code>{ref}</code>)" if ref else ""
             output_parts.append(f"   • {l_type}: <b>{val}% remaining</b>{ref_text}")
 
         output_parts.append("")
