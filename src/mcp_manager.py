@@ -26,16 +26,22 @@ class MCPManager:
         servers = cfg.get("servers", {})
         icons = {
             "anythingllm": "🧠",
+            "anythingllm-control": "⚙️",
             "searxng": "🔍",
-            "nextcloud": "💼"
+            "searxng-control": "⚙️",
+            "nextcloud": "💼",
+            "nextcloud-control": "⚙️",
+            "google-jules-doctormes": "🤖",
+            "google-jules-novanodes": "🤖"
         }
 
         for key, srv in servers.items():
             icon = icons.get(key, "🔌")
             state = "✅ Active" if srv.get("enabled") else "⚪ Disabled"
+            plane = f"[{srv.get('plane', 'data').upper()}]"
             name = srv.get("name", key)
-            url = srv.get("url", "N/A")
-            report.append(f"{icon} <b>{name}</b>: {state}\n   URL: <code>{url}</code>")
+            url_or_cmd = srv.get("url") or srv.get("command", "N/A")
+            report.append(f"{icon} <b>{name}</b> {plane}: {state}\n   Target: <code>{url_or_cmd}</code>")
 
         return "\n".join(report)
 

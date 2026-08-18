@@ -27,7 +27,7 @@ DEFAULT_MCP_CONFIG = {
             "name": "TheNovaNodes AnythingLLM Control Plane",
             "type": "admin",
             "plane": "control",
-            "enabled": False,
+            "enabled": True,
             "url": os.getenv("ANYTHINGLLM_URL", "http://127.0.0.1:3002"),
             "api_key": os.getenv("ANYTHINGLLM_API_KEY", "")
         },
@@ -38,6 +38,13 @@ DEFAULT_MCP_CONFIG = {
             "enabled": True,
             "url": os.getenv("SEARXNG_URL", "http://127.0.0.1:8889"),
             "engines": os.getenv("SEARXNG_ENGINES", "google,bing,duckduckgo")
+        },
+        "searxng-control": {
+            "name": "TheNovaNodes SearXNG Control Plane",
+            "type": "admin",
+            "plane": "control",
+            "enabled": False,
+            "url": os.getenv("SEARXNG_URL", "http://127.0.0.1:8889")
         },
         "nextcloud": {
             "name": "Nextcloud User CRM Gateway",
@@ -56,6 +63,20 @@ DEFAULT_MCP_CONFIG = {
             "url": os.getenv("NEXTCLOUD_URL", "http://127.0.0.1:8000"),
             "username": os.getenv("NEXTCLOUD_USER", ""),
             "app_password": os.getenv("NEXTCLOUD_PASS", "")
+        },
+        "google-jules-doctormes": {
+            "name": "Google Jules AI Agent (Doctormes)",
+            "type": "agent",
+            "plane": "data",
+            "enabled": True,
+            "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp"
+        },
+        "google-jules-novanodes": {
+            "name": "Google Jules AI Agent (TheNovaNodes)",
+            "type": "agent",
+            "plane": "data",
+            "enabled": True,
+            "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp"
         }
     }
 }
@@ -75,16 +96,19 @@ class MCPConfigManager:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     merged = DEFAULT_MCP_CONFIG.copy()
+                    merged["servers"] = DEFAULT_MCP_CONFIG["servers"].copy()
                     if "servers" in data:
                         for key, server in data["servers"].items():
                             if key in merged["servers"]:
-                                merged["servers"][key].update(server)
+                                merged["servers"][key] = {**merged["servers"][key], **server}
                             else:
                                 merged["servers"][key] = server
                     if "enabled" in data:
                         merged["enabled"] = data["enabled"]
                     return merged
-            except Exception:
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(f"Error loading MCP config from {self.config_path}: {exc}")
                 return DEFAULT_MCP_CONFIG.copy()
         return DEFAULT_MCP_CONFIG.copy()
 
@@ -94,8 +118,10 @@ class MCPConfigManager:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(f"Error saving MCP config to {self.config_path}: {exc}")
+                return False
 
     def get_server(self, server_key: str) -> Optional[Dict[str, Any]]:
         """Retrieve settings for a specific MCP server."""
@@ -145,24 +171,30 @@ class MCPConfigManager:
                     }
                 }
             elif key == "nextcloud":
+                url = cfg.get("url", "http://127.0.0.1:8000")
+                if not url.endswith("/mcp/sse"):
+                    url = f"{url.rstrip('/')}/mcp/sse"
                 mcp_servers["nextcloud-crm"] = {
-                    "url": cfg.get("url", "http://127.0.0.1:8000/mcp/sse")
+                    "url": url
                 }
             else:
-                if "command" in cfg:
+                cmd = cfg.get("command")
+                if not cmd and key.startswith("google-jules-"):
+                    cmd = "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp"
+
+                if cmd:
+                    env_dict = cfg.get("env", {}).copy()
+                    if key.startswith("google-jules-"):
+                        env_var_suffix = key.split("-")[-1].upper()
+                        env_var_name = f"JULES_API_KEY_{env_var_suffix}"
+                        env_val = os.environ.get(env_var_name, os.environ.get("JULES_API_KEY", ""))
+                        if env_val:
+                            env_dict["JULES_API_KEY"] = env_val
+
                     mcp_servers[key] = {
-                        "command": cfg.get("command"),
+                        "command": cmd,
                         "args": cfg.get("args", []),
-                        "env": cfg.get("env", {})
-                    }
-                elif key.startswith("google-jules-"):
-                    env_var_suffix = key.split("-")[-1].upper()
-                    env_var_name = f"JULES_API_KEY_{env_var_suffix}"
-                    env_val = os.environ.get(env_var_name, "")
-                    mcp_servers[key] = {
-                        "command": "/root/lab/thenovanodes/google-jules-mcp/.venv/bin/google-jules-mcp",
-                        "args": [],
-                        "env": {"JULES_API_KEY": env_val} if env_val else {}
+                        "env": env_dict
                     }
         return {"mcpServers": mcp_servers}
 

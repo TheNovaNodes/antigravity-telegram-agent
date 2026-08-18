@@ -22,6 +22,8 @@ class TestMCPIntegration(unittest.TestCase):
         self.assertIn("anythingllm", manager.config["servers"])
         self.assertIn("searxng", manager.config["servers"])
         self.assertIn("nextcloud", manager.config["servers"])
+        self.assertIn("google-jules-doctormes", manager.config["servers"])
+        self.assertIn("google-jules-novanodes", manager.config["servers"])
 
     def test_mcp_toggle_server(self):
         manager = MCPConfigManager(config_path=self.config_file)
@@ -38,6 +40,8 @@ class TestMCPIntegration(unittest.TestCase):
         self.assertIn("nova-anythingllm-mcp", mcp_servers)
         self.assertIn("nova-searxng-mcp", mcp_servers)
         self.assertIn("nextcloud-crm", mcp_servers)
+        self.assertTrue(mcp_servers["nextcloud-crm"]["url"].endswith("/mcp/sse"))
+        self.assertIn("google-jules-doctormes", mcp_servers)
 
     def test_mcp_manager_status_report(self):
         config_manager = MCPConfigManager(config_path=self.config_file)
@@ -46,6 +50,8 @@ class TestMCPIntegration(unittest.TestCase):
         self.assertIn("AnythingLLM", report)
         self.assertIn("SearXNG", report)
         self.assertIn("Nextcloud", report)
+        self.assertIn("Google Jules AI Agent", report)
+        self.assertIn("[DATA]", report)
 
 
 if __name__ == "__main__":

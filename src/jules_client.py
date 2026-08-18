@@ -49,12 +49,29 @@ class JulesClient:
 
     async def get_session(self, session_name: str) -> Dict[str, Any]:
         """Get the status of a specific Jules session."""
-        # Clean up session_name in case it starts with a slash
         session_name = session_name.lstrip('/')
-        # If it doesn't start with 'sessions/', prepend it
         if not session_name.startswith('sessions/'):
             session_name = f"sessions/{session_name}"
         return await self._request("GET", f"/{session_name}")
+
+    async def get_session_activities(self, session_name: str) -> Dict[str, Any]:
+        """List activities/steps for a specific Jules session."""
+        session_name = session_name.lstrip('/')
+        if not session_name.startswith('sessions/'):
+            session_name = f"sessions/{session_name}"
+        return await self._request("GET", f"/{session_name}/activities")
+
+    async def list_artifacts(self, session_name: str) -> Dict[str, Any]:
+        """List artifacts produced by a Jules session."""
+        session_name = session_name.lstrip('/')
+        if not session_name.startswith('sessions/'):
+            session_name = f"sessions/{session_name}"
+        return await self._request("GET", f"/{session_name}/artifacts")
+
+    async def get_artifact_content(self, artifact_name: str) -> Dict[str, Any]:
+        """Get contents of a specific Jules artifact."""
+        artifact_name = artifact_name.lstrip('/')
+        return await self._request("GET", f"/{artifact_name}")
 
 # Simple test block to run directly
 if __name__ == "__main__":

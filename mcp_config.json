@@ -35,6 +35,23 @@
       "url": "http://127.0.0.1:8889",
       "engines": "google,bing,duckduckgo,brave,github,stackoverflow,arxiv,wikipedia,qwant"
     },
+    "searxng-control": {
+      "name": "SearXNG Control Plane",
+      "type": "admin",
+      "plane": "control",
+      "enabled": true,
+      "url": "http://127.0.0.1:8889",
+      "command": "/root/lab/thenovanodes/searxng-mcp-control/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.server"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://127.0.0.1:8889",
+        "SEARXNG_SETTINGS_PATH": "/root/lab/shared/searxng/settings.yml",
+        "SEARXNG_CONTAINER_NAME": "searxng"
+      }
+    },
     "nextcloud": {
       "name": "Nextcloud User CRM Gateway",
       "type": "crm",
@@ -53,37 +70,21 @@
       "username": "",
       "app_password": ""
     },
-    "searxng-control": {
-      "name": "SearXNG Control Plane",
-      "type": "admin",
-      "plane": "control",
-      "enabled": true,
-      "command": "/root/lab/thenovanodes/searxng-mcp-control/.venv/bin/python",
-      "args": [
-        "-m",
-        "src.server"
-      ],
-      "env": {
-        "SEARXNG_URL": "http://127.0.0.1:8889",
-        "SEARXNG_SETTINGS_PATH": "/root/lab/shared/searxng/settings.yml",
-        "SEARXNG_CONTAINER_NAME": "searxng"
-      }
-    },
     "google-jules-doctormes": {
       "name": "Google Jules AI Agent (Doctormes)",
       "type": "agent",
       "plane": "data",
       "enabled": true,
-      "url": "local",
-      "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp"
+      "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp",
+      "url": "local"
     },
     "google-jules-novanodes": {
       "name": "Google Jules AI Agent (TheNovaNodes)",
       "type": "agent",
       "plane": "data",
       "enabled": true,
-      "url": "local",
-      "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp"
+      "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp",
+      "url": "local"
     }
   }
 }
