@@ -681,6 +681,12 @@ async def process_resume_callback(callback_query: CallbackQuery):
 
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
+def strip_html_tags(text: str) -> str:
+    """Removes HTML tags and unescapes entities for plain text fallback."""
+    import re
+    clean = re.sub(r'<[^>]+>', '', text)
+    return clean.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+
 async def safe_edit_text(target: Message, text: str):
     """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text. Handles Rate Limits."""
     try:
@@ -690,12 +696,18 @@ async def safe_edit_text(target: Message, text: str):
         await asyncio.sleep(e.retry_after)
         await safe_edit_text(target, text)
     except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return
         logger.warning(f"HTML parse mode failed for edit_text, falling back to plain text: {e}")
         try:
-            await target.edit_text(text, parse_mode=None)
+            plain_text = strip_html_tags(text)
+            await target.edit_text(plain_text, parse_mode=None)
         except TelegramRetryAfter as retry_e:
             await asyncio.sleep(retry_e.retry_after)
-            await target.edit_text(text, parse_mode=None)
+            await target.edit_text(plain_text, parse_mode=None)
+        except TelegramBadRequest as inner_e:
+            if "message is not modified" not in str(inner_e).lower():
+                logger.warning(f"Fallback plain text also failed: {inner_e}")
 
 async def safe_answer(target: Message, text: str):
     """Try sending with HTML parse_mode; if Telegram fails with syntax error, fall back to plain text. Handles Rate Limits."""
@@ -708,10 +720,13 @@ async def safe_answer(target: Message, text: str):
     except TelegramBadRequest as e:
         logger.warning(f"HTML parse mode failed for answer, falling back to plain text: {e}")
         try:
-            await target.answer(text, parse_mode=None)
+            plain_text = strip_html_tags(text)
+            await target.answer(plain_text, parse_mode=None)
         except TelegramRetryAfter as retry_e:
             await asyncio.sleep(retry_e.retry_after)
-            await target.answer(text, parse_mode=None)
+            await target.answer(plain_text, parse_mode=None)
+        except TelegramBadRequest as inner_e:
+            logger.warning(f"Fallback plain text also failed: {inner_e}")
 
 from aiogram.types import BufferedInputFile
 

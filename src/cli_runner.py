@@ -355,6 +355,7 @@ class AgySession:
                 try:
                     chunk = await asyncio.to_thread(self.child.read_nonblocking, size=1024, timeout=0.5)
                     if chunk:
+                        chunk = chunk.replace(b"\x1b[=1;1u", b"").replace(b"\x1b[>4;2m", b"")
                         stream.feed(chunk)
                         idle_count = 0
                         
@@ -449,6 +450,7 @@ class AgySession:
                         self.child.read_nonblocking, size=4096, timeout=0.1
                     )
                     if chunk:
+                        chunk = chunk.replace(b"\x1b[=1;1u", b"").replace(b"\x1b[>4;2m", b"")
                         stream.feed(chunk)
                 except pexpect.TIMEOUT:
                     total_timeout_count += 1
@@ -473,21 +475,20 @@ class AgySession:
                             content_stable_ticks += 1
                             
                             is_prompt_ready = False
+                            lines_checked = 0
                             for l in reversed(raw_lines):
                                 l_str = l.strip()
                                 if l_str:
                                     clean_l = re.sub(r'\x1b\[.*?m', '', l_str)
-                                    if (clean_l.startswith("? ") and "for shortcuts" in clean_l) or "───" in clean_l:
-                                        continue
+                                    # Exact match for prompt, or starts with prompt
                                     if clean_l in (">", "❯", "›") or clean_l.startswith("> ") or clean_l.startswith("❯ ") or clean_l.startswith("› ") or clean_l.startswith("? "):
                                         is_prompt_ready = True
                                         break
-                                    # Don't break if we hit menu items like "Settings" or "Exit"
-                                    if clean_l in ("Chat", "Settings", "Exit", "New session", "Resume session", "❯ Chat", "❯ Settings", "❯ Exit"):
-                                        continue
-                                    
-                                    # If it's some other non-empty line, we haven't reached the prompt
-                                    break
+                                        
+                                    lines_checked += 1
+                                    # Don't scan too far up to avoid matching blockquotes in the response
+                                    if lines_checked > 15:
+                                        break
                                     
                             if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
                                 break
@@ -559,6 +560,7 @@ class AgySession:
                     try:
                         chunk = await asyncio.to_thread(self.child.read_nonblocking, size=4096, timeout=0.3)
                         if chunk:
+                            chunk = chunk.replace(b"\x1b[=1;1u", b"").replace(b"\x1b[>4;2m", b"")
                             stream.feed(chunk)
                             idle_count = 0
                         else:

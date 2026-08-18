@@ -35,8 +35,9 @@ def is_tui_noise(line: str, prompt: str = "") -> bool:
         return True
 
     if prompt:
-        clean_p = prompt.replace("\n", " ").strip()
-        if clean_p and (s == clean_p or s == f"> {clean_p}" or s == f"› {clean_p}"):
+        clean_prompt = prompt.strip()
+        # Only filter exact matches or very obvious echoes, not just 'contains'
+        if s == clean_prompt or s.startswith(f"> {clean_prompt}") or s.startswith(f"› {clean_prompt}") or s.startswith(f"❯ {clean_prompt}") or s.startswith(f"» {clean_prompt}"):
             return True
 
     return False
