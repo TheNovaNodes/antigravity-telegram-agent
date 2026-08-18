@@ -25,8 +25,7 @@ def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     btn_email = email if len(email) <= 24 else email[:21] + "..."
     buttons = [
         [
-            InlineKeyboardButton(text=f"🤖 {session.model_name.split('-')[0].upper()}", callback_data="menu:models"),
-            InlineKeyboardButton(text=f"⚡ {session.effort.upper()}", callback_data="menu:effort")
+            InlineKeyboardButton(text=f"🤖 Model: {session.model_name}", callback_data="menu:models")
         ],
         [
             InlineKeyboardButton(text=f"🎯 Mode: {AVAILABLE_MODES.get(session.mode, session.mode)}", callback_data="menu:mode")
@@ -75,8 +74,7 @@ def get_menu_text(session, is_start=False) -> str:
         f"• CLI Binary: <code>{AGY_BINARY_PATH}</code>\n"
         f"• Authenticated as: <code>{email}</code>\n\n"
         f"💬 <b>Active Session:</b> <code>{active_session_title}</code>\n"
-        f"🤖 <b>Model:</b> <code>{session.model_name}</code>\n"
-        f"⚡ <b>Reasoning Effort:</b> <code>{session.effort}</code>\n"
+        f"🤖 <b>Model & Effort:</b> <code>{session.model_name}</code>\n"
         f"🎯 <b>Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n"
         f"📂 <b>Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory'}</code>\n\n"
     )
@@ -88,8 +86,7 @@ def get_menu_text(session, is_start=False) -> str:
             "• /cd — Change workspace directory\n"
             "• /resume — Resume saved conversation\n"
             "• /mcp — Manage MCP Servers\n"
-            "• /models — Select AI Model\n"
-            "• /effort — Set Reasoning Effort\n"
+            "• /models — Select AI Model & Reasoning Level\n"
             "• /mode — Execution Mode (Standard/Plan)\n"
             "• /reset — Reset active session\n"
         )
@@ -102,7 +99,7 @@ def get_menu_text(session, is_start=False) -> str:
 def get_models_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for alias, full_name in AVAILABLE_MODELS.items():
-        buttons.append([InlineKeyboardButton(text=f"🤖 {alias} ({full_name})", callback_data=f"set_model:{alias}")])
+        buttons.append([InlineKeyboardButton(text=f"🤖 {full_name}", callback_data=f"set_model:{alias}")])
     buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

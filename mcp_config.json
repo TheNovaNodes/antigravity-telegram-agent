@@ -5,7 +5,7 @@
       "name": "AnythingLLM Semantic Memory Gateway",
       "type": "memory",
       "plane": "data",
-      "enabled": true,
+      "enabled": false,
       "url": "http://127.0.0.1:3002",
       "api_key": "",
       "workspace": "default"
@@ -14,7 +14,7 @@
       "name": "TheNovaNodes AnythingLLM Control Plane",
       "type": "admin",
       "plane": "control",
-      "enabled": true,
+      "enabled": false,
       "url": "http://127.0.0.1:3002",
       "api_key": "",
       "command": "/root/lab/thenovanodes/anythingllm-mcp-control/.venv/bin/python",
@@ -31,7 +31,7 @@
       "name": "SearXNG Web Search Gateway",
       "type": "search",
       "plane": "data",
-      "enabled": true,
+      "enabled": false,
       "url": "http://127.0.0.1:8889",
       "engines": "google,bing,duckduckgo,brave,github,stackoverflow,arxiv,wikipedia,qwant"
     },
@@ -39,7 +39,7 @@
       "name": "SearXNG Control Plane",
       "type": "admin",
       "plane": "control",
-      "enabled": true,
+      "enabled": false,
       "url": "http://127.0.0.1:8889",
       "command": "/root/lab/thenovanodes/searxng-mcp-control/.venv/bin/python",
       "args": [
@@ -56,7 +56,7 @@
       "name": "Nextcloud User CRM Gateway",
       "type": "crm",
       "plane": "data",
-      "enabled": true,
+      "enabled": false,
       "url": "http://127.0.0.1:8000",
       "username": "",
       "app_password": ""
