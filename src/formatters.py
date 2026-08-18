@@ -317,64 +317,88 @@ def format_usage_response(lines, email: str = "") -> str:
     """Format agy /usage raw screen lines into a comprehensive, dyslexia-friendly HTML Telegram report."""
     raw_joined = "\n".join(lines) if isinstance(lines, list) else str(lines)
     lines_list = raw_joined.split("\n")
-    
-    skip_keywords = [
-        "scroll", "pgup", "pgdown", "page", "ctrl+", "esc close", 
-        "models & quota", "all models", "welcome to", "signed in",
-        "view your available", "quota refreshes"
-    ]
-    
-    parsed_models = []
-    current_model = None
+
+    groups = []
+    current_group = None
+    current_limit_type = None
 
     for line in lines_list:
+        # Strip ANSI borders & boxes
         l_strip = line.strip()
         for c in ["│", "─", "┌", "┐", "└", "┘", "├", "┤", "┼", "▐", "▌", "█", "▄", "▀"]:
             l_strip = l_strip.replace(c, "")
         l_strip = l_strip.strip()
         l_lower = l_strip.lower()
-        
-        if not l_strip or any(k in l_lower for k in skip_keywords) or l_lower.startswith("account:"):
+
+        if not l_strip or "scroll" in l_lower or "esc close" in l_lower or l_lower.startswith("account:"):
             continue
 
-        if any(brand in l_strip for brand in ["Gemini", "Claude", "GPT"]):
-            if "separate quota pools" in l_lower:
-                continue
-            current_model = {
-                "name": l_strip,
-                "pct": 100,
-                "refreshes": ""
+        # Group Headers (e.g. GEMINI MODELS, CLAUDE MODELS, GPT MODELS)
+        if "MODELS" in l_strip and not l_strip.startswith("Models within"):
+            group_name = l_strip.replace("MODELS", "").strip().title() + " Models"
+            current_group = {
+                "name": group_name,
+                "models": "",
+                "limits": []
             }
-            parsed_models.append(current_model)
-        elif current_model:
-            if "% remaining" in l_strip:
-                pct_match = re.search(r"(\d+)%\s+remaining", l_strip)
-                if pct_match:
-                    current_model["pct"] = int(pct_match.group(1))
-            elif "Refreshes in" in l_strip:
-                current_model["refreshes"] = l_strip.split("Refreshes in")[1].strip()
+            groups.append(current_group)
+            current_limit_type = None
+            continue
 
-    seen = set()
-    unique_models = []
-    for m in parsed_models:
-        if m["name"] not in seen:
-            seen.add(m["name"])
-            unique_models.append(m)
+        if not current_group:
+            continue
+
+        if l_strip.startswith("Models within this group:"):
+            current_group["models"] = l_strip.replace("Models within this group:", "").strip()
+            continue
+
+        if "Limit Remaining" in l_strip:
+            current_limit_type = l_strip.replace("Remaining", "").strip()
+            continue
+
+        # Match percentages & refresh times (e.g. 56.35% or 56% remaining · Refreshes in 70h 13m)
+        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", l_strip)
+        if pct_match and current_limit_type:
+            val_pct = pct_match.group(1)
+            ref_match = re.search(r"Refreshes in\s+([0-9h\s+m]+)", l_strip, re.IGNORECASE)
+            ref_str = ref_match.group(1).strip() if ref_match else ""
+
+            # Avoid duplicating limits
+            existing_limit = next((l for l in current_group["limits"] if l["type"] == current_limit_type), None)
+            if not existing_limit:
+                current_group["limits"].append({
+                    "type": current_limit_type,
+                    "val": val_pct,
+                    "refreshes": ref_str
+                })
+            else:
+                if ref_str and not existing_limit["refreshes"]:
+                    existing_limit["refreshes"] = ref_str
 
     output_parts = [
         "📊 <b>Detailed Report on Quotas and Model Limits</b>\n",
         f"👤 <b>Account:</b> <code>{email}</code>\n" if email else ""
     ]
 
-    for m in unique_models:
-        name = m["name"]
-        pct = m["pct"]
-        ref = m["refreshes"]
-        
-        ref_text = f"\n   • <i>Refreshes in:</i> <code>{ref}</code>" if ref else ""
-        output_parts.append(
-            f"🔹 <b>{name}</b>\n"
-            f"   Remaining: <b>{pct}%</b>{ref_text}\n"
-        )
+    if not groups:
+        # Fallback formatting if screen parsing was plain text
+        output_parts.append(f"<pre><code>{raw_joined[:3000]}</code></pre>")
+        return "\n".join(output_parts)
 
-    return "\n".join(output_parts)
+    for g in groups:
+        g_name = g["name"]
+        g_models = g["models"]
+        output_parts.append(f"🔹 <b>{g_name}</b>")
+        if g_models:
+            output_parts.append(f"   <i>Included:</i> <code>{g_models}</code>")
+
+        for lim in g["limits"]:
+            l_type = lim["type"]
+            val = lim["val"]
+            ref = lim["refreshes"]
+            ref_text = f" · <i>Refreshes in {ref}</i>" if ref else ""
+            output_parts.append(f"   • {l_type}: <b>{val}% remaining</b>{ref_text}")
+
+        output_parts.append("")
+
+    return "\n".join(output_parts).strip()
