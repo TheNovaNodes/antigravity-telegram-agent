@@ -377,9 +377,18 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
         "🧪 <b>MCP Health Check Results</b>\n"
     ]
     for key, info in results.items():
-        status_icon = "✅" if info.get("ok") else ("⚪" if info.get("status") == "disabled" else "❌")
+        status_text = info.get("status", "unknown").lower()
+        if info.get("ok"):
+            status_icon = "✅"
+        elif status_text == "disabled":
+            status_icon = "⚪"
+        elif "degraded" in status_text:
+            status_icon = "⚠️"
+        else:
+            status_icon = "❌"
+            
         name = info.get("name", key)
-        status = info.get("status", "unknown").upper()
+        status = status_text.upper()
         target = info.get("target", "N/A")
         report_lines.append(f"{status_icon} <b>{name}</b> ({status})\n   Target: <code>{target}</code>")
 

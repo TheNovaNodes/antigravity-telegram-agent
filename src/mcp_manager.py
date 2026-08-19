@@ -86,65 +86,65 @@ class MCPManager:
                 }
                 continue
 
-            if key.startswith("anythingllm"):
-                url = srv.get("url", "http://127.0.0.1:3002")
-                ping_url = f"{url.rstrip('/')}/api/ping"
-                ok = await asyncio.to_thread(check_http_url, ping_url)
-                if not ok:
-                    ok = await asyncio.to_thread(check_http_url, url)
-                results[key] = {
-                    "name": srv.get("name", key),
-                    "status": "online" if ok else "offline",
-                    "ok": ok,
-                    "target": url
-                }
-            elif key.startswith("searxng"):
-                url = srv.get("url", "http://127.0.0.1:8889")
-                ping_url = f"{url.rstrip('/')}/healthz"
-                ok = await asyncio.to_thread(check_http_url, ping_url)
-                if not ok:
-                    ok = await asyncio.to_thread(check_http_url, url)
-                results[key] = {
-                    "name": srv.get("name", key),
-                    "status": "online" if ok else "offline",
-                    "ok": ok,
-                    "target": url
-                }
-            elif key.startswith("nextcloud"):
-                url = srv.get("url", "http://127.0.0.1:8000")
-                ping_url = f"{url.rstrip('/')}/status.php"
-                ok = await asyncio.to_thread(check_http_url, ping_url)
-                if not ok:
-                    ok = await asyncio.to_thread(check_http_url, url)
-                results[key] = {
-                    "name": srv.get("name", key),
-                    "status": "online" if ok else "offline",
-                    "ok": ok,
-                    "target": url
-                }
-            elif key.startswith("google-jules"):
-                cmd = srv.get("command", "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp")
-                ok = check_command_exists(cmd)
-                results[key] = {
-                    "name": srv.get("name", key),
-                    "status": "online" if ok else "offline",
-                    "ok": ok,
-                    "target": cmd
-                }
-            else:
-                url_or_cmd = srv.get("url") or srv.get("command", "")
-                if srv.get("url"):
-                    ok = await asyncio.to_thread(check_http_url, srv["url"])
-                elif srv.get("command"):
-                    ok = check_command_exists(srv["command"])
+            url = srv.get("url")
+            cmd = srv.get("command")
+            url_ok = True
+            cmd_ok = True
+            target = []
+
+            # 1. Check HTTP Instance Health
+            if url and url != "local":
+                target.append(url)
+                if key.startswith("anythingllm"):
+                    ping_url = f"{url.rstrip('/')}/api/ping"
+                    url_ok = await asyncio.to_thread(check_http_url, ping_url)
+                    if not url_ok:
+                        url_ok = await asyncio.to_thread(check_http_url, url)
+                elif key.startswith("searxng"):
+                    ping_url = f"{url.rstrip('/')}/healthz"
+                    url_ok = await asyncio.to_thread(check_http_url, ping_url)
+                    if not url_ok:
+                        url_ok = await asyncio.to_thread(check_http_url, url)
+                elif key.startswith("nextcloud"):
+                    ping_url = f"{url.rstrip('/')}/status.php"
+                    url_ok = await asyncio.to_thread(check_http_url, ping_url)
+                    if not url_ok:
+                        url_ok = await asyncio.to_thread(check_http_url, url)
                 else:
-                    ok = False
-                results[key] = {
-                    "name": srv.get("name", key),
-                    "status": "online" if ok else "offline",
-                    "ok": ok,
-                    "target": url_or_cmd
-                }
+                    url_ok = await asyncio.to_thread(check_http_url, url)
+            
+            # 2. Check MCP Control Plane Health (Binary)
+            if cmd:
+                target.append(cmd.split()[0])
+                cmd_ok = check_command_exists(cmd)
+
+            # 3. Combine statuses
+            is_ok = False
+            if url and cmd:
+                is_ok = url_ok and cmd_ok
+                if url_ok and cmd_ok:
+                    status = "online"
+                elif url_ok and not cmd_ok:
+                    status = "degraded (mcp offline)"
+                elif not url_ok and cmd_ok:
+                    status = "degraded (instance offline)"
+                else:
+                    status = "offline"
+            elif url and url != "local":
+                is_ok = url_ok
+                status = "online" if is_ok else "offline"
+            elif cmd:
+                is_ok = cmd_ok
+                status = "online" if is_ok else "offline"
+            else:
+                status = "offline"
+
+            results[key] = {
+                "name": srv.get("name", key),
+                "status": status,
+                "ok": is_ok,
+                "target": " & ".join(target) if target else "Unknown"
+            }
 
         return results
 

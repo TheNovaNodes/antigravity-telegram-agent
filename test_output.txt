@@ -8,8 +8,8 @@
  Welcome to the Antigravity CLI. You are currently not signed in.                                                       
                                                                                                                         
                                                                                                                         
-      ▄▀▀▄        Antigravity CLI 1.1.14                                                                                
-     ▀▀▀▀▀▀       thedoctormes@gmail.com                                                                                
+      ▄▀▀▄        Antigravity CLI 1.1.15                                                                                
+     ▀▀▀▀▀▀       thedoctorm@mail.ru                                                                                    
     ▀▀▀▀▀▀▀▀      Gemini 3.1 Pro (High)                                                                                 
    ▄▀▀    ▀▀▄     ~/projects/TheNovaNodes/antigravity-telegram-agent                                                    
   ▄▀▀      ▀▀▄                                                                                                          
@@ -18,7 +18,7 @@
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ────────────────────────────────────────────────────────────                                                            
 >                                                                                                                       
-──────────────────────────────────────── (Google AI Pro)────────────────────────────────────────────────────────────────
+──────────────────────────────────── (Google AI Pro)────────────────────────────────────────────────────────────────────
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ────────────────────────────────────────────────────────────                                                            
                                                                                                                         
@@ -35,30 +35,30 @@
                                                                                                                         
 └ Models & Quota                                                                                                        
                                                                                                                         
-  Account: thedoctormes@gmail.com                                                                                       
+  Account: thedoctorm@mail.ru                                                                                           
                                                                                                                         
 GEMINI MODELS                                                                                                           
   Models within this group: Gemini Flash, Gemini Pro                                                                    
                                                                                                                         
   Weekly Limit Remaining                                                                                                
-    [████████████████████████████████████████░░░░░░░░░░] 79.79%                                                         
-    80% remaining · Refreshes in 161h 18m                                                                               
+    [███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 37.24%                                                         
+    37% remaining · Refreshes in 44h 9m                                                                                 
                                                                                                                         
   Five Hour Limit Remaining                                                                                             
-    [███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 38.46%                                                         
-    38% remaining · Refreshes in 3h 18m                                                                                 
+    [██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 12.85%                                                         
+    13% remaining · Refreshes in 3h 12m                                                                                 
                                                                                                                         
                                                                                                                         
 CLAUDE AND GPT MODELS                                                                                                   
   Models within this group: Claude Opus, Claude Sonnet, GPT-OSS                                                         
                                                                                                                         
   Weekly Limit Remaining                                                                                                
-    [█████████████████████████████████░░░░░░░░░░░░░░░░░] 66.32%                                                         
-    66% remaining · Refreshes in 154h 0m                                                                                
+    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0.00%                                                          
+    Refreshes in 122h 20m                                                                                               
                                                                                                                         
   Five Hour Limit Remaining                                                                                             
-    [██████████████████████████████████████████████████] 100.00%                                                        
-    Quota available                                                                                                     
+    Disabled: You have hit your weekly limit, the 5-hour limit does not currently apply. Your weekly limit will fully re
+fresh in 5 days, 2 hours.                                                                                               
                                                                                                                         
                                                                                                                         
   │Within each group, models share a weekly limit and a 5-hour limit. Quota is                                          

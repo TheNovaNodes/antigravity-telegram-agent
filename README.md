@@ -67,6 +67,7 @@ Once the bot is running, open Telegram and use these commands:
 - `/resume` — Select and resume a previous session from the CLI history.
 - `/rename <name>` — Rename the active session.
 - `/mcp` — Control panel to toggle MCP servers.
+- `/mcp` (Health Check) — Granular HTTP & Binary health verification of MCP Data and Control planes.
 - `/models` — Switch AI models (e.g., Gemini, Claude, GPT).
 - `/effort` — Set reasoning depth (`low`, `medium`, `high`).
 - `/mode` — Select working mode (`Standard`, `Plan`, `Auto-Edits`).
