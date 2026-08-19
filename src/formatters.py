@@ -84,7 +84,7 @@ def check_known_errors(text: str) -> str | None:
 
 def highlight_tech_terms(text: str) -> str:
     """Highlight standalone technical terms, filenames, and paths in mono font for dyslexia readability."""
-    path_pattern = r'(?<![A-Za-z0-9_/<>&;`"])(\b[a-zA-Z0-9_\-\.]+\/[a-zA-Z0-9_\-\./\.]+\b|\b[a-zA-Z0-9_\-]+\.(?:py|json|md|txt|sh|html|css|js|yml|yaml|toml|service)\b)(?![A-Za-z0-9_/<>&;`"])'
+    path_pattern = r'(?<![A-Za-z0-9_/<>&;`"])(\b[a-zA-Z0-9_\-\.]+\/[a-zA-Z0-9_\-\./\.]+\b|\b[a-zA-Z0-9_\-]+\.(?:py|json|md|txt|sh|html|css|js|yml|yaml|toml|service|env)\b|\.[a-zA-Z0-9_\-]+\b)(?![A-Za-z0-9_/<>&;`"])'
     text = re.sub(path_pattern, r'<code>\1</code>', text)
     return text
 

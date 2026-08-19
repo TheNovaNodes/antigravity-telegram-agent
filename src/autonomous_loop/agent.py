@@ -28,11 +28,16 @@ class GeminiAgentAdapter(AgentAdapter):
         
         # Use agy CLI to invoke the real LLM agent
         res = subprocess.run(
-            ["/root/.local/bin/agy", "--print", prompt, "--dangerously-skip-permissions"],
+            ["/root/.local/bin/agy", "--print", prompt, "--dangerously-skip-permissions", "--output-format", "json"],
             capture_output=True,
-            text=True
+            text=True,
+            start_new_session=True
         )
-        output = res.stdout
+        try:
+            parsed = json.loads(res.stdout)
+            output = parsed.get("response", res.stdout)
+        except json.JSONDecodeError:
+            output = res.stdout
         
         # Extract structured patches
         structured_patches = None
