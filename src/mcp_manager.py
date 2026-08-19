@@ -65,8 +65,35 @@ class MCPManager:
                 with urllib.request.urlopen(req, timeout=timeout) as response:
                     return response.status in (200, 204, 301, 302, 401, 403)
             except urllib.error.HTTPError as exc:
-                # HTTP errors like 401, 403, 404 mean endpoint is reachable
                 return exc.code < 500
+            except Exception:
+                return False
+
+        def check_anythingllm_deep(url: str, api_key: str, timeout: float = 5.0) -> bool:
+            if not api_key:
+                return False
+            try:
+                import json
+                req = urllib.request.Request(
+                    f"{url.rstrip('/')}/api/v1/workspaces",
+                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                    return "workspaces" in data or type(data) is list
+            except Exception:
+                return False
+
+        def check_searxng_deep(url: str, timeout: float = 5.0) -> bool:
+            try:
+                import json
+                req = urllib.request.Request(
+                    f"{url.rstrip('/')}/search?q=test&format=json",
+                    headers={"User-Agent": "AntigravityTelegramAgent/1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                    return "results" in data
             except Exception:
                 return False
 
@@ -92,19 +119,21 @@ class MCPManager:
             cmd_ok = True
             target = []
 
-            # 1. Check HTTP Instance Health
+            # 1. Check HTTP Instance Health (Deep where possible)
             if url and url != "local":
                 target.append(url)
                 if key.startswith("anythingllm"):
-                    ping_url = f"{url.rstrip('/')}/api/ping"
-                    url_ok = await asyncio.to_thread(check_http_url, ping_url)
-                    if not url_ok:
-                        url_ok = await asyncio.to_thread(check_http_url, url)
+                    api_key = srv.get("api_key") or srv.get("env", {}).get("ANYTHINGLLM_API_KEY")
+                    if api_key:
+                        url_ok = await asyncio.to_thread(check_anythingllm_deep, url, api_key)
+                    else:
+                        ping_url = f"{url.rstrip('/')}/api/ping"
+                        url_ok = await asyncio.to_thread(check_http_url, ping_url)
                 elif key.startswith("searxng"):
-                    ping_url = f"{url.rstrip('/')}/healthz"
-                    url_ok = await asyncio.to_thread(check_http_url, ping_url)
+                    url_ok = await asyncio.to_thread(check_searxng_deep, url)
                     if not url_ok:
-                        url_ok = await asyncio.to_thread(check_http_url, url)
+                        ping_url = f"{url.rstrip('/')}/healthz"
+                        url_ok = await asyncio.to_thread(check_http_url, ping_url)
                 elif key.startswith("nextcloud"):
                     ping_url = f"{url.rstrip('/')}/status.php"
                     url_ok = await asyncio.to_thread(check_http_url, ping_url)
