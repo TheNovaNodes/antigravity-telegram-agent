@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import logging
 from pathlib import Path
@@ -8,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-DB_PATH = DATA_DIR / "antigravity-telegram-agent.db"
+DB_PATH = Path(os.environ.get("AG_TEST_DB_PATH", DATA_DIR / "antigravity-telegram-agent.db"))
 
 
 import threading
@@ -20,7 +21,7 @@ def _get_connection() -> sqlite3.Connection:
     """Create data directory and open a shared SQLite connection with WAL mode."""
     global _conn
     if _conn is None:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(str(DB_PATH), timeout=10.0, check_same_thread=False)
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA busy_timeout=5000")

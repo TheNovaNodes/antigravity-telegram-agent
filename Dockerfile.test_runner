@@ -1,0 +1,5 @@
+FROM python:3.12-slim
+RUN pip install pytest pytest-json-report
+RUN useradd -m -u 1000 sandbox_user
+USER sandbox_user
+WORKDIR /workspace

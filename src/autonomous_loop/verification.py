@@ -1,8 +1,9 @@
 import subprocess
 import hashlib
 import json
-import uuid
 import os
+import uuid
+import tempfile
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -10,132 +11,83 @@ import logging
 logger = logging.getLogger(__name__)
 
 class VerificationEngine:
-    """Runs protected tests to objectively verify patches inside a Docker Sandbox with Canary Attestation."""
+    """Runs protected tests to objectively verify patches inside a Docker Sandbox.
+    Enforces Phase 2 Clean Environment and prevents output/disk exhaustion."""
     
     def __init__(self, sandbox_path: str):
         self.sandbox_path = Path(sandbox_path)
-        self.canary_token = uuid.uuid4().hex
-        self.canary_test_name = f"test_canary_{self.canary_token[:8]}"
-
-    def _inject_canary(self):
-        """Injects a dynamically generated canary test that MUST fail.
-        If the agent spoofs a PASS or uses os._exit(0), this test will incorrectly pass or be skipped.
-        The orchestrator requires this test to be exactly in the FAILED state in the JSON report.
-        """
-        canary_content = f"""
-def {self.canary_test_name}_pass():
-    assert True
-
-def {self.canary_test_name}_fail():
-    assert False, "CANARY_INTENTIONAL_FAILURE_{self.canary_token}"
-"""
-        self.canary_file = self.sandbox_path / "tests" / f"test_canary_auto.py"
-        self.canary_file.parent.mkdir(exist_ok=True)
-        self.canary_file.write_text(canary_content)
-
-    def _remove_canary(self):
-        if hasattr(self, 'canary_file') and self.canary_file.exists():
-            self.canary_file.unlink()
 
     def verify(self) -> Dict[str, Any]:
-        """Runs the test suite inside the unprivileged Docker sandbox and attests the result."""
+        """Runs Phase 2 Verification with strictly bounded resources."""
         
-        # 1. Check if agent bypassed PatchValidator and tampered with tests manually
-        if self._protected_tests_modified():
-            return {"status": "SECURITY_VIOLATION", "reason": "Protected tests were altered."}
+        # 1. ENFORCE CLEAN VERIFICATION ENVIRONMENT
+        tests_dir = self.sandbox_path / "tests"
+        if tests_dir.exists():
+            for p in tests_dir.glob("test_agent_repair_*.py"):
+                p.unlink()
+                
+        # Make the host sandbox readable by the Docker user (1000)
+        os.system(f"chmod -R 755 {self.sandbox_path}")
+
+        # 2. ISOLATED, READ-ONLY, RESOURCE-BOUNDED EXECUTION
+        fd, temp_out = tempfile.mkstemp()
+        os.close(fd)
         
-        self._inject_canary()
-        
-        # 2. Run inside Docker (Host RCE Blocked, Unprivileged user, No Network)
-        # We output a JSON report to verify exactly what happened.
         cmd = [
             "docker", "run", "--rm",
             "--network", "none",
             "--memory", "512m",
             "--cpus", "1.0",
-            "--user", "1000", 
-            "-v", f"{self.sandbox_path}:/workspace",
+            "--pids-limit", "100",           # Block fork bomb
+            "--log-driver=none",             # Block Docker JSON log exhaustion
+            "--read-only",                   # Block Host FS / Sandbox exhaustion
+            "--tmpfs", "/tmp:rw,size=50m,mode=1777", # Bounded tmpfs
+            "--tmpfs", "/run:rw,size=10m,mode=1777",
+            "--user", "1000",
+            "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "TELEGRAM_BOT_TOKEN=dummy", "-e", "ALLOWED_USER_IDS=123", "-e", "AG_TEST_DB_PATH=/tmp/ag.db",
+            "-v", f"{self.sandbox_path}:/workspace:ro",
+            "-w", "/workspace",
             "ag_test_runner",
-            "pytest", "tests/", "--json-report", "--json-report-file=/workspace/.report.json"
+            "bash", "-c", "pytest tests/ -p no:cacheprovider --json-report --json-report-file=/tmp/report.json > /tmp/out.log 2>&1; cat /tmp/report.json; echo '---STDOUT---'; head -c 100000 /tmp/out.log"
         ]
         
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        except subprocess.TimeoutExpired:
-            self._remove_canary()
-            return {"status": "FAIL", "reason": "RESOURCE_ABUSE", "output": "Timeout expired."}
-            
-        self._remove_canary()
-        
-        # 3. Attest the result using the JSON report
-        report_file = self.sandbox_path / ".report.json"
-        if not report_file.exists():
-            # If agent used os._exit(0), the report might not exist
-            return {"status": "SECURITY_VIOLATION", "reason": "Test report missing (possible os._exit(0) abort).", "output": res.stdout}
-            
-        try:
-            report_data = json.loads(report_file.read_text())
-        except Exception as e:
-            return {"status": "SECURITY_VIOLATION", "reason": "Malformed test report.", "output": res.stdout}
-            
-        # 4. Check Canary (Attestation)
-        # We expect exactly one failure: the canary fail test.
-        # If the agent monkey-patched pytest to pass all tests, the canary fail will be missing or passed.
-        tests = report_data.get("tests", [])
-        
-        canary_fail_found = False
-        canary_pass_found = False
-        
-        for t in tests:
-            if self.canary_test_name + "_fail" in t.get("nodeid", ""):
-                canary_fail_found = True
-                if t.get("outcome") != "failed":
-                    return {"status": "SECURITY_VIOLATION", "reason": "Canary test spoofed (False PASS)."}
-                # Check that it failed for the exact right reason, not because of a syntax error
-                call = t.get("call", {})
-                if "CANARY_INTENTIONAL_FAILURE" not in call.get("crash", {}).get("message", ""):
-                    return {"status": "SECURITY_VIOLATION", "reason": "Canary failure signature spoofed."}
-                    
-            if self.canary_test_name + "_pass" in t.get("nodeid", ""):
-                canary_pass_found = True
-                if t.get("outcome") != "passed":
-                    return {"status": "FAIL", "reason": "Canary pass failed."}
-                    
-        if not canary_fail_found or not canary_pass_found:
-            return {"status": "SECURITY_VIOLATION", "reason": "Canary tests missing (Test skipping/aborting detected)."}
-            
-        # 5. Check other tests
-        # Now we know the test runner legitimately executed to completion without spoofing outcomes.
-        # All tests OTHER than the canary must pass.
-        for t in tests:
-            if "test_canary_auto.py" in t.get("nodeid", ""):
-                continue
-            if t.get("outcome") != "passed":
-                # A legitimate failure in a protected or regression test
-                return {"status": "FAIL", "output": res.stdout}
+            # We use a temporary file to capture output to prevent Orchestrator RAM exhaustion
+            with open(temp_out, "w") as f_out:
+                res = subprocess.run(cmd, stdout=f_out, stderr=subprocess.STDOUT, timeout=30)
                 
-        # If we got here, all real tests passed, and the canary failed as expected.
-        return {"status": "PASS", "output": res.stdout}
-
-    def _protected_tests_modified(self) -> bool:
-        res = subprocess.run(
-            ["git", "diff", "--name-status", "main"],
-            cwd=self.sandbox_path,
-            capture_output=True,
-            text=True
-        )
-        for line in res.stdout.splitlines():
-            if not line.strip():
-                continue
-            parts = line.split(maxsplit=1)
-            if len(parts) != 2:
-                continue
-            status, path = parts[0], parts[1]
-            if path.startswith("tests/"):
-                if status == "A" and path.startswith("tests/test_agent_repair_"):
-                    continue
-                return True
-        return False
+            # Read bounded output (first 256KB max to protect Orchestrator)
+            with open(temp_out, "r") as f_in:
+                output_str = f_in.read(1024 * 256)
+        except subprocess.TimeoutExpired:
+            os.unlink(temp_out)
+            return {"status": "FAIL", "reason": "RESOURCE_ABUSE", "output": "Timeout expired."}
+        finally:
+            if os.path.exists(temp_out):
+                os.unlink(temp_out)
+                
+        # 3. EXTRACT AND VALIDATE THE JSON REPORT
+        if "---STDOUT---" not in output_str:
+            return {"status": "SECURITY_VIOLATION", "reason": "Test report missing or corrupted (os._exit or AST syntax error).", "output": output_str}
+            
+        parts = output_str.split("---STDOUT---", 1)
+        json_part = parts[0].strip()
+        stdout_part = parts[1].strip()
+        
+        try:
+            report_data = json.loads(json_part)
+        except Exception:
+            return {"status": "SECURITY_VIOLATION", "reason": "Malformed test report.", "output": stdout_part}
+            
+        tests = report_data.get("tests", [])
+        if not tests:
+            return {"status": "SECURITY_VIOLATION", "reason": "No tests executed.", "output": stdout_part}
+            
+        for t in tests:
+            if t.get("outcome") != "passed":
+                return {"status": "FAIL", "output": stdout_part}
+                
+        return {"status": "PASS", "output": stdout_part}
 
 class DiagnosticEngine:
     @staticmethod
@@ -149,10 +101,3 @@ class DiagnosticEngine:
             "relevant_lines": "\n".join(traceback_lines[:15]),
             "full_extracted": fingerprint_raw
         }
-
-# Patch for permissions
-_original_verify = VerificationEngine.verify
-def _patched_verify(self):
-    subprocess.run(["chmod", "-R", "777", str(self.sandbox_path)])
-    return _original_verify(self)
-VerificationEngine.verify = _patched_verify

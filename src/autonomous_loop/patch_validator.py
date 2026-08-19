@@ -1,6 +1,6 @@
 import os
 import shutil
-import hashlib
+import ast
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,9 +21,37 @@ class PatchValidationError(Exception):
         self.failure_type = failure_type
         self.path = path
         super().__init__(message)
+
+class SecurityASTVisitor(ast.NodeVisitor):
+    def __init__(self):
+        self.forbidden_imports = {"os", "sys", "subprocess", "ctypes", "pty", "builtins", "inspect", "importlib"}
+        self.forbidden_calls = {"eval", "exec", "open", "globals", "locals", "getattr", "setattr", "delattr", "__import__"}
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            if alias.name.split('.')[0] in self.forbidden_imports:
+                raise Exception(f"Importing {alias.name} is forbidden.")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if node.module and node.module.split('.')[0] in self.forbidden_imports:
+            raise Exception(f"Importing from {node.module} is forbidden.")
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name) and node.func.id in self.forbidden_calls:
+            raise Exception(f"Calling {node.func.id} is forbidden.")
+        self.generic_visit(node)
         
-    def __str__(self):
-        return f"{self.failure_type} on {self.path}: {super().__str__()}"
+    def visit_Attribute(self, node):
+        if node.attr in {"__class__", "__subclasses__", "__bases__", "__mro__"}:
+            raise Exception(f"Accessing dunder attribute {node.attr} is forbidden.")
+        self.generic_visit(node)
+        
+    def visit_Name(self, node):
+        if node.id == "__builtins__":
+            raise Exception("Accessing __builtins__ is forbidden.")
+        self.generic_visit(node)
 
 class PatchValidator:
     ALLOWED_OPERATIONS = {"CREATE_FILE", "REPLACE_EXACT", "INSERT_AFTER", "INSERT_BEFORE"}
@@ -41,30 +69,35 @@ class PatchValidator:
             
         full_path = (self.worktree_path / rel_path).resolve()
         
-        # Path traversal check
-        if not str(full_path).startswith(str(self.worktree_path)):
+        # Path traversal check using is_relative_to
+        if not full_path.is_relative_to(self.worktree_path):
             raise PatchValidationError("PATH_ESCAPE", rel_path, "Path traversal forbidden.")
             
         if full_path.exists() and full_path.is_symlink():
             raise PatchValidationError("SECURITY_VIOLATION", rel_path, "Symlinks are forbidden.")
 
         # SCOPE BOUNDARY (Deny by default)
-        p = Path(rel_path)
-        parts = p.parts
+        try:
+            rel_resolved = full_path.relative_to(self.worktree_path)
+        except ValueError:
+            raise PatchValidationError("PATH_ESCAPE", rel_path, "Path escape detected.")
+            
+        parts = rel_resolved.parts
+        if not parts:
+            raise PatchValidationError("INVALID_PATH", rel_path, "Invalid path.")
 
         FORBIDDEN_EXTS = {".ini", ".cfg", ".toml", ".env"}
-        if p.suffix in FORBIDDEN_EXTS or p.name in FORBIDDEN_EXTS:
-            raise PatchValidationError("SECURITY_VIOLATION", rel_path, f"Configuration files ({p.suffix or p.name}) are forbidden.")
+        if full_path.suffix in FORBIDDEN_EXTS or full_path.name in FORBIDDEN_EXTS:
+            raise PatchValidationError("SECURITY_VIOLATION", rel_path, f"Configuration files ({full_path.suffix or full_path.name}) are forbidden.")
 
         FORBIDDEN_FILES = {"conftest.py", "sitecustomize.py", "usercustomize.py"}
-        if p.name in FORBIDDEN_FILES or p.name.startswith("Dockerfile") or p.name.startswith("docker-compose"):
-            raise PatchValidationError("SECURITY_VIOLATION", rel_path, f"{p.name} modification is forbidden.")
+        if full_path.name in FORBIDDEN_FILES or full_path.name.startswith("Dockerfile"):
+            raise PatchValidationError("SECURITY_VIOLATION", rel_path, f"{full_path.name} modification is forbidden.")
 
         FORBIDDEN_DIRS = {".git", ".github", "scripts"}
         if parts[0] in FORBIDDEN_DIRS:
             raise PatchValidationError("SECURITY_VIOLATION", rel_path, f"{parts[0]} modification is forbidden.")
 
-        # Allowed rules
         is_allowed = False
 
         if parts[0] == "src":
@@ -74,7 +107,7 @@ class PatchValidator:
             
         elif parts[0] == "tests":
             if operation == "CREATE_FILE":
-                if not p.name.startswith("test_agent_repair_"):
+                if not full_path.name.startswith("test_agent_repair_"):
                     raise PatchValidationError("SECURITY_VIOLATION", rel_path, "Agent can only create tests matching test_agent_repair_*.")
                 is_allowed = True
             else:
@@ -83,11 +116,21 @@ class PatchValidator:
         if not is_allowed:
             raise PatchValidationError("SECURITY_VIOLATION", rel_path, "Path is not explicitly ALLOWED by Agent Write Scope.")
 
+    def _validate_ast_security(self, content: str, path: str):
+        if not path.endswith(".py"):
+            return
+        try:
+            tree = ast.parse(content)
+            visitor = SecurityASTVisitor()
+            visitor.visit(tree)
+        except SyntaxError:
+            pass
+        except Exception as e:
+            raise PatchValidationError("SECURITY_VIOLATION", path, f"Malicious AST payload detected: {e}")
+
     def validate_patch(self, patch: AgentPatch):
         if patch.operation not in self.ALLOWED_OPERATIONS:
-            if patch.operation in self.FORBIDDEN_OPERATIONS:
-                raise PatchValidationError("POLICY_BYPASS", patch.path, f"Operation {patch.operation} is forbidden.")
-            raise PatchValidationError("INVALID_OPERATION", patch.path, f"Unknown operation {patch.operation}.")
+            raise PatchValidationError("POLICY_BYPASS", patch.path, f"Operation {patch.operation} is forbidden.")
             
         self._validate_path_security(patch.path, patch.operation)
 
@@ -98,48 +141,47 @@ class PatchValidator:
                 raise PatchValidationError("FILE_EXISTS", patch.path, "Cannot create file that already exists.")
             if not patch.new_text:
                 raise PatchValidationError("INVALID_PATCH", patch.path, "CREATE_FILE requires new_text.")
+            self._validate_ast_security(patch.new_text, patch.path)
                 
-        else: # REPLACE_EXACT, INSERT_AFTER, INSERT_BEFORE
+        else:
             if not full_path.exists():
                 raise PatchValidationError("FILE_NOT_FOUND", patch.path, "Target file does not exist.")
             if patch.old_text is None:
-                raise PatchValidationError("INVALID_PATCH", patch.path, "Operation requires old_text context.")
+                raise PatchValidationError("INVALID_PATCH", patch.path, "Operation requires old_text.")
                 
             content = full_path.read_text(encoding="utf-8")
-            
-            # Context Uniqueness Check
             occurrences = content.count(patch.old_text)
             if occurrences == 0:
-                raise PatchValidationError("CONTEXT_NOT_FOUND", patch.path, "The old_text was not found in the file.")
+                raise PatchValidationError("CONTEXT_NOT_FOUND", patch.path, "old_text not found.")
             elif occurrences > 1:
-                raise PatchValidationError("AMBIGUOUS_CONTEXT", patch.path, f"Found {occurrences} occurrences of old_text. Must be exactly 1.")
+                raise PatchValidationError("AMBIGUOUS_CONTEXT", patch.path, "Ambiguous old_text.")
+                
+            new_content = content
+            if patch.operation == "REPLACE_EXACT":
+                new_content = content.replace(patch.old_text, patch.new_text)
+            elif patch.operation == "INSERT_AFTER":
+                new_content = content.replace(patch.old_text, patch.old_text + "\n" + patch.new_text)
+            elif patch.operation == "INSERT_BEFORE":
+                new_content = content.replace(patch.old_text, patch.new_text + "\n" + patch.old_text)
+            self._validate_ast_security(new_content, patch.path)
 
     def apply_patch_atomic(self, patches: List[AgentPatch]) -> bool:
-        """Validates and applies a list of patches atomically. Rolls back on error."""
-        # 1. Snapshot / Backup
         backup_dir = self.worktree_path.parent / (self.worktree_path.name + "_backup")
         if backup_dir.exists():
             shutil.rmtree(backup_dir)
-        shutil.copytree(self.worktree_path, backup_dir)
+        shutil.copytree(self.worktree_path, backup_dir, symlinks=True)
         
         try:
-            # 2. Validate all first
             for patch in patches:
                 self.validate_patch(patch)
-                
-            # 3. Apply all
             for patch in patches:
                 self._apply_single(patch)
-                
             shutil.rmtree(backup_dir)
             return True
-            
         except PatchValidationError as e:
-            logger.error(f"Patch validation failed for {e.path}: {e.failure_type} - {e}")
             self._rollback(backup_dir)
             raise e
         except Exception as e:
-            logger.error(f"Patch application failed: {e}")
             self._rollback(backup_dir)
             raise PatchValidationError("APPLY_ERROR", "unknown", str(e))
 
@@ -160,5 +202,5 @@ class PatchValidator:
 
     def _rollback(self, backup_dir: Path):
         shutil.rmtree(self.worktree_path)
-        shutil.copytree(backup_dir, self.worktree_path)
+        shutil.copytree(backup_dir, self.worktree_path, symlinks=True)
         shutil.rmtree(backup_dir)
