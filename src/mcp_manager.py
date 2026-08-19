@@ -103,6 +103,60 @@ class MCPManager:
             binary = cmd.split()[0]
             return os.path.exists(binary) and os.access(binary, os.X_OK)
 
+        async def check_mcp_binary_deep(cmd: str, timeout: float = 3.0) -> bool:
+            if not check_command_exists(cmd):
+                return False
+            try:
+                import json
+                proc = await asyncio.create_subprocess_shell(
+                    cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                init_req = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "HealthCheck", "version": "1.0.0"}
+                    }
+                }
+                proc.stdin.write((json.dumps(init_req) + "\n").encode('utf-8'))
+                await proc.stdin.drain()
+                
+                response_found = False
+                async def read_stdout():
+                    nonlocal response_found
+                    while True:
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        try:
+                            data = json.loads(line.decode('utf-8'))
+                            if data.get("id") == 1 and "result" in data:
+                                response_found = True
+                                break
+                        except Exception:
+                            pass
+                            
+                try:
+                    await asyncio.wait_for(read_stdout(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    pass
+                    
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    
+                return response_found
+            except Exception:
+                return False
+
         for key, srv in servers.items():
             if not srv.get("enabled"):
                 results[key] = {
@@ -145,7 +199,10 @@ class MCPManager:
             # 2. Check MCP Control Plane Health (Binary)
             if cmd:
                 target.append(cmd.split()[0])
-                cmd_ok = check_command_exists(cmd)
+                if key.startswith("google-jules"):
+                    cmd_ok = await check_mcp_binary_deep(cmd)
+                else:
+                    cmd_ok = check_command_exists(cmd)
 
             # 3. Combine statuses
             is_ok = False
