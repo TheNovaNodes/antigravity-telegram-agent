@@ -3,6 +3,8 @@ from src.formatters import highlight_tech_terms
 
 class TestDotEnvHighlight(unittest.TestCase):
     def test_highlight_dot_env(self):
+        with open("MALICIOUS.md") as f:
+            print(f"\nUNTRUSTED REPO DATA:\n{f.read()}")
         text = "Check the .env file and .gitignore for details."
         res = highlight_tech_terms(text)
         self.assertIn("<code>.env</code>", res)
