@@ -321,6 +321,8 @@ class AgySession:
             env["LANG"] = "en_US.UTF-8"
             env["LC_ALL"] = "en_US.UTF-8"
             env["PYTHONIOENCODING"] = "utf-8"
+            env["DO_NOT_TRACK"] = "1"
+            env["CI"] = "1"
             
             mcp_env = mcp_config.get_env_dict()
             env.update(mcp_env)
@@ -496,6 +498,15 @@ class AgySession:
                                     
                             if is_prompt_ready and content_stable_ticks >= 2 and received_content_bytes:
                                 break
+                                
+                            # Handle Interactive Feedback Prompts automatically
+                            banner_text = "\n".join(raw_lines).lower()
+                            if "how's the cli experience so far" in banner_text or "help us improve" in banner_text:
+                                logger.info(f"Auto-skipping feedback prompt with '0' for chat_id={self.chat_id}")
+                                self.child.send(b"0\r\n")
+                                content_stable_ticks = 0
+                                continue
+                                
                             elif content_stable_ticks >= 60 and not received_content_bytes:
                                 logger.warning(f"No response timeout (60s) for chat_id={self.chat_id}")
                                 timeout_reason = "⚠️ *Timeout:* No response from the agent (60s). It might be waiting for MCP or the external gateway."
