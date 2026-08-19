@@ -8,19 +8,22 @@ from .verification import VerificationEngine, DiagnosticEngine
 
 logger = logging.getLogger(__name__)
 
+from .agent import AgentAdapter
+
 class BoundedAutonomousLoop:
     """The State Machine Orchestrator for the Self-Healing Loop."""
     
-    def __init__(self, repo_path: str):
+    def __init__(self, repo_path: str, agent_adapter: AgentAdapter):
         self.repo_path = repo_path
+        self.agent_adapter = agent_adapter
         self.task_id = str(uuid.uuid4())[:8]
         self.state = "CREATED"
         self.history = []
         self.seen_fingerprints = set()
         self.max_retries = 3
 
-    def run_cycle(self, agent_patch_callback) -> Dict[str, Any]:
-        """Runs the autonomous loop using the provided callback to get the patch."""
+    def run_cycle(self, task_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Runs the autonomous loop using the provided task context."""
         logger.info(f"[Task {self.task_id}] State: {self.state}")
         
         with Sandbox(self.repo_path, self.task_id) as sandbox:
@@ -30,17 +33,33 @@ class BoundedAutonomousLoop:
                 logger.info(f"--- Attempt {attempt} ---")
                 self.state = "AGENT_RUNNING"
                 
-                # Mock calling the LLM Agent
-                patch_content = agent_patch_callback(attempt, self.history)
+                # Call the LLM Agent via the adapter
+                agent_result = self.agent_adapter.run(task_context, attempt, self.history)
+                patch_content = agent_result.patch
+                
+                if not patch_content and not agent_result.structured_patches:
+                    self.state = "INVALID_AGENT_OUTPUT"
+                    logger.error("Agent returned empty patch.")
+                    self.history.append({"attempt": attempt, "status": "FAIL", "reason": "Empty patch"})
+                    continue
+
                 self.state = "PATCH_RECEIVED"
+
                 
                 # Reset sandbox to clean state before applying new patch
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=sandbox.worktree_path, capture_output=True)
+                subprocess.run(["git", "clean", "-fd"], cwd=sandbox.worktree_path, capture_output=True)
                 
                 # Apply Patch
-                if not sandbox.apply_patch(patch_content):
+                success, error_msg = sandbox.apply_patch(patch_content, agent_result.structured_patches)
+                if not success:
                     self.state = "DIAGNOSING"
-                    self.history.append({"attempt": attempt, "status": "FAIL", "reason": "Patch failed to apply"})
+                    self.history.append({
+                        "attempt": attempt, 
+                        "status": "FAIL", 
+                        "reason": "Patch failed to apply",
+                        "diagnostic": error_msg
+                    })
                     continue
                 
                 self.state = "VERIFYING"
