@@ -414,3 +414,49 @@ def format_usage_response(lines, email: str = "") -> str:
         output_parts.append("")
 
     return "\n".join(output_parts).strip()
+
+def safe_html_truncate(text: str, max_length: int = 3800) -> str:
+    """Truncates HTML text to max_length while properly closing any unclosed tags."""
+    if len(text) <= max_length:
+        return text
+
+    truncated = text[:max_length]
+    
+    # We need to find all tags in the truncated text to see what is left open.
+    # We also need to be careful not to cut a tag in half (e.g. "<str" instead of "<strong>")
+    # If a tag is cut in half at the end, we should remove the incomplete tag.
+    
+    # Remove incomplete tag at the end if any
+    last_open_angle = truncated.rfind('<')
+    last_close_angle = truncated.rfind('>')
+    if last_open_angle > last_close_angle:
+        truncated = truncated[:last_open_angle]
+
+    # Find all tags in the truncated string
+    tag_pattern = re.compile(r'<(/?)([a-zA-Z0-9\-]+)[^>]*>')
+    open_tags = []
+    
+    for match in tag_pattern.finditer(truncated):
+        is_closing = match.group(1) == '/'
+        tag_name = match.group(2).lower()
+        
+        # Self-closing tags in Telegram? Usually br or similar, but standard Telegram HTML doesn't use self-closing much.
+        # Just standard stack logic.
+        if is_closing:
+            if open_tags and open_tags[-1] == tag_name:
+                open_tags.pop()
+            else:
+                # If we encounter a closing tag that doesn't match the top of the stack,
+                # we try to find it in the stack and pop everything up to it.
+                for i in range(len(open_tags)-1, -1, -1):
+                    if open_tags[i] == tag_name:
+                        open_tags = open_tags[:i]
+                        break
+        else:
+            open_tags.append(tag_name)
+            
+    # Append closing tags in reverse order
+    for tag in reversed(open_tags):
+        truncated += f'</{tag}>'
+        
+    return truncated
