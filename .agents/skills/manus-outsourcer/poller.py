@@ -19,9 +19,7 @@ def main():
         print("❌ Error: No valid Manus API keys found.")
         sys.exit(1)
         
-    # We don't know which key was used to create the task, but typically we can just try the first one,
-    # or iterate through them until we get a 200 OK.
-    url = f"https://api.manus.ai/v2/tasks/{task_id}" # Assuming standard REST endpoint
+    url = "https://api.manus.ai/v2/task.list"
     
     success = False
     for key in keys:
@@ -31,24 +29,26 @@ def main():
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 res_data = json.loads(response.read().decode('utf-8'))
-                print("✅ Task Status Retrieved:")
-                status = res_data.get("status", "unknown")
-                print(f"Status: {status}")
-                if status in ["completed", "done", "error", "stopped"]:
-                    print(json.dumps(res_data, indent=2))
-                success = True
-                break
-        except urllib.error.HTTPError as e:
-            if e.code in [401, 403, 404]:
-                continue # Try next key
-            else:
-                print(f"❌ API Error {e.code}: {e.read().decode('utf-8')}")
-                break
+                
+                # Search for the task in the data array
+                task_data = None
+                for t in res_data.get("data", []):
+                    if t.get("id") == task_id:
+                        task_data = t
+                        break
+                        
+                if task_data:
+                    print(f"✅ Found task {task_id} on this key!")
+                    status = task_data.get("status", "unknown")
+                    print(f"Status: {status}")
+                    print(json.dumps(task_data, indent=2))
+                    success = True
+                    break
         except Exception as e:
             continue
             
     if not success:
-        print(f"❌ Failed to retrieve status for task {task_id}. Make sure the endpoint is correct.")
+        print(f"❌ Failed to find task {task_id} on any of the 5 keys.")
 
 if __name__ == "__main__":
     main()
