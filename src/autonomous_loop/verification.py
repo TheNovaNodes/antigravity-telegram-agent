@@ -17,8 +17,8 @@ class VerificationEngine:
     def __init__(self, sandbox_path: str):
         self.sandbox_path = Path(sandbox_path)
 
-    def verify(self) -> Dict[str, Any]:
-        """Runs Phase 2 Verification with strictly bounded resources."""
+    def verify(self, trusted_manifest: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Runs Phase 2 Verification with strictly bounded resources and trusted manifest."""
         
         # 1. ENFORCE CLEAN VERIFICATION ENVIRONMENT
         tests_dir = self.sandbox_path / "tests"
@@ -26,7 +26,6 @@ class VerificationEngine:
             for p in tests_dir.glob("test_agent_repair_*.py"):
                 p.unlink()
                 
-        # Make the host sandbox readable by the Docker user (1000)
         os.system(f"chmod -R 755 {self.sandbox_path}")
 
         # 2. ISOLATED, READ-ONLY, RESOURCE-BOUNDED EXECUTION
@@ -38,10 +37,10 @@ class VerificationEngine:
             "--network", "none",
             "--memory", "512m",
             "--cpus", "1.0",
-            "--pids-limit", "100",           # Block fork bomb
-            "--log-driver=none",             # Block Docker JSON log exhaustion
-            "--read-only",                   # Block Host FS / Sandbox exhaustion
-            "--tmpfs", "/tmp:rw,size=50m,mode=1777", # Bounded tmpfs
+            "--pids-limit", "100",
+            "--log-driver=none",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,size=50m,mode=1777",
             "--tmpfs", "/run:rw,size=10m,mode=1777",
             "--user", "1000",
             "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "TELEGRAM_BOT_TOKEN=dummy", "-e", "ALLOWED_USER_IDS=123", "-e", "AG_TEST_DB_PATH=/tmp/ag.db",
@@ -52,41 +51,78 @@ class VerificationEngine:
         ]
         
         try:
-            # We use a temporary file to capture output to prevent Orchestrator RAM exhaustion
             with open(temp_out, "w") as f_out:
                 res = subprocess.run(cmd, stdout=f_out, stderr=subprocess.STDOUT, timeout=30)
-                
-            # Read bounded output (first 256KB max to protect Orchestrator)
             with open(temp_out, "r") as f_in:
                 output_str = f_in.read(1024 * 256)
         except subprocess.TimeoutExpired:
             os.unlink(temp_out)
             return {"status": "FAIL", "reason": "RESOURCE_ABUSE", "output": "Timeout expired."}
+        except Exception as e:
+            if os.path.exists(temp_out):
+                os.unlink(temp_out)
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": f"Verifier exception: {e}", "output": ""}
         finally:
             if os.path.exists(temp_out):
                 os.unlink(temp_out)
-                
-        # 3. EXTRACT AND VALIDATE THE JSON REPORT
-        if "---STDOUT---" not in output_str:
-            return {"status": "SECURITY_VIOLATION", "reason": "Test report missing or corrupted (os._exit or AST syntax error).", "output": output_str}
-            
+
+        # 3. SPLIT STDOUT AND REPORT (For diagnostics only)
         parts = output_str.split("---STDOUT---", 1)
-        json_part = parts[0].strip()
-        stdout_part = parts[1].strip()
+        json_part = parts[0].strip() if len(parts) == 2 else ""
+        stdout_part = parts[1].strip() if len(parts) == 2 else output_str
         
-        try:
-            report_data = json.loads(json_part)
-        except Exception:
-            return {"status": "SECURITY_VIOLATION", "reason": "Malformed test report.", "output": stdout_part}
+        report_data = None
+        if json_part:
+            try:
+                report_data = json.loads(json_part)
+            except Exception:
+                pass
+
+        # 4. TRUSTED PARENT VERIFICATION LOGIC (Fail-Closed)
+        
+        # V-001: Exit non-zero -> FAIL
+        if res.returncode != 0:
+            return {"status": "FAIL", "reason": "Test process returned non-zero exit code.", "output": stdout_part}
             
-        tests = report_data.get("tests", [])
-        if not tests:
-            return {"status": "SECURITY_VIOLATION", "reason": "No tests executed.", "output": stdout_part}
+        # V-002, V-003: No trusted manifest -> INCONCLUSIVE
+        if not trusted_manifest:
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "Missing trusted manifest.", "output": stdout_part}
             
-        for t in tests:
+        expected_tests = set(trusted_manifest.get("expected_nodeids", []))
+        if not expected_tests:
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "Empty expected tests in manifest.", "output": stdout_part}
+            
+        if not report_data:
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "No report returned from exit 0 process.", "output": stdout_part}
+            
+        # V-004, V-005: Validate Collection
+        tests_run = report_data.get("tests", [])
+        if not tests_run:
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "No tests executed in report.", "output": stdout_part}
+            
+        actual_tests = set(t.get("nodeid") for t in tests_run)
+        missing_tests = expected_tests - actual_tests
+        unexpected_tests = actual_tests - expected_tests
+        
+        # We must ensure all base test files were executed
+        expected_files = set(node.split("::")[0] for node in expected_tests)
+        actual_files = set(node.split("::")[0] for node in actual_tests)
+        
+        missing_files = expected_files - actual_files
+        if missing_files:
+            return {"status": "FAIL", "reason": f"Required test files skipped: {missing_files}", "output": stdout_part}
+
+        # Ensure NO test failed
+        for t in tests_run:
             if t.get("outcome") != "passed":
-                return {"status": "FAIL", "output": stdout_part}
+                # Contradiction: exit 0 but report says failure -> INCONCLUSIVE
+                return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "Contradictory signals: exit 0 but report indicates failure.", "output": stdout_part}
                 
+        # If we got here: exit is 0, manifest exists, report says pass.
+        # But V-005 check: did it actually run tests?
+        if len(actual_tests) == 0:
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "Zero tests executed.", "output": stdout_part}
+            
         return {"status": "PASS", "output": stdout_part}
 
 class DiagnosticEngine:

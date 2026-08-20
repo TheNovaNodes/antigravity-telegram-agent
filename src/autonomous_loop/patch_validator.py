@@ -24,27 +24,38 @@ class PatchValidationError(Exception):
 
 class SecurityASTVisitor(ast.NodeVisitor):
     def __init__(self):
-        self.forbidden_imports = {"os", "sys", "subprocess", "ctypes", "pty", "builtins", "inspect", "importlib"}
-        self.forbidden_calls = {"eval", "exec", "open", "globals", "locals", "getattr", "setattr", "delattr", "__import__"}
+        self.forbidden_imports = {
+            "os", "sys", "subprocess", "ctypes", "pty", "builtins", "inspect", "importlib",
+            "pathlib", "shutil", "io", "socket", "urllib", "pickle", "marshal"
+        }
+        self.forbidden_calls = {
+            "eval", "exec", "open", "globals", "locals", "getattr", "setattr", "delattr", 
+            "__import__", "compile", "exit", "quit"
+        }
 
     def visit_Import(self, node):
         for alias in node.names:
-            if alias.name.split('.')[0] in self.forbidden_imports:
-                raise Exception(f"Importing {alias.name} is forbidden.")
+            base_module = alias.name.split('.')[0]
+            if base_module in self.forbidden_imports:
+                raise Exception(f"Importing {base_module} is forbidden.")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
-        if node.module and node.module.split('.')[0] in self.forbidden_imports:
-            raise Exception(f"Importing from {node.module} is forbidden.")
+        if node.module:
+            base_module = node.module.split('.')[0]
+            if base_module in self.forbidden_imports:
+                raise Exception(f"Importing from {base_module} is forbidden.")
         self.generic_visit(node)
 
     def visit_Call(self, node):
         if isinstance(node.func, ast.Name) and node.func.id in self.forbidden_calls:
             raise Exception(f"Calling {node.func.id} is forbidden.")
+        if isinstance(node.func, ast.Attribute) and node.func.attr in self.forbidden_calls:
+            raise Exception(f"Calling {node.func.attr} is forbidden.")
         self.generic_visit(node)
         
     def visit_Attribute(self, node):
-        if node.attr in {"__class__", "__subclasses__", "__bases__", "__mro__"}:
+        if node.attr in {"__class__", "__subclasses__", "__bases__", "__mro__", "__dict__", "__builtins__"}:
             raise Exception(f"Accessing dunder attribute {node.attr} is forbidden.")
         self.generic_visit(node)
         
@@ -123,8 +134,8 @@ class PatchValidator:
             tree = ast.parse(content)
             visitor = SecurityASTVisitor()
             visitor.visit(tree)
-        except SyntaxError:
-            pass
+        except SyntaxError as e:
+            raise PatchValidationError("INVALID_PATCH", path, f"SyntaxError in patch: {e}")
         except Exception as e:
             raise PatchValidationError("SECURITY_VIOLATION", path, f"Malicious AST payload detected: {e}")
 

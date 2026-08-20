@@ -316,13 +316,18 @@ class AgySession:
 
             logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace}")
             
-            env = os.environ.copy()
-            env["TERM"] = "xterm-256color"
-            env["LANG"] = "en_US.UTF-8"
-            env["LC_ALL"] = "en_US.UTF-8"
-            env["PYTHONIOENCODING"] = "utf-8"
-            env["DO_NOT_TRACK"] = "1"
-            env["CI"] = "1"
+            # Security: Do not inherit full os.environ to prevent token leaks
+            env = {
+                "PATH": os.environ.get("PATH", "/bin:/usr/bin"),
+                "USER": os.environ.get("USER", "root"),
+                "HOME": os.environ.get("HOME", "/root"),
+                "TERM": "xterm-256color",
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
+                "PYTHONIOENCODING": "utf-8",
+                "DO_NOT_TRACK": "1",
+                "CI": "1"
+            }
             
             mcp_env = mcp_config.get_env_dict()
             env.update(mcp_env)
