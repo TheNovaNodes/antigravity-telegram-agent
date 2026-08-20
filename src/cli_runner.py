@@ -342,10 +342,10 @@ class AgySession:
                 echo=False,
                 timeout=300
             )
-            self.child.setwinsize(3000, 500)
+            self.child.setwinsize(500, 150)
             self.spawn_auth_signature = current_auth_sig
 
-            screen = pyte.Screen(500, 3000)
+            screen = pyte.Screen(150, 500)
             stream = pyte.ByteStream(screen)
             idle_count = 0
             menu_confirmed = False
@@ -434,7 +434,7 @@ class AgySession:
                 self.close()
                 await self._ensure_started()
                 self.child.send((clean_prompt + "\r\n").encode("utf-8"))
-            screen = pyte.Screen(500, 3000)
+            screen = pyte.Screen(150, 500)
             stream = pyte.ByteStream(screen)
 
             total_timeout_count = 0
@@ -584,7 +584,7 @@ class AgySession:
                 self.child.send(b"/usage\r\n")
 
             # Single persistent screen to accumulate ALL terminal output
-            screen = pyte.Screen(122, 3000)
+            screen = pyte.Screen(122, 500)
             stream = pyte.ByteStream(screen)
 
             # Phase 1: Wait for the modal to fully render (up to 5 seconds)
@@ -682,6 +682,11 @@ class AgySession:
                         logger.warning(f"OS error killing agy process {pid}: {e}")
             except Exception as e:
                 logger.warning(f"Error closing agy session for chat_id={self.chat_id}: {e}")
+            finally:
+                if hasattr(child, 'buffer'): child.buffer = b""
+                if hasattr(child, 'before'): child.before = b""
+                if hasattr(child, 'after'): child.after = b""
+                del child
 
 
 CLIRunnerSession = AgySession
