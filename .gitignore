@@ -14,3 +14,4 @@ logs/
 raw_output.txt
 data.db
 *.log
+mcp_config.json
