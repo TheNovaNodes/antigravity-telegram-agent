@@ -26,3 +26,11 @@ This repository follows standard practices for automated agents working on the A
     - Usage: `with-secret <POINTER> --env <VAR_NAME> -- <command>`
     - Example: `with-secret Yrvxb0 --env API_KEY -- curl -H "Authorization: Bearer $API_KEY" https://api.example.com`
     - The wrapper securely fetches the secret from the RAM disk (`/dev/shm/agent_vault/`) and censors it from stdout.
+
+## 🤖 MULTI-AGENT DOCTRINE (PRAGMATISM & OCCAM'S RAZOR)
+12. **The Trinity Architecture:** Do not overengineer multi-agent workflows. Stick to the pragmatic trinity:
+    - **Trickster (Antigravity):** Lead Architect, Orchestrator, and Pair Programmer. Maintains context and makes decisions.
+    - **Jules (Google):** The Introverted Coder. Responsible strictly for coding, branching, and Pull Requests.
+    - **Manus AI:** The Independent Auditor & Deep Researcher (Red Team). Used for broad internet scraping, external system interactions, and providing a critical "Second Opinion" outside of Trickster's context bias.
+13. **Manus Capacity Pool:** Multiple Manus accounts (keys) are treated as a single "Capacity Pool" with failover/round-robin rotation. We do not artificially isolate them into "Planner/Researcher" roles.
+14. **Manus Unlimited Window (URGENT):** Until **August 25, 2026**, Manus limits are lifted (Unlimited mode). Maximize its usage for deep architectural audits, comprehensive market research, and extreme stress testing before the billing window closes.
