@@ -66,7 +66,10 @@ class VerificationEngine:
             if os.path.exists(temp_out):
                 os.unlink(temp_out)
                 
-        # 3. EXTRACT AND VALIDATE THE JSON REPORT
+        # 3. VERIFY EXIT CODE AND EXTRACT REPORT
+        if res.returncode != 0:
+            return {"status": "FAIL", "reason": "Test process returned non-zero exit code.", "output": output_str}
+
         if "---STDOUT---" not in output_str:
             return {"status": "SECURITY_VIOLATION", "reason": "Test report missing or corrupted (os._exit or AST syntax error).", "output": output_str}
             
@@ -77,15 +80,17 @@ class VerificationEngine:
         try:
             report_data = json.loads(json_part)
         except Exception:
-            return {"status": "SECURITY_VIOLATION", "reason": "Malformed test report.", "output": stdout_part}
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "Malformed test report.", "output": stdout_part}
             
         tests = report_data.get("tests", [])
         if not tests:
-            return {"status": "SECURITY_VIOLATION", "reason": "No tests executed.", "output": stdout_part}
+            return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "No tests executed.", "output": stdout_part}
             
+        # The report is an untrusted diagnostic attachment.
+        # But if it contradicts the exit code (e.g. says failed but exit code is 0), fail-closed.
         for t in tests:
             if t.get("outcome") != "passed":
-                return {"status": "FAIL", "output": stdout_part}
+                return {"status": "VERIFICATION_INCONCLUSIVE", "reason": "Contradictory signals: exit=0 but report indicates failure.", "output": stdout_part}
                 
         return {"status": "PASS", "output": stdout_part}
 

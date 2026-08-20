@@ -40,10 +40,10 @@ class Sandbox:
             self.is_active = True
             logger.info(f"Sandbox created at {self.worktree_path}")
             
-            # Copy .env if exists
-            env_file = self.repo_path / ".env"
-            if env_file.exists():
-                shutil.copy(env_file, self.worktree_path / ".env")
+            # Security Preflight: Ensure no credential files leaked into worktree
+            for secret_file in [".env", ".env.example", ".env.local"]:
+                if (self.worktree_path / secret_file).exists():
+                    (self.worktree_path / secret_file).unlink()
                 
             return True
         except Exception as e:

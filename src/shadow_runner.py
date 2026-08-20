@@ -15,7 +15,12 @@ async def run_shadow_prompt(prompt: str, workspace: Optional[str] = None, timeou
     Completely isolated from active interactive Telegram sessions.
     """
     cmd = f"{AGY_BINARY_PATH}"
-    env = dict(os.environ)
+    # Security: Do not inherit full os.environ
+    env = {
+        "PATH": os.environ.get("PATH", "/bin:/usr/bin"),
+        "USER": os.environ.get("USER", "root"),
+        "HOME": os.environ.get("HOME", "/root")
+    }
     if workspace:
         env["AGY_WORKSPACE"] = workspace
 
