@@ -17,7 +17,8 @@ router = Router()
 
 def is_allowed(user_id: int) -> bool:
     if not ALLOWED_USER_IDS:
-        return True
+        logger.error("ALLOWED_USER_IDS is empty! Failing closed for security.")
+        return False
     return user_id in ALLOWED_USER_IDS
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
@@ -975,7 +976,7 @@ async def send_response_chunks(message: Message, placeholder: Message, text: str
         await safe_edit_text(placeholder, preview_text)
         
         # Prepare .md file attachment
-        file_bytes = text.encode("utf-8")
+        file_bytes = b"\xef\xbb\xbf" + text.encode("utf-8")
         doc_file = BufferedInputFile(file_bytes, filename="agent_response.md")
         await message.answer_document(
             document=doc_file,
@@ -1110,7 +1111,13 @@ async def check_and_send_artifacts(message: Message, session):
     for artifact in unique_artifacts:
         try:
             file_size_kb = artifact.stat().st_size / 1024
-            input_file = FSInputFile(str(artifact), filename=artifact.name)
+            
+            with open(artifact, "rb") as f:
+                content = f.read()
+            if not content.startswith(b"\xef\xbb\xbf"):
+                content = b"\xef\xbb\xbf" + content
+                
+            input_file = BufferedInputFile(content, filename=artifact.name)
             caption = f"📦 <b>Session Artifact</b>\n📄 <code>{artifact.name}</code> ({file_size_kb:.1f} KB)"
             await message.answer_document(document=input_file, caption=caption, parse_mode="HTML")
             logger.info(f"✅ Delivered artifact {artifact.name} ({file_size_kb:.1f} KB) to chat_id={message.chat.id}")

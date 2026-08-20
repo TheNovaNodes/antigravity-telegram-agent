@@ -414,7 +414,8 @@ class AgySession:
                 yield "⚠️ Failed to launch CLI process. Try /new and repeat the request."
                 return
 
-            clean_prompt = prompt.replace("\n", " ").strip()
+            # PTY Escape Sanitize: Remove all C0 control characters (\r, \n, ANSI escapes, etc)
+            clean_prompt = re.sub(r'[\x00-\x1f\x7f]', ' ', prompt).strip()
             
             # Bootstrap Trickster's Soul & identity if this is a newly spawned conversation session
             if is_first_launch and not self.conversation_id:
@@ -472,7 +473,10 @@ class AgySession:
                             formatted = format_dyslexia_friendly_text(list(raw_lines), prompt=prompt)
                             if formatted.strip() and formatted != last_yielded_text:
                                 last_yielded_text = formatted
-                                yield formatted
+                                formatted_safe = re.sub(r'\d{8,10}:[a-zA-Z0-9_-]{35}', '[REDACTED_BOT_TOKEN]', formatted)
+                                formatted_safe = re.sub(r'(?i)\b(?:sk|pk)_[a-zA-Z0-9]{20,}\b', '[REDACTED_KEY]', formatted_safe)
+                                formatted_safe = re.sub(r'eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}', '[REDACTED_JWT]', formatted_safe)
+                                yield formatted_safe
 
                         content_lines = [l for l in raw_lines if l.strip()]
                         content_hash = hash(tuple(content_lines))
@@ -537,12 +541,18 @@ class AgySession:
                     final_text = "\n".join(l.strip() for l in raw_lines if l.strip())
                     if final_text and not received_content_bytes:
                         clean = re.sub(r'\x1b\[.*?m', '', final_text)
+                        clean = re.sub(r'\d{8,10}:[a-zA-Z0-9_-]{35}', '[REDACTED_BOT_TOKEN]', clean)
+                        clean = re.sub(r'(?i)\b(?:sk|pk)_[a-zA-Z0-9]{20,}\b', '[REDACTED_KEY]', clean)
+                        clean = re.sub(r'eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}', '[REDACTED_JWT]', clean)
                         yield clean
                         received_content_bytes = True
                     break
 
             lines = list(_safe_screen_display(screen))
             final_formatted = format_dyslexia_friendly_text(lines, prompt=prompt)
+            final_formatted = re.sub(r'\d{8,10}:[a-zA-Z0-9_-]{35}', '[REDACTED_BOT_TOKEN]', final_formatted)
+            final_formatted = re.sub(r'(?i)\b(?:sk|pk)_[a-zA-Z0-9]{20,}\b', '[REDACTED_KEY]', final_formatted)
+            final_formatted = re.sub(r'eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}', '[REDACTED_JWT]', final_formatted)
             if not final_formatted.strip():
                 if timeout_reason:
                     final_formatted = timeout_reason
