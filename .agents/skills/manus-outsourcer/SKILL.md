@@ -20,7 +20,7 @@ You **must** use the `with-secret` wrapper to securely inject the keys from the 
 
 **Step 1. Dispatch the Task (Synchronous)**
 ```bash
-with-secret Yrvxb0 --env MANUS_KEYS -- python3 .agents/skills/manus-outsourcer/dispatcher.py "Твой промпт для Мануса"
+with-secret Yrvxb0 --env MANUS_KEYS -- python3 .agents/skills/manus-outsourcer/scripts/dispatcher.py "Твой промпт для Мануса"
 ```
 *(Note: `Yrvxb0` is the default pointer for the "Manus five api key" secret in the vault).*
 
@@ -31,7 +31,7 @@ DO NOT wait synchronously. Instead, use your `schedule` tool to set a timer (e.g
 
 When you wake up, execute the poller:
 ```bash
-with-secret Yrvxb0 --env MANUS_KEYS -- python3 .agents/skills/manus-outsourcer/poller.py "TASK_ID"
+with-secret Yrvxb0 --env MANUS_KEYS -- python3 .agents/skills/manus-outsourcer/scripts/poller.py "TASK_ID"
 ```
 If the task is still running, reschedule yourself for another 10 minutes. If completed, analyze the JSON result.
 
