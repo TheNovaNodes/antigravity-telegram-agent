@@ -119,43 +119,6 @@ def get_active_account_email() -> str:
         except Exception as e:
             logger.debug(f"Error reading antigravity-oauth-token: {e}")
 
-    settings_file = base_dir / "settings.json"
-    if settings_file.exists():
-        try:
-            settings_data = json.loads(settings_file.read_text(encoding="utf-8"))
-            email = settings_data.get("email") or settings_data.get("user", {}).get("email")
-            if email:
-                return email
-        except Exception as e:
-            logger.debug(f"Failed to read or parse settings.json for email: {e}")
-
-    return ""
-
-
-def get_auth_state_signature() -> str:
-    """Calculate a hash signature of active auth tokens and account configs."""
-    base_dir = _get_gemini_dir()
-    sig_parts = []
-    
-    token_file = base_dir / "antigravity-oauth-token"
-    if token_file.exists():
-        try:
-            st = token_file.stat()
-            content = token_file.read_bytes()
-            h = hashlib.sha256(content).hexdigest()
-            sig_parts.append(f"token:{st.st_mtime}:{h}")
-        except Exception as e:
-            logger.warning(f"Failed to read auth token for signature: {e}")
-            
-    settings_file = base_dir / "settings.json"
-    if settings_file.exists():
-        try:
-            st = settings_file.stat()
-            content = settings_file.read_bytes()
-            h = hashlib.sha256(content).hexdigest()
-            sig_parts.append(f"settings:{st.st_mtime}:{h}")
-        except Exception as e:
-            logger.warning(f"Failed to read settings for signature: {e}")
 
     return "|".join(sig_parts) if sig_parts else "none"
 

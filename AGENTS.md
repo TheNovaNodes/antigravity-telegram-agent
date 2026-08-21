@@ -20,7 +20,7 @@ This repository follows standard practices for automated agents working on the A
 8. **AI Delegation:** All work delegated to Jules or Subagents must be executed on branches prefixed with `jules/` or `agent/`. Jules must review all PRs before merging.
 
 ## 🔐 SECRET MANAGEMENT (CRITICAL LAW)
-9. **Vault Architecture:** NEVER use `.env` files for secrets. All secrets are managed via `lab-vault` running on port 8301.
+9. **Vault Architecture:** NEVER use `.env` files for secrets. All secrets are managed via `agent-vault` running on port 8301.
 10. **Opaque Pointers:** The agent only receives opaque pointers (e.g., `vault:ref:XYZ`) and metadata. The raw secret string MUST NOT be returned to the agent's LLM context.
 11. **Execution Wrapper:** To use a secret in a command, ALWAYS use the `/usr/local/bin/with-secret` utility.
     - Usage: `with-secret <POINTER> --env <VAR_NAME> -- <command>`
