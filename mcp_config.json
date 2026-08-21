@@ -17,7 +17,7 @@
       "enabled": true,
       "url": "http://127.0.0.1:3002",
       "api_key": "",
-      "command": "/root/lab/thenovanodes/anythingllm-mcp-control/.venv/bin/python",
+      "command": "/root/projects/TheNovaNodes/anythingllm-mcp-control/.venv/bin/python",
       "args": [
         "-m",
         "anythingllm_mcp_control.server"
@@ -28,12 +28,18 @@
       }
     },
     "searxng": {
-      "name": "SearXNG Web Search Gateway",
+      "name": "SearXNG Echelon Search Gateway",
       "type": "search",
       "plane": "data",
       "enabled": true,
-      "url": "http://127.0.0.1:8889",
-      "engines": "google,bing,duckduckgo,brave,github,stackoverflow,arxiv,wikipedia,qwant"
+      "command": "/root/projects/TheNovaNodes/searxng-mcp-gateway/.venv/bin/python",
+      "args": [
+        "-m",
+        "searxng_gateway.server"
+      ],
+      "env": {
+        "SEARXNG_URL": "http://127.0.0.1:8889"
+      }
     },
     "searxng-control": {
       "name": "SearXNG Control Plane",
@@ -41,10 +47,10 @@
       "plane": "control",
       "enabled": true,
       "url": "http://127.0.0.1:8889",
-      "command": "/root/lab/thenovanodes/searxng-mcp-control/.venv/bin/python",
+      "command": "/root/projects/TheNovaNodes/searxng-mcp-control/.venv/bin/python",
       "args": [
         "-m",
-        "src.server"
+        "searxng_mcp_control.server"
       ],
       "env": {
         "SEARXNG_URL": "http://127.0.0.1:8889",
