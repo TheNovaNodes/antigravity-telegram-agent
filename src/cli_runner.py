@@ -146,16 +146,7 @@ def get_auth_state_signature() -> str:
             sig_parts.append(f"token:{st.st_mtime}:{h}")
         except Exception as e:
             logger.warning(f"Failed to read auth token for signature: {e}")
-            
-    settings_file = base_dir / "settings.json"
-    if settings_file.exists():
-        try:
-            st = settings_file.stat()
-            content = settings_file.read_bytes()
-            h = hashlib.sha256(content).hexdigest()
-            sig_parts.append(f"settings:{st.st_mtime}:{h}")
-        except Exception as e:
-            logger.warning(f"Failed to read settings for signature: {e}")
+
 
     return "|".join(sig_parts) if sig_parts else "none"
 
