@@ -1,87 +1,141 @@
-# Antigravity Telegram Agent 🤖
-
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-**Antigravity Telegram Agent** is a secure, mobile-friendly Telegram gateway to your existing **Google Antigravity (`agy`)** CLI installation. 
-
-If you already work with `agy` in your terminal and want to access your workspaces, manage your AI agents, and run commands on the go via a Telegram chat, this bot is for you. It seamlessly hooks into your existing authenticated `agy` session, supports Model Context Protocol (MCP) servers, and provides an interactive Control Center.
-
+---
+module_type: Integration/Agent Gateway
+status: Active
+protocol: Telegram / MCP / PTY
+primary_capability: Telegram interface for Antigravity (agy) CLI and MCP servers
+requires: python 3.10+, agy binary, Telegram Bot Token
+works_with: Google Antigravity, AnythingLLM, SearXNG, Nextcloud, Google Jules
+last_verified: 2026-08-21
 ---
 
-## 🚀 Installation (For `agy` AI Agent)
+# Antigravity Telegram Agent
 
-> **Human User Note:** You can just ask your `agy` CLI to install this for you. Send it the link to this repository and provide your Telegram Bot Token (from [@BotFather](https://t.me/BotFather)) and your Telegram User ID (from [@userinfobot](https://t.me/userinfobot)).
+**A Telegram interface that provides real-time access and persistent session control over the Google Antigravity AI coding assistant and MCP servers.**
 
-**Dear AI Agent (`agy`)**, please follow these EXACT machine-readable steps to install this bot for the user:
+## Status and Last Verified Date
+**Status:** Active  
+**Last Verified Date:** 2026-08-21  
 
-### 1. Clone the Repository
-```bash
+## What it does / does not do
+**What it does:**
+- Proxies Telegram chat inputs to an underlying `agy` (Google Antigravity) process using Pyte and Pexpect pseudo-terminal emulators.
+- Persists session state (models, effort, modes) via SQLite per user.
+- Handles automated scheduling of tasks via Sentinel Autonomous Scheduler.
+- Integrates with MCP servers (AnythingLLM, SearXNG, Nextcloud, Jules).
+- Delivers generated artifacts directly as Telegram attachments.
+
+**What it does not do:**
+- It does not implement the AI inference or coding logic itself; it acts solely as a bridge.
+- It does not host the MCP servers natively (it manages external instances).
+
+## Why an agent would use it
+It provides an easy, mobile-friendly interface for remote coding workflows, allowing users to trigger tasks, manage MCP servers, and review artifacts from their phone without needing an SSH or desktop environment.
+
+## Architecture and dependencies
+**Architecture:**
+- **PTY Execution Layer:** Runs `agy` via `pexpect.spawn` paired with `pyte` virtual terminal emulator to handle ANSI escapes and streams asynchronously.
+- **Session Management:** Uses SQLite (`data/antigravity-telegram-agent.db`) to persist configurations and states per Telegram user chat.
+- **MCP Manager:** Tests and toggles connectivity for multiple MCP backends (Control and Data planes).
+- **Formatters:** Intercepts CLI output, stripping raw ASCII/TUI noise and converting Markdown to Telegram Rich Text HTML.
+
+**Dependencies:**
+- `aiogram>=3.4.1`
+- `google-antigravity`
+- `python-dotenv>=1.0.1`
+- `pexpect>=4.9.0`
+- `pyte>=0.8.2`
+- `aiohttp>=3.9.0`
+- `apscheduler>=3.10.4`
+- `pytest-asyncio>=1.4.0`
+
+## Compatibility
+- Python 3.10+
+- Linux/Unix environments (for PTY/pexpect support)
+
+## Quick start and health check
+**Quick Start:**
+---bash
 git clone https://github.com/thenovanodes/antigravity-telegram-agent.git
 cd antigravity-telegram-agent
-```
-
-### 2. Create Virtual Environment & Install Dependencies
-Create an isolated environment and install the package in editable mode:
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-```
-
-### 3. Configure the Environment
-If the user hasn't provided `TELEGRAM_BOT_TOKEN` or `ALLOWED_USER_IDS`, ask them for it now.
-`TELEGRAM_BOT_TOKEN` is obtained from @BotFather. `ALLOWED_USER_IDS` is their Telegram User ID.
-Copy the example config and inject the variables:
-```bash
 cp .env.example .env
-# Edit the .env file with the provided values:
-# TELEGRAM_BOT_TOKEN="<USER_PROVIDED_TOKEN>"
-# ALLOWED_USER_IDS="<USER_PROVIDED_ID>"
-# AGY_BINARY_PATH="/path/to/agy" (ensure this points to the active agy executable)
-```
-
-### 4. Setup MCP Servers (Optional)
-If the user uses MCP servers (like AnythingLLM, SearXNG, or Nextcloud), configure them in `.env` or `mcp_config.json` as requested by the user.
-
-### 5. Run the Service
-You can run the bot directly for testing:
-```bash
-.venv/bin/python src/main.py
-```
-Or use the provided `setup.sh` to securely register it as a persistent `systemd` service:
-```bash
-sudo ./setup.sh --token="<USER_PROVIDED_TOKEN>" --user-id="<USER_PROVIDED_ID>" --agy-path="$(which agy)"
-```
-
+# Edit .env and provide your TELEGRAM_BOT_TOKEN and ALLOWED_USER_IDS
+python src/main.py
 ---
 
-## 🛠️ Bot Commands
+**Health Check:**
+Run `/mcp` in the Telegram bot to view health statuses. The MCP manager performs granular HTTP & Binary health verification of MCP Data and Control planes.
 
-Once the bot is running, open Telegram and use these commands:
+## Configuration and environment variables
+| Variable | Description |
+| -------- | ----------- |
+| `TELEGRAM_BOT_TOKEN` | Your Telegram Bot Token obtained from @BotFather. |
+| `ALLOWED_USER_IDS` | Comma-separated list of Telegram User IDs permitted to use the bot. |
+| `LOG_LEVEL` | Application logging level (e.g., `INFO`, `DEBUG`). |
+| `AGY_BINARY_PATH` | Path to the compiled `agy` binary or entrypoint script. |
 
-- `/start` — Initialize the bot and show a brief help menu.
-- `/menu` — Open the interactive Control Center.
-- `/usage` — View usage quotas and Antigravity limits.
-- `/auth` / `/account` — View Google account status and manually trigger Hot Reload.
-- `/resume` — Select and resume a previous session from the CLI history.
-- `/rename <name>` — Rename the active session.
-- `/mcp` — Control panel to toggle MCP servers.
-- `/mcp` (Health Check) — Granular HTTP & Binary health verification of MCP Data and Control planes.
-- `/models` — Switch AI models (e.g., Gemini, Claude, GPT).
-- `/effort` — Set reasoning depth (`low`, `medium`, `high`).
-- `/mode` — Select working mode (`Standard`, `Plan`, `Auto-Edits`).
-- `/cd <path>` — Change the active workspace directory.
-- `/reset` / `/clear` / `/new` — Reset the active session context and start fresh.
+## Complete MCP tool/API table with side effects
+| Server Key | Name | Type | Plane | Side Effects / Actions |
+| ---------- | ---- | ---- | ----- | ---------------------- |
+| `anythingllm` | AnythingLLM Semantic Memory Gateway | memory | data | Reads/writes semantic memory workspaces via HTTP API. |
+| `anythingllm-control` | TheNovaNodes AnythingLLM Control Plane | admin | control | Administers AnythingLLM configuration and lifecycle via local Python script. |
+| `searxng` | SearXNG Web Search Gateway | search | data | Performs web searches across multiple engines via HTTP. |
+| `searxng-control` | SearXNG Control Plane | admin | control | Administers SearXNG settings and container state. |
+| `nextcloud` | Nextcloud User CRM Gateway | crm | data | Interacts with Nextcloud CRM data using username/app password via HTTP. |
+| `nextcloud-control` | Nextcloud Admin Control Plane | admin | control | Administers Nextcloud user accounts and settings. |
+| `google-jules-doctormes` | Google Jules AI Agent (Doctormes) | agent | data | Interacts with Jules agent by piping JSON-RPC payloads to binary. |
+| `google-jules-novanodes` | Google Jules AI Agent (TheNovaNodes) | agent | data | Interacts with Jules agent by piping JSON-RPC payloads to binary. |
 
+## Security model and trust boundaries
+- **Authentication:** Only Telegram users defined in `ALLOWED_USER_IDS` can interact with the bot. All other messages are ignored.
+- **Secrets Management:** Environment variables are used for bot tokens and IDs. `mcp_config.json` stores API keys and should be tightly access-controlled.
+- **Execution:** The bot runs `agy` commands as the user running the python process.
+- **CRITICAL NOTE:** Treat the "agy eligibility binary patch" as an unsupported sandbox workaround (do NOT describe it as a supported fix). This patch bypasses typical checks and should only be used in completely isolated, unsupported experimental environments.
+
+## Tests and exact commands
+To run tests using `pytest` and `pytest-asyncio`:
+---bash
+python -m pytest tests/
+---
+(A Docker environment `Dockerfile.test_runner` is also available for isolated testing: `docker build -t agy-tests -f Dockerfile.test_runner . && docker run --rm agy-tests python -m pytest tests/`)
+
+## Operations, logs, backup/restore, rollback
+- **Operations:** Use the provided `setup.sh` to configure and install the bot as a `systemd` service (`antigravity-telegram-agent.service`).
+- **Logs:** Logs can be accessed via systemd (`journalctl -u antigravity-telegram-agent -f`) or output to the console based on `LOG_LEVEL`.
+- **Backup/Restore:** Back up the `.env` file, `mcp_config.json`, and the SQLite database (`data/antigravity-telegram-agent.db` if created in data dir) to save sessions. Restore by dropping them back into the directory.
+- **Rollback:** Revert via `git checkout <commit_hash> && pip install -e .` and restart the systemd service.
+
+## Generic MCP-client example
+Example JSON-RPC payload sent to MCP binary agents:
+---json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {"name": "HealthCheck", "version": "1.0.0"}
+  }
+}
 ---
 
-## 📐 Architecture Overview
+## Limitations and roadmap
+**Limitations:**
+- Reliant on Telegram API limits (message lengths chunked at 3800 characters).
+- Requires a functional `agy` CLI installed locally.
+- PTY integration can sometimes drop extremely complex ANSI formatting.
 
-The **Antigravity Telegram Agent** acts as an asynchronous adapter between Telegram users and the `agy` CLI using a robust **PTY (Pseudo-Terminal) Architecture**. 
+**Roadmap:**
+- Support for richer inline keyboards and interactive form inputs.
+- Enhanced multi-user isolation within a single bot instance.
 
-- **PTY Execution Layer:** Instead of fragile subprocess pipes, it runs `agy` inside `pexpect.spawn` paired with `pyte` (a virtual terminal emulator). This allows it to handle ANSI escape sequences, interactive prompts, and asynchronous streams flawlessly without CPU busy-looping.
-- **Session Management:** Built on top of SQLite (`data/antigravity-telegram-agent.db`), the bot natively persists session configurations (models, effort, modes) per user chat, seamlessly bridging Telegram's stateless nature with `agy`'s stateful FSM design.
-- **Smart Formatting:** Intercepts CLI output, stripping raw ASCII/TUI noise and converting Markdown to beautiful, dyslexia-friendly Telegram Rich Text HTML.
-- **Artifact Delivery:** Automatically scans the `~/.gemini/antigravity-cli/brain/` directory to deliver newly generated files (images, documents, code) directly into the Telegram chat as attachments.
-- **Two-Tier MCP Support:** Supports Control Plane (infrastructure management) and Data Plane (search, memory, CRM) MCP integrations out-of-the-box.
+## Related TheNovaNodes modules
+- AnythingLLM Semantic Memory Gateway
+- SearXNG Web Search Gateway
+- Google Jules MCP modules
+
+## License
+MIT License
