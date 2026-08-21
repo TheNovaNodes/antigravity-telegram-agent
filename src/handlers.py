@@ -395,6 +395,31 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
         report_lines.append(f"{status_icon} <b>{name}</b> ({status})\n   Target: <code>{target}</code>")
 
     report = "\n".join(report_lines)
+    
+    # --- Deep Ecosystem Health Injection ---
+    try:
+        import subprocess, json, os
+        env = os.environ.copy()
+        env["SEARXNG_URL"] = "http://127.0.0.1:8889"
+        res = subprocess.check_output(
+            ["/root/projects/TheNovaNodes/searxng-mcp-gateway/.venv/bin/python", "-c", 
+             "import sys; sys.path.insert(0, '/root/projects/TheNovaNodes/searxng-mcp-gateway'); from searxng_gateway.server import ecosystem_health; import json; print(json.dumps(ecosystem_health()))"],
+            timeout=15,
+            env=env
+        )
+        eco_data = json.loads(res.decode())
+        report += "\n\n🌐 <b>Search Ecosystem Status (Echelons)</b>\n"
+        
+        sx_status = eco_data.get('searxng', 'unknown')
+        sx_icon = "🟢" if sx_status == "ok" else "🔴"
+        report += f"{sx_icon} SearXNG (Local): {sx_status.upper()} ({eco_data.get('searxng_latency_ms', 0)}ms)\n"
+        
+        for prov, stat in eco_data.get("api_echelons", {}).items():
+            report += f"├─ [{prov.upper()}]: {stat}\n"
+    except Exception as e:
+        report += f"\n\n🌐 <b>Search Ecosystem Status</b>\n⚠️ Could not fetch deeper metrics."
+    # ---------------------------------------
+
     await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
