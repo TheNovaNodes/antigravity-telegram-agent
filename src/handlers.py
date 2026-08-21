@@ -153,7 +153,8 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
         "nextcloud": "💼 Nextcloud (CRM)",
         "nextcloud-control": "⚙️ Nextcloud (Control)",
         "google-jules-doctormes": "🤖 Jules (Doctormes)",
-        "google-jules-novanodes": "🤖 Jules (TheNovaNodes)"
+        "google-jules-novanodes": "🤖 Jules (TheNovaNodes)",
+        "universal-pr-auditor": "🛡️ PR Auditor (Universal)"
     }
 
     for key, srv in servers.items():

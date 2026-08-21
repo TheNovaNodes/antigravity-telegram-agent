@@ -77,6 +77,13 @@ DEFAULT_MCP_CONFIG = {
             "plane": "data",
             "enabled": True,
             "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp"
+        },
+        "universal-pr-auditor": {
+            "name": "Universal PR Auditor MCP",
+            "type": "audit",
+            "plane": "data",
+            "enabled": True,
+            "command": "/root/projects/TheNovaNodes/mcp-gh-pr-reviewer/run_mcp.sh"
         }
     }
 }
