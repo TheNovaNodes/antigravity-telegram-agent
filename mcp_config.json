@@ -93,6 +93,13 @@
       "enabled": true,
       "command": "/root/projects/TheNovaNodes/google-jules-mcp/.venv/bin/google-jules-mcp",
       "url": "local"
+    },
+    "universal-pr-auditor": {
+      "name": "Universal PR Auditor MCP",
+      "type": "audit",
+      "plane": "data",
+      "enabled": true,
+      "command": "/root/projects/TheNovaNodes/mcp-gh-pr-reviewer/run_mcp.sh"
     }
   }
 }
