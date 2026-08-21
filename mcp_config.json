@@ -32,6 +32,8 @@
       "type": "search",
       "plane": "data",
       "enabled": true,
+      "url": "http://127.0.0.1:8889",
+      "engines": "google,bing,duckduckgo",
       "command": "/root/projects/TheNovaNodes/searxng-mcp-gateway/.venv/bin/python",
       "args": [
         "-m",
