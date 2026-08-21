@@ -425,11 +425,15 @@ class AgySession:
 
             try:
                 self.child.send((clean_prompt + "\r\n").encode("utf-8"))
-            except (pexpect.EOF, pexpect.ExceptionPexpect, OSError) as e:
+            except (pexpect.EOF, pexpect.ExceptionPexpect, OSError, AttributeError) as e:
                 logger.warning(f"Failed to send prompt to agy process for chat_id={self.chat_id}: {e}")
                 self.close()
                 await self._ensure_started()
-                self.child.send((clean_prompt + "\r\n").encode("utf-8"))
+                if self.child and self.child.isalive():
+                    self.child.send((clean_prompt + "\r\n").encode("utf-8"))
+                else:
+                    yield "\n\n⚠️ *Failed to start process.*"
+                    return
             screen = pyte.Screen(150, 500)
             stream = pyte.ByteStream(screen)
 
@@ -571,13 +575,19 @@ class AgySession:
         from src.formatters import format_usage_response
         async with self._lock:
             await self._ensure_started()
+            
+            if not self.child or not self.child.isalive():
+                return "⚠️ *Agent process failed to start.*"
 
             try:
                 self.child.send(b"/usage\r\n")
-            except (pexpect.EOF, pexpect.ExceptionPexpect, OSError):
+            except (pexpect.EOF, pexpect.ExceptionPexpect, OSError, AttributeError):
                 self.close()
                 await self._ensure_started()
-                self.child.send(b"/usage\r\n")
+                if self.child and self.child.isalive():
+                    self.child.send(b"/usage\r\n")
+                else:
+                    return "⚠️ *Agent process failed to start.*"
 
             # Single persistent screen to accumulate ALL terminal output
             screen = pyte.Screen(122, 500)
@@ -586,6 +596,8 @@ class AgySession:
             # Phase 1: Wait for the modal to fully render (up to 5 seconds)
             idle_count = 0
             while idle_count < 10:
+                if self.child is None or not self.child.isalive():
+                    break
                 try:
                     chunk = await asyncio.to_thread(self.child.read_nonblocking, size=4096, timeout=0.5)
                     if chunk:
@@ -597,6 +609,8 @@ class AgySession:
                     await asyncio.sleep(0.01)
                 except (pexpect.TIMEOUT, pexpect.EOF, OSError):
                     idle_count += 1
+                except AttributeError:
+                    break
 
             # Collect initial lines
             all_lines = []
@@ -607,15 +621,18 @@ class AgySession:
 
             # Phase 2: Scroll down with PageDown to capture any content below the fold
             for _ in range(3):
-                try:
-                    self.child.send(b"\x1b[6~")
-                except Exception as e:
-                    logger.debug(f"Failed to send PageDown to modal: {e}")
+                if self.child and self.child.isalive():
+                    try:
+                        self.child.send(b"\x1b[6~")
+                    except Exception as e:
+                        logger.debug(f"Failed to send PageDown to modal: {e}")
                 await asyncio.sleep(0.5)
 
                 # Read any new output after scroll
                 scroll_idle = 0
                 while scroll_idle < 3:
+                    if self.child is None or not self.child.isalive():
+                        break
                     try:
                         chunk = await asyncio.to_thread(self.child.read_nonblocking, size=4096, timeout=0.3)
                         if chunk:
@@ -636,11 +653,12 @@ class AgySession:
                         all_lines.append(s)
 
             # Close the modal overlay with Escape
-            try:
-                self.child.send(b"\x1b")
-                await asyncio.sleep(0.3)
-            except Exception as e:
-                logger.debug(f"Failed to send Escape to close modal: {e}")
+            if self.child and self.child.isalive():
+                try:
+                    self.child.send(b"\x1b")
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.debug(f"Failed to send Escape to close modal: {e}")
 
             logger.debug(f"Usage modal captured {len(all_lines)} unique lines")
             email = get_active_account_email()
