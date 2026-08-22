@@ -17,7 +17,7 @@ This repository follows standard practices for automated agents working on the A
 5. **Git Workflow:** Always enforce GitHub Flow. The `main` branch is SACRED. Direct pushes are banned.
 6. **Commits:** MUST use Conventional Commits (e.g. `feat:`, `fix:`, `refactor:`). Never mix multiple concerns in one commit.
 7. **Pull Requests:** PRs must do exactly ONE thing. Squash and merge is mandatory to keep history pristine.
-8. **AI Delegation:** All work delegated to Jules or Subagents must be executed on branches prefixed with `jules/` or `agent/`. Jules must review all PRs before merging.
+8. **AI Delegation & PR Audit:** All work delegated to Jules or Subagents must be executed on branches prefixed with `jules/` or `agent/`. **NEVER merge a PR into `main` without explicit approval and audit from the User (ЗавЛаб).**
 
 ## 🔐 SECRET MANAGEMENT (CRITICAL LAW)
 9. **Vault Architecture:** NEVER use `.env` files for secrets. All secrets are managed via `agent-vault` running on port 8301.

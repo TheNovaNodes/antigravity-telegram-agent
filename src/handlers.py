@@ -124,7 +124,7 @@ def get_models_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for alias, full_name in AVAILABLE_MODELS.items():
         buttons.append([InlineKeyboardButton(text=f"🤖 {full_name}", callback_data=f"set_model:{alias}")])
-    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -132,8 +132,8 @@ def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMa
     """Build resume keyboard with current session indicator and new session button."""
     conversations = get_available_conversations(limit=15)
     buttons = [
-        [InlineKeyboardButton(text="🆕 New Session (Clean Chat)", callback_data="resume_set:new")],
-        [InlineKeyboardButton(text="🔄 Resume Latest Session (--continue)", callback_data="resume_set:latest")]
+        [InlineKeyboardButton(text="🆕 Новая сессия (Чистый чат)", callback_data="resume_set:new")],
+        [InlineKeyboardButton(text="🔄 Продолжить последнюю (--continue)", callback_data="resume_set:latest")]
     ]
     for conv in conversations:
         date_part = f" ({conv['date']})" if conv['date'] else ""
@@ -143,7 +143,7 @@ def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMa
         label = f"{marker}[{short_id}] {conv['summary'][:22]}{date_part}"
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"resume_set:{conv['id']}")])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_effort_keyboard() -> InlineKeyboardMarkup:
@@ -153,7 +153,7 @@ def get_effort_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🧠 Medium (Balanced)", callback_data="set_effort:medium"),
             InlineKeyboardButton(text="🚀 High (Deep)", callback_data="set_effort:high")
         ],
-        [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
+        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -162,7 +162,7 @@ def get_mode_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💬 Standard Chat", callback_data="set_mode:default")],
         [InlineKeyboardButton(text="📋 Planning Mode", callback_data="set_mode:plan")],
         [InlineKeyboardButton(text="⚡ Auto-Edits Mode", callback_data="set_mode:accept-edits")],
-        [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
+        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -191,7 +191,7 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text=f"{btn_text}: {state_icon}", callback_data=f"toggle_mcp:{key}")])
 
     buttons.append([InlineKeyboardButton(text="🧪 Health Check", callback_data="mcp_health_check")])
-    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @router.message(Command("start"), Command("help"))
@@ -316,14 +316,14 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             f"Active GitHub Task Sessions:\n{sessions_str}\n\n"
             f"💡 <i>Jules automatically runs background tasks on GitHub and reports patches here.</i>"
         )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "account":
         email = get_active_account_email()
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 View API Quotas & Usage", callback_data="menu:usage")],
             [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
-            [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
         ])
         text = (
             f"🔑 <b>Account & API Quotas Center</b>\n\n"
@@ -338,7 +338,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         key = get_session_key(callback_query, callback_query.bot)
         session = session_manager.get_session(key)
         formatted = await session.get_usage_info()
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]])
         try:
             await callback_query.message.edit_text(formatted, reply_markup=kb, parse_mode="HTML")
         except Exception:
@@ -351,7 +351,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         text = f"🔄 <b>agy session (PID: {pid}) active</b>\n\nStart a new session or continue?"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🆕 New Session", callback_data="menu:reset")],
-            [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
         ])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
@@ -377,7 +377,7 @@ async def cmd_account(message: Message):
     email = get_active_account_email()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
-        [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
+        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")]
     ])
     text = (
         f"🔑 <b>Antigravity CLI Authorization</b>\n\n"
@@ -833,7 +833,7 @@ def get_workspace_keyboard() -> InlineKeyboardMarkup:
                         buttons.append([InlineKeyboardButton(text=label, callback_data=f"set_ws:{path_hash}")])
 
     buttons.append([InlineKeyboardButton(text="🏠 Home directory (/root)", callback_data="set_ws:home")])
-    buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -950,11 +950,11 @@ async def cmd_resume(message: Message):
     current_info = ""
     if session.conversation_id:
         if session.conversation_id == "latest":
-            current_info = "\n\n💬 <b>Current:</b> Latest active (--continue)"
+            current_info = "\n\n💬 <b>Текущая:</b> Latest active (--continue)"
         else:
-            current_info = f"\n\n💬 <b>Current:</b> <code>{session.conversation_id[:8]}...</code>"
+            current_info = f"\n\n💬 <b>Текущая:</b> <code>{session.conversation_id[:8]}...</code>"
     await message.answer(
-        f"📂 <b>Select a saved session from agy CLI history to resume:</b>{current_info}",
+        f"📂 <b>Выберите сохраненную сессию для продолжения:</b>{current_info}",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -971,7 +971,7 @@ async def process_resume_callback(callback_query: CallbackQuery):
     if conv_id == "new":
         key = get_session_key(callback_query, callback_query.bot)
         session_manager.new_session(key)
-        text = f"✨ <b>New clean session created!</b>\nSettings saved. The next request will start a new chat."
+        text = f"✨ <b>Создана новая чистая сессия!</b>\nSettings saved. The next request will start a new chat."
     elif conv_id == "latest":
         session.set_conversation("latest")
         text = "🔄 <b>Resumed latest active agy CLI session (<code>--continue</code>)!</b>"
@@ -979,9 +979,9 @@ async def process_resume_callback(callback_query: CallbackQuery):
         session.set_conversation(conv_id)
         title = get_conversation_title(conv_id)
         title_display = f"\n📝 <b>Name:</b> <i>{title}</i>" if title else ""
-        text = f"✅ <b>Session resumed!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nThe next request will continue in the context of the selected chat."
+        text = f"✅ <b>Сессия восстановлена!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nThe next request will continue in the context of the selected chat."
 
-    await callback_query.answer("Session switched!")
+    await callback_query.answer("Сессия переключена!")
     await callback_query.message.edit_text(text, parse_mode="HTML")
 
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
@@ -1290,7 +1290,7 @@ async def handle_message(message: Message):
 
     # Trigger Telegram typing action
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    placeholder = await message.answer("🤔 Thinking...")
+    placeholder = await message.answer("🤔 Думаю...")
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
 
@@ -1306,7 +1306,7 @@ async def handle_message(message: Message):
             if now - last_edit_time > 1.5 and partial_text.strip() and partial_text != last_text:
                 last_edit_time = now
                 last_text = partial_text
-                disp_text = partial_text[:3800] + "\n\n<i>⏳ Typing...</i>" if len(partial_text) > 3800 else partial_text + "\n\n<i>⏳ Typing...</i>"
+                disp_text = partial_text[:3800] + "\n\n<i>⏳ Печатаю...</i>" if len(partial_text) > 3800 else partial_text + "\n\n<i>⏳ Печатаю...</i>"
                 await safe_edit_text(placeholder, disp_text)
 
         # Log structured execution audit log
