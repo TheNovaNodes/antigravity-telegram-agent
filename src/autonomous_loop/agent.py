@@ -20,15 +20,22 @@ class AgentAdapter(abc.ABC):
 import subprocess
 import re
 
+import os
+
 class GeminiAgentAdapter(AgentAdapter):
     """Calls the real LLM using Antigravity CLI."""
     
     def run(self, task_context: Dict[str, Any], attempt: int, history: list) -> AgentResult:
         prompt = self._build_prompt(task_context, attempt, history)
         
+        cmd = ["/root/.local/bin/agy", "--print", prompt]
+        if os.getenv("AGY_SKIP_PERMISSIONS", "").lower() in ("1", "true"):
+            cmd.append("--dangerously-skip-permissions")
+        cmd.extend(["--output-format", "json"])
+
         # Use agy CLI to invoke the real LLM agent
         res = subprocess.run(
-            ["/root/.local/bin/agy", "--print", prompt, "--dangerously-skip-permissions", "--output-format", "json"],
+            cmd,
             capture_output=True,
             text=True,
             start_new_session=True

@@ -45,7 +45,7 @@ class TestMCPIntegration(unittest.TestCase):
 
     def test_mcp_manager_status_report(self):
         config_manager = MCPConfigManager(config_path=self.config_file)
-        manager = MCPManager(manager=config_manager)
+        manager = MCPManager(config_manager=config_manager)
         report = manager.get_status_report()
         self.assertIn("AnythingLLM", report)
         self.assertIn("SearXNG", report)
@@ -56,7 +56,7 @@ class TestMCPIntegration(unittest.TestCase):
     def test_health_check_all(self):
         import asyncio
         config_manager = MCPConfigManager(config_path=self.config_file)
-        manager = MCPManager(manager=config_manager)
+        manager = MCPManager(config_manager=config_manager)
         results = asyncio.run(manager.health_check_all())
         self.assertIn("anythingllm", results)
         self.assertIn("searxng", results)

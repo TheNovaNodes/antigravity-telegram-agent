@@ -10,7 +10,8 @@ from aiogram.enums import ChatAction
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
 from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
-from src.mcp_manager import mcp_manager
+from src.mcp_config import MCPConfigManager
+from src.mcp_manager import MCPManager
 from src.audit import log_audit_event
 from src.formatters import safe_html_truncate
 
