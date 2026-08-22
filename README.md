@@ -14,13 +14,15 @@ last_verified: 2026-08-21
 
 ## Status and Last Verified Date
 **Status:** Active  
-**Last Verified Date:** 2026-08-21  
+**Last Verified Date:** 2026-08-22  
 
 ## What it does / does not do
 **What it does:**
+- Multi-Bot PTY Isolation: Runs multiple Telegram bots concurrently under a single process/Dispatcher with strict composite-key session isolation `SessionKey(bot_id, chat_id)`.
 - Proxies Telegram chat inputs to an underlying `agy` (Google Antigravity) process using Pyte and Pexpect pseudo-terminal emulators.
-- Persists session state (models, effort, modes) via SQLite per user.
-- Handles automated scheduling of tasks via Sentinel Autonomous Scheduler.
+- Persists session state (models, effort, modes, conversation IDs, workspaces) in SQLite via composite key `(bot_id, chat_id)` across service restarts.
+- Enforces strict security hygiene: `0600` file permissions on DB and config files, zero import side-effects, and repository hygiene tests.
+- Handles automated scheduling of tasks via Sentinel Autonomous Scheduler with fail-closed bot routing.
 - Integrates with MCP servers (AnythingLLM, SearXNG, Nextcloud, Jules).
 - Delivers generated artifacts directly as Telegram attachments.
 
@@ -33,8 +35,10 @@ It provides an easy, mobile-friendly interface for remote coding workflows, allo
 
 ## Architecture and dependencies
 **Architecture:**
+- **Multi-Bot Dispatcher & Registry:** Concurrently polls multiple Telegram bot tokens configured via `TELEGRAM_BOT_TOKENS`, registering each bot instance in `BotRegistry`.
 - **PTY Execution Layer:** Runs `agy` via `pexpect.spawn` paired with `pyte` virtual terminal emulator to handle ANSI escapes and streams asynchronously.
-- **Session Management:** Uses SQLite (`data/antigravity-telegram-agent.db`) to persist configurations and states per Telegram user chat.
+- **Session Management:** Uses SQLite (`data/antigravity-telegram-agent.db`) to persist configurations, active conversation IDs, and states per `SessionKey(bot_id, chat_id)`.
+- **Security & Hygiene Layer:** Enforces `0600` permissions on database and runtime config files, prevents module import side-effects, and audits secret exposure.
 - **MCP Manager:** Tests and toggles connectivity for multiple MCP backends (Control and Data planes).
 - **Formatters:** Intercepts CLI output, stripping raw ASCII/TUI noise and converting Markdown to Telegram Rich Text HTML.
 
