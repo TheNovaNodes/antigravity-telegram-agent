@@ -19,16 +19,24 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 def get_session_key(event: types.TelegramObject, bot: Bot) -> SessionKey:
-    """Helper to consistently extract composite SessionKey from Bot and Telegram event."""
-    bot_id = bot.id if bot else 0
-    chat_id = 0
-    if isinstance(event, Message):
+    """Helper to consistently extract composite SessionKey from Bot and Telegram event.
+    Fails closed if bot or chat context is missing.
+    """
+    if not bot or not getattr(bot, "id", None):
+        raise ValueError("Cannot resolve SessionKey: Bot instance missing or invalid bot.id")
+
+    chat_id = None
+    if isinstance(event, Message) and getattr(event, "chat", None):
         chat_id = event.chat.id
-    elif isinstance(event, CallbackQuery) and event.message:
+    elif isinstance(event, CallbackQuery) and event.message and getattr(event.message, "chat", None):
         chat_id = event.message.chat.id
-    elif hasattr(event, "chat") and getattr(event, "chat"):
+    elif getattr(event, "chat", None):
         chat_id = event.chat.id
-    return SessionKey(bot_id=bot_id, chat_id=chat_id)
+
+    if chat_id is None:
+        raise ValueError("Cannot resolve SessionKey: Event missing valid chat context")
+
+    return SessionKey(bot_id=bot.id, chat_id=chat_id)
 
 
 def is_allowed(user_id: int) -> bool:

@@ -128,6 +128,20 @@ class TestMultiBotIsolation(unittest.TestCase):
         self.assertEqual(key_b, SessionKey(bot_id=1002, chat_id=444))
         self.assertNotEqual(key_a, key_b)
 
+    def test_handler_router_get_session_key_negative_cases(self):
+        """Verify get_session_key raises ValueError when bot or chat context is missing."""
+        from src.handlers import get_session_key
+        from aiogram.types import Message
+
+        bot = MagicMock(id=1001)
+        msg_no_chat = MagicMock(spec=Message, chat=None)
+
+        with self.assertRaises(ValueError):
+            get_session_key(msg_no_chat, None)
+
+        with self.assertRaises(ValueError):
+            get_session_key(msg_no_chat, bot)
+
 
 if __name__ == "__main__":
     unittest.main()
