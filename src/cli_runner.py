@@ -161,9 +161,11 @@ class AgySession:
         effort: str = "low",
         mode: str = "default",
         conversation_id: Optional[str] = None,
-        workspace: Optional[str] = None
+        workspace: Optional[str] = None,
+        session_key: Optional[any] = None
     ):
         self.chat_id = chat_id
+        self.session_key = session_key or chat_id
         self.child = None
         self.model_name = model_name
         self.effort = effort
@@ -191,21 +193,21 @@ class AgySession:
             elif "low" in new_model.lower():
                 self.effort = "low"
                 
-            logger.info(f"Switching model for chat_id={self.chat_id} to {self.model_name} (effort: {self.effort})")
+            logger.info(f"Switching model for session {self.session_key} to {self.model_name} (effort: {self.effort})")
             if self.child and self.child.isalive():
                 self.child.sendline(f"/model {self.model_name}")
                 self.child.sendline(f"/effort {self.effort}")
-            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+            save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
 
     def set_effort(self, effort_level: str) -> bool:
         if effort_level in AVAILABLE_EFFORTS:
             if self.effort != effort_level:
                 self.effort = effort_level
-                logger.info(f"Switching effort for chat_id={self.chat_id} to {self.effort}")
+                logger.info(f"Switching effort for session {self.session_key} to {self.effort}")
                 if self.child and self.child.isalive():
                     self.child.sendline(f"/effort {self.effort}")
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+                save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
             return True
         return False
 
@@ -213,26 +215,26 @@ class AgySession:
         if mode_key in AVAILABLE_MODES:
             if self.mode != mode_key:
                 self.mode = mode_key
-                logger.info(f"Switching mode for chat_id={self.chat_id} to {self.mode}")
+                logger.info(f"Switching mode for session {self.session_key} to {self.mode}")
                 self.close()
-                save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+                save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
             return True
         return False
 
     def set_conversation(self, conversation_id: Optional[str]) -> bool:
         if self.conversation_id != conversation_id:
             self.conversation_id = conversation_id
-            logger.info(f"Switching conversation for chat_id={self.chat_id} to {conversation_id}")
+            logger.info(f"Switching conversation for session {self.session_key} to {conversation_id}")
             self.close()
-            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+            save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
 
     def set_workspace(self, workspace: Optional[str]) -> bool:
         if self.workspace != workspace:
             self.workspace = workspace
-            logger.info(f"Switching workspace for chat_id={self.chat_id} to {workspace}")
+            logger.info(f"Switching workspace for session {self.session_key} to {workspace}")
             self.close()
-            save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+            save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         return True
 
     def _detect_conversation_id(self):
@@ -251,12 +253,12 @@ class AgySession:
                 from src.conversations import get_latest_conversation_id
                 resolved = get_latest_conversation_id()
                 if resolved:
-                    logger.info(f"Resolved 'latest' conversation_id to {resolved} for chat_id={self.chat_id}")
+                    logger.info(f"Resolved 'latest' conversation_id to {resolved} for session {self.session_key}")
                     self.conversation_id = resolved
-                    save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+                    save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
                     return
             except Exception as e:
-                logger.warning(f"Failed to resolve 'latest' conversation_id for chat_id={self.chat_id}: {e}")
+                logger.warning(f"Failed to resolve 'latest' conversation_id for session {self.session_key}: {e}")
 
         # Strategy 2: Delta-detection for brand new sessions (conversation_id=None)
         brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
@@ -275,10 +277,10 @@ class AgySession:
                 if best_id != self.conversation_id:
                     old_id = self.conversation_id
                     self.conversation_id = best_id
-                    logger.info(f"Detected newly spawned conversation_id={best_id} for chat_id={self.chat_id} (was: {old_id})")
-                    save_user_session(self.chat_id, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
+                    logger.info(f"Detected newly spawned conversation_id={best_id} for session {self.session_key} (was: {old_id})")
+                    save_user_session(self.session_key, self.model_name, self.effort, self.mode, self.conversation_id, self.workspace)
         except Exception as e:
-            logger.warning(f"Failed to detect conversation_id for chat_id={self.chat_id}: {e}")
+            logger.warning(f"Failed to detect conversation_id for session {self.session_key}: {e}")
 
     async def _ensure_started(self):
         current_auth_sig = get_auth_state_signature()

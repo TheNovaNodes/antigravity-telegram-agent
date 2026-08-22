@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from aiogram import Router, types
+from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.enums import ChatAction
@@ -13,14 +13,30 @@ from src.mcp_manager import mcp_manager
 from src.audit import log_audit_event
 from src.formatters import safe_html_truncate
 
+from src.session_key import SessionKey
+
 logger = logging.getLogger(__name__)
 router = Router()
+
+def get_session_key(event: types.TelegramObject, bot: Bot) -> SessionKey:
+    """Helper to consistently extract composite SessionKey from Bot and Telegram event."""
+    bot_id = bot.id if bot else 0
+    chat_id = 0
+    if isinstance(event, Message):
+        chat_id = event.chat.id
+    elif isinstance(event, CallbackQuery) and event.message:
+        chat_id = event.message.chat.id
+    elif hasattr(event, "chat") and getattr(event, "chat"):
+        chat_id = event.chat.id
+    return SessionKey(bot_id=bot_id, chat_id=chat_id)
+
 
 def is_allowed(user_id: int) -> bool:
     if not ALLOWED_USER_IDS:
         logger.error("ALLOWED_USER_IDS is empty! Failing closed for security.")
         return False
     return user_id in ALLOWED_USER_IDS
+
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     buttons = [
