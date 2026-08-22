@@ -372,7 +372,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "account":
-        email = get_active_account_email()
+        email = get_active_account_email(session.profile)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 View API Quotas & Usage", callback_data="menu:usage")],
             [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
@@ -408,7 +408,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         ])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
-        email = get_active_account_email()
+        email = get_active_account_email(session.profile)
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
 
 @router.message(Command("usage"))
@@ -427,7 +427,9 @@ async def cmd_usage(message: Message):
 async def cmd_account(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    email = get_active_account_email()
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
+    email = get_active_account_email(session.profile)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
         [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
@@ -1224,10 +1226,21 @@ async def check_and_send_artifacts(message: Message, session):
 
     # Recursively find artifact files modified in the last 120 seconds
     artifacts_to_send = []
+    canonical_state_dir = profile.state_dir.resolve() if profile else Path.home().resolve() / ".gemini" / "antigravity-cli"
     for brain_dir in scan_dirs:
         try:
             for item in brain_dir.rglob("*"):
+                if item.is_symlink():
+                    continue
                 if not item.is_file():
+                    continue
+                try:
+                    canonical_file = item.resolve()
+                    if canonical_file.is_symlink():
+                        continue
+                    canonical_file.relative_to(canonical_state_dir)
+                except (ValueError, RuntimeError, OSError) as escape_err:
+                    logger.warning(f"Rejecting artifact path traversal / symlink escape candidate {item}: {escape_err}")
                     continue
                 # Skip files inside system directories
                 try:

@@ -695,7 +695,7 @@ class AgySession:
                     logger.debug(f"Failed to send Escape to close modal: {e}")
 
             logger.debug(f"Usage modal captured {len(all_lines)} unique lines")
-            email = get_active_account_email()
+            email = get_active_account_email(self.profile)
             return format_usage_response(all_lines, email)
 
     def clear_context(self):

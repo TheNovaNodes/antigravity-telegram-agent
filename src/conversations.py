@@ -11,13 +11,9 @@ DEFAULT_DB_PATH = Path.home() / ".gemini" / "antigravity-cli" / "conversation_su
 
 
 def _resolve_db_path(profile: Optional[BotProfile] = None) -> Path:
-    """Resolve database path for profile, falling back to default if profile is None or name is default."""
-    if profile and profile.name and profile.name != "default":
-        prof_db = profile.state_dir / "conversation_summaries.db"
-        if prof_db.exists():
-            return prof_db
-        # Return profile db path if state_dir exists so queries execute against profile db
-        return prof_db
+    """Resolve database path for profile, falling back to DEFAULT_DB_PATH if profile is None."""
+    if profile:
+        return profile.state_dir / "conversation_summaries.db"
     return DEFAULT_DB_PATH
 
 

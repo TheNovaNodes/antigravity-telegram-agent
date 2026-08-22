@@ -184,4 +184,24 @@ def migrate_legacy_shared_state(
             logger.error(f"Error migrating legacy state item '{item_name}': {e}")
             status["errors"].append({"item": item_name, "error": str(e)})
 
+    # Post-migration: recursively enforce permissions on target_profile.state_dir and set marker
+    if target_profile.state_dir.exists():
+        for root, dirs, files in os.walk(target_profile.state_dir):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o700)
+                except Exception as perm_err:
+                    logger.debug(f"Permission setting error for dir {d}: {perm_err}")
+            for f in files:
+                try:
+                    os.chmod(os.path.join(root, f), 0o600)
+                except Exception as perm_err:
+                    logger.debug(f"Permission setting error for file {f}: {perm_err}")
+        try:
+            marker = target_profile.state_dir / ".migration_complete"
+            marker.write_text(f"migrated_at={timestamp}\n")
+            os.chmod(marker, 0o600)
+        except Exception as marker_err:
+            logger.error(f"Failed to write migration marker: {marker_err}")
+
     return status

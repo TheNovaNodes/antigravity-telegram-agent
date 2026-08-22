@@ -156,6 +156,9 @@ class VerificationEngine:
         missing_tests = expected_tests - actual_tests
         unexpected_tests = actual_tests - expected_tests
         
+        if missing_tests or unexpected_tests:
+            return {"status": "FAIL", "reason": f"Manifest node ID mismatch. Missing: {missing_tests}, Unexpected: {unexpected_tests}", "output": stdout_part}
+
         # We must ensure all base test files were executed
         expected_files = set(node.split("::")[0] for node in expected_tests)
         actual_files = set(node.split("::")[0] for node in actual_tests)

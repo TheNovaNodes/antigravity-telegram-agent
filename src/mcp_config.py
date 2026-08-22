@@ -6,6 +6,7 @@ Supports dual-plane separation: Control Plane (Management) vs Data Plane (Operat
 
 import json
 import os
+import copy
 from pathlib import Path
 from typing import Dict, Any, Optional
 from src.profile import BotProfile
@@ -113,8 +114,7 @@ class MCPConfigManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    merged = DEFAULT_MCP_CONFIG.copy()
-                    merged["servers"] = DEFAULT_MCP_CONFIG["servers"].copy()
+                    merged = copy.deepcopy(DEFAULT_MCP_CONFIG)
                     if "servers" in data:
                         for key, server in data["servers"].items():
                             if key in merged["servers"]:
@@ -127,8 +127,8 @@ class MCPConfigManager:
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).error(f"Error loading MCP config from {self.config_path}: {exc}")
-                return DEFAULT_MCP_CONFIG.copy()
-        return DEFAULT_MCP_CONFIG.copy()
+                return copy.deepcopy(DEFAULT_MCP_CONFIG)
+        return copy.deepcopy(DEFAULT_MCP_CONFIG)
 
     def save_config(self) -> bool:
         """Persist current configuration to JSON file with strict 0600 permissions."""

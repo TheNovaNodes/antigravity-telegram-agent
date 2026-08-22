@@ -396,5 +396,74 @@ class TestProfileIsolation(unittest.TestCase):
                 self.assertNotEqual(env_pty_a["AGY_PROFILE_DIR"], env_pty_b["AGY_PROFILE_DIR"])
 
 
+            # F-01 check: default profile DB path is in profile.state_dir
+            prof_default = BotProfile("default")
+            from src.conversations import _resolve_db_path
+            self.assertEqual(_resolve_db_path(prof_default), prof_default.state_dir / "conversation_summaries.db")
+
+    def test_f03_mcp_config_deepcopy_isolation(self):
+        """Test F-03: MCPConfigManager uses deepcopy so DEFAULT_MCP_CONFIG is untouched on toggle."""
+        from src.mcp_config import DEFAULT_MCP_CONFIG, MCPConfigManager
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof = BotProfile("mcp_test_bot")
+            mgr = MCPConfigManager(profile=prof)
+            original_val = DEFAULT_MCP_CONFIG["servers"]["searxng"]["enabled"]
+            mgr.toggle_server("searxng")
+            self.assertEqual(DEFAULT_MCP_CONFIG["servers"]["searxng"]["enabled"], original_val)
+            self.assertNotEqual(mgr.config["servers"]["searxng"]["enabled"], original_val)
+
+    def test_f05_recursive_permissions_and_marker(self):
+        """Test F-05: migrate_legacy_shared_state recursively sets 0700/0600 and writes .migration_complete marker."""
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof = BotProfile("migrated_bot_f05")
+            legacy_dir = self.tmp_path / "legacy_f05"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            sub_dir = legacy_dir / "brain" / "sub_folder"
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            file_nested = sub_dir / "nested.txt"
+            file_nested.write_text("nested content")
+
+            status = migrate_legacy_shared_state(target_profile=prof, legacy_dir=legacy_dir)
+            self.assertIn("brain", status["migrated"])
+
+            marker = prof.state_dir / ".migration_complete"
+            self.assertTrue(marker.exists())
+
+            # Check permissions
+            target_sub_dir = prof.state_dir / "brain" / "sub_folder"
+            target_file = target_sub_dir / "nested.txt"
+            self.assertEqual(target_sub_dir.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(target_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+
+    def test_f06_symlink_artifact_escape_rejection(self):
+        """Test F-06: check_and_send_artifacts rejects symlink artifacts and paths escaping state_dir."""
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof = BotProfile("artifact_test_bot")
+            brain_dir = prof.state_dir / "brain" / "conv123"
+            brain_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create an outside secret file and symlink into brain_dir
+            outside_dir = self.tmp_path / "outside"
+            outside_dir.mkdir(parents=True, exist_ok=True)
+            outside_file = outside_dir / "secret.txt"
+            outside_file.write_text("secret_data")
+
+            symlink_artifact = brain_dir / "escaped_art.txt"
+            os.symlink(outside_file, symlink_artifact)
+
+            mock_session = MagicMock()
+            mock_session.profile = prof
+            mock_session.conversation_id = "conv123"
+            mock_message = MagicMock()
+
+            with patch("aiogram.types.FSInputFile") as mock_fs:
+                asyncio.run(check_and_send_artifacts(mock_message, mock_session))
+                # Ensure the escaped symlink artifact was NOT sent via FSInputFile
+                for call in mock_fs.call_args_list:
+                    file_path = call[0][0]
+                    self.assertNotIn("escaped_art.txt", str(file_path))
+
+
 if __name__ == "__main__":
     unittest.main()
