@@ -346,16 +346,10 @@ async def process_menu_navigation(callback_query: CallbackQuery):
             reply_markup=get_workspace_keyboard(),
             parse_mode="HTML"
         )
-    elif action == "mcp":
-        report = mcp_manager.get_status_report()
-        await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
-    elif action == "reset":
-        key = get_session_key(callback_query, callback_query.bot)
-        session_manager.new_session(key)
-        await callback_query.message.edit_text("🔄 <b>Session Reset!</b> Next prompt will start a new conversation context in the background process.", parse_mode="HTML")
     elif action == "resume":
         kb = get_resume_keyboard(session.conversation_id, profile=session.profile)
         await callback_query.message.edit_text("💬 <b>Select a conversation to resume:</b>", reply_markup=kb, parse_mode="HTML")
+
     elif action == "jules":
         from src.jules_monitor import ACTIVE_JULES_SESSIONS
         sessions_str = ""
@@ -840,7 +834,7 @@ async def cmd_debug(message: Message):
     latest_conv = get_latest_conversation_id(profile=session.profile)
 
     from pathlib import Path
-    brain_base = session.profile.state_dir / "brain" if session.profile else Path.home() / ".gemini" / "antigravity-cli" / "brain"
+    brain_base = session.profile.cli_state_dir / "brain" if session.profile else Path.home() / ".gemini" / "antigravity-cli" / "brain"
     brain_dirs_count = 0
     if brain_base.exists():
         brain_dirs_count = sum(1 for d in brain_base.iterdir() if d.is_dir() and not d.name.startswith("."))
@@ -851,13 +845,15 @@ async def cmd_debug(message: Message):
         f"<b>user_id:</b> <code>{message.from_user.id}</code>\n\n"
         f"<b>── Profile ──</b>\n"
         f"<b>profile_name:</b> <code>{session.profile.name if session.profile else 'default'}</code>\n"
-        f"<b>state_dir:</b> <code>{session.profile.state_dir if session.profile else 'N/A'}</code>\n\n"
+        f"<b>state_dir:</b> <code>{session.profile.state_dir if session.profile else 'N/A'}</code>\n"
+        f"<b>cli_state_dir:</b> <code>{session.profile.cli_state_dir if session.profile else 'N/A'}</code>\n\n"
         f"<b>── Session ──</b>\n"
         f"<b>conversation_id:</b> <code>{session.conversation_id or 'None (new session)'}</code>\n"
         f"<b>model:</b> <code>{session.model_name}</code>\n"
         f"<b>effort:</b> <code>{session.effort}</code>\n"
         f"<b>mode:</b> <code>{session.mode}</code>\n"
         f"<b>workspace:</b> <code>{session.workspace or 'Home Directory'}</code>\n\n"
+
         f"<b>── PTY Process ──</b>\n"
         f"<b>PTY alive:</b> <code>{pty_alive}</code>\n"
         f"<b>PTY PID:</b> <code>{pty_pid or 'N/A'}</code>\n"
@@ -1169,7 +1165,7 @@ async def check_and_send_artifacts(message: Message, session):
     """Detect and send newly generated artifacts from agy session brain and artifacts directories to Telegram chat.
 
     Uses a multi-strategy approach to find the correct brain and artifacts directories for the profile:
-    1. Check the session's profile state_dir / brain and session's profile state_dir / artifacts
+    1. Check the session's profile cli_state_dir / brain and session's profile cli_state_dir / artifacts
     2. Check the session's tracked conversation_id directory (set by _detect_conversation_id)
     3. Fall back to latest conversation from agy CLI database for session's profile
     4. Scan ALL brain directories modified in the last 120 seconds
@@ -1179,8 +1175,8 @@ async def check_and_send_artifacts(message: Message, session):
     """
     profile = getattr(session, "profile", None)
     if profile:
-        profile_brain_base = profile.state_dir / "brain"
-        profile_artifacts_base = profile.state_dir / "artifacts"
+        profile_brain_base = profile.cli_state_dir / "brain"
+        profile_artifacts_base = profile.cli_state_dir / "artifacts"
     else:
         profile_brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
         profile_artifacts_base = Path.home() / ".gemini" / "antigravity-cli" / "artifacts"
@@ -1227,6 +1223,7 @@ async def check_and_send_artifacts(message: Message, session):
     # Recursively find artifact files modified in the last 120 seconds
     artifacts_to_send = []
     canonical_state_dir = profile.state_dir.resolve() if profile else Path.home().resolve() / ".gemini" / "antigravity-cli"
+
     for brain_dir in scan_dirs:
         try:
             for item in brain_dir.rglob("*"):

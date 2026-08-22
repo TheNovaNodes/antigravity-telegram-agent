@@ -57,9 +57,9 @@ AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-
 from src.profile import BotProfile, PROFILES_ROOT
 
 def _get_gemini_dir(profile: Optional[BotProfile] = None) -> Path:
-    """Find the active .gemini/antigravity-cli directory across possible HOME paths or profile state_dir."""
+    """Find the active .gemini/antigravity-cli directory across possible HOME paths or profile cli_state_dir."""
     if profile:
-        return profile.state_dir
+        return profile.cli_state_dir
 
     homes_to_check = [Path.home()]
     sudo_user = os.getenv("SUDO_USER")
@@ -86,7 +86,7 @@ def _get_gemini_dir(profile: Optional[BotProfile] = None) -> Path:
 def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
     """Retrieve the currently authenticated Google account email via OAuth, JWT payload, or CLI logs."""
     if profile:
-        base_dir = profile.state_dir
+        base_dir = profile.cli_state_dir
     else:
         base_dir = _get_gemini_dir(profile=None)
 
@@ -147,7 +147,7 @@ def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
 def get_auth_state_signature(profile: Optional[BotProfile] = None) -> str:
     """Calculate a hash signature of active auth tokens and account configs."""
     if profile:
-        base_dir = profile.state_dir
+        base_dir = profile.cli_state_dir
     else:
         base_dir = _get_gemini_dir(profile=None)
 
@@ -166,7 +166,18 @@ def get_auth_state_signature(profile: Optional[BotProfile] = None) -> str:
         except Exception as e:
             logger.warning(f"Failed to read auth token for signature: {e}")
 
+    settings_file = base_dir / "settings.json"
+    if settings_file.exists():
+        try:
+            st = settings_file.stat()
+            content = settings_file.read_bytes()
+            h = hashlib.sha256(content).hexdigest()
+            sig_parts.append(f"settings:{st.st_mtime}:{h}")
+        except Exception as e:
+            logger.warning(f"Failed to read settings for signature: {e}")
+
     return "|".join(sig_parts) if sig_parts else "none"
+
 
 
 class AgySession:
@@ -282,7 +293,7 @@ class AgySession:
 
         # Strategy 2: Delta-detection for brand new sessions (conversation_id=None)
         if self.profile:
-            brain_base = self.profile.state_dir / "brain"
+            brain_base = self.profile.cli_state_dir / "brain"
         else:
             brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
 
@@ -321,8 +332,13 @@ class AgySession:
             args = [
                 "--model", self.model_name,
                 "--effort", self.effort,
-                "--dangerously-skip-permissions"
             ]
+            skip_perm_env = os.environ.get("AGY_SKIP_PERMISSIONS", "").lower() in ("1", "true", "yes")
+            skip_perm_attr = getattr(self, "skip_permissions", None)
+            should_skip = skip_perm_attr if skip_perm_attr is not None else skip_perm_env
+            if should_skip:
+                args.append("--dangerously-skip-permissions")
+
             if self.mode != "default":
                 args.extend(["--mode", self.mode])
             if self.conversation_id:
@@ -354,9 +370,10 @@ class AgySession:
             env.update(mcp_env)
 
             if self.profile:
-                brain_base = self.profile.state_dir / "brain"
+                brain_base = self.profile.cli_state_dir / "brain"
             else:
                 brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+
 
             if brain_base.exists():
                 self._spawn_brain_dirs = set(d.name for d in brain_base.iterdir() if d.is_dir())

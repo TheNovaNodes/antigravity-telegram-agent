@@ -65,16 +65,18 @@ class TestProfileIsolation(unittest.TestCase):
             self.assertEqual(file_mode, 0o600)
 
     def test_multi_profile_isolation(self):
-        """Test two bots with distinct profiles write to separate DBs and brain paths."""
+        """Test two bots with distinct profiles write to separate DBs and brain paths inside cli_state_dir."""
         with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
             prof_a = BotProfile("alpha_bot", bot_id=101)
             prof_b = BotProfile("beta_bot", bot_id=102)
 
-            self.assertNotEqual(prof_a.state_dir, prof_b.state_dir)
-            self.assertTrue((prof_a.state_dir / "brain").exists())
-            self.assertTrue((prof_b.state_dir / "brain").exists())
+            self.assertEqual(prof_a.cli_state_dir, prof_a.state_dir / ".gemini" / "antigravity-cli")
+            self.assertEqual(prof_b.cli_state_dir, prof_b.state_dir / ".gemini" / "antigravity-cli")
+            self.assertNotEqual(prof_a.cli_state_dir, prof_b.cli_state_dir)
+            self.assertTrue((prof_a.cli_state_dir / "brain").exists())
+            self.assertTrue((prof_b.cli_state_dir / "brain").exists())
 
-            db_a = prof_a.state_dir / "conversation_summaries.db"
+            db_a = prof_a.cli_state_dir / "conversation_summaries.db"
             with sqlite3.connect(str(db_a)) as conn:
                 conn.execute("""
                     CREATE TABLE conversation_summaries (
@@ -91,7 +93,7 @@ class TestProfileIsolation(unittest.TestCase):
                 """)
                 conn.commit()
 
-            db_b = prof_b.state_dir / "conversation_summaries.db"
+            db_b = prof_b.cli_state_dir / "conversation_summaries.db"
             with sqlite3.connect(str(db_b)) as conn:
                 conn.execute("""
                     CREATE TABLE conversation_summaries (
@@ -127,7 +129,7 @@ class TestProfileIsolation(unittest.TestCase):
             prof_a = BotProfile("bot_a", bot_id=201)
             prof_b = BotProfile("bot_b", bot_id=202)
 
-            db_a = prof_a.state_dir / "conversation_summaries.db"
+            db_a = prof_a.cli_state_dir / "conversation_summaries.db"
             with sqlite3.connect(str(db_a)) as conn:
                 conn.execute("""
                     CREATE TABLE conversation_summaries (
@@ -213,26 +215,26 @@ class TestProfileIsolation(unittest.TestCase):
             self.assertEqual(jobs[0]["args"][3], "bot_a")
 
     def test_auth_lookups_and_signatures_profile_isolation(self):
-        """Test auth lookups and status signatures inspect profile.state_dir."""
+        """Test auth lookups and status signatures inspect profile.cli_state_dir."""
         with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
             prof_a = BotProfile("bot_a", bot_id=501)
             prof_b = BotProfile("bot_b", bot_id=502)
 
-            # Put custom settings file in prof_a
-            settings_a = prof_a.state_dir / "settings.json"
+            # Put custom settings file in prof_a.cli_state_dir
+            settings_a = prof_a.cli_state_dir / "settings.json"
             settings_a.write_text('{"email": "alpha@example.com"}')
 
-            settings_b = prof_b.state_dir / "settings.json"
+            settings_b = prof_b.cli_state_dir / "settings.json"
             settings_b.write_text('{"email": "beta@example.com"}')
 
             self.assertEqual(get_active_account_email(profile=prof_a), "alpha@example.com")
             self.assertEqual(get_active_account_email(profile=prof_b), "beta@example.com")
 
-            # Create token file in prof_a
-            token_a = prof_a.state_dir / "antigravity-oauth-token"
+            # Create token file in prof_a.cli_state_dir
+            token_a = prof_a.cli_state_dir / "antigravity-oauth-token"
             token_a.write_bytes(b"token_alpha_data")
 
-            token_b = prof_b.state_dir / "antigravity-oauth-token"
+            token_b = prof_b.cli_state_dir / "antigravity-oauth-token"
             token_b.write_bytes(b"token_beta_data_different")
 
             sig_a = get_auth_state_signature(profile=prof_a)
@@ -240,7 +242,7 @@ class TestProfileIsolation(unittest.TestCase):
             self.assertNotEqual(sig_a, sig_b)
 
     def test_mcp_config_profile_scoping(self):
-        """Test MCP config is profile-scoped at profile.state_dir / mcp_config.json."""
+        """Test MCP config is profile-scoped at profile.cli_state_dir / mcp_config.json."""
         with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
             prof_a = BotProfile("bot_a", bot_id=601)
             prof_b = BotProfile("bot_b", bot_id=602)
@@ -248,12 +250,12 @@ class TestProfileIsolation(unittest.TestCase):
             mcp_a = MCPConfigManager(profile=prof_a)
             mcp_b = MCPConfigManager(profile=prof_b)
 
-            self.assertEqual(mcp_a.config_path, prof_a.state_dir / "mcp_config.json")
-            self.assertEqual(mcp_b.config_path, prof_b.state_dir / "mcp_config.json")
+            self.assertEqual(mcp_a.config_path, prof_a.cli_state_dir / "mcp_config.json")
+            self.assertEqual(mcp_b.config_path, prof_b.cli_state_dir / "mcp_config.json")
 
             mcp_a.toggle_server("searxng")
-            self.assertTrue((prof_a.state_dir / "mcp_config.json").exists())
-            self.assertFalse((prof_b.state_dir / "mcp_config.json").exists())
+            self.assertTrue((prof_a.cli_state_dir / "mcp_config.json").exists())
+            self.assertFalse((prof_b.cli_state_dir / "mcp_config.json").exists())
 
     def test_artifact_discovery_and_debug_profile_isolation(self):
         """Test artifact discovery and /debug output per profile."""
@@ -264,13 +266,13 @@ class TestProfileIsolation(unittest.TestCase):
             session_a = AgySession(chat_id=100, profile=prof_a)
             session_b = AgySession(chat_id=100, profile=prof_b)
 
-            # Create artifact in prof_a artifacts dir
-            art_dir_a = prof_a.state_dir / "artifacts"
+            # Create artifact in prof_a.cli_state_dir / artifacts dir
+            art_dir_a = prof_a.cli_state_dir / "artifacts"
             art_dir_a.mkdir(parents=True, exist_ok=True)
             art_file_a = art_dir_a / "report_a.txt"
             art_file_a.write_text("Profile A artifact report")
 
-            art_dir_b = prof_b.state_dir / "artifacts"
+            art_dir_b = prof_b.cli_state_dir / "artifacts"
             art_dir_b.mkdir(parents=True, exist_ok=True)
             art_file_b = art_dir_b / "report_b.txt"
             art_file_b.write_text("Profile B artifact report")
@@ -329,12 +331,12 @@ class TestProfileIsolation(unittest.TestCase):
             self.assertIn("brain", status["migrated"])
             self.assertEqual(len(status["backed_up"]), 7)
 
-            # Check that files exist in profile.state_dir
-            self.assertTrue((prof.state_dir / "conversation_summaries.db").exists())
-            self.assertTrue((prof.state_dir / "user_sessions.db").exists())
-            self.assertTrue((prof.state_dir / "mcp_config.json").exists())
-            self.assertTrue((prof.state_dir / "brain" / "data.txt").exists())
-            self.assertTrue((prof.state_dir / "artifacts" / "art.txt").exists())
+            # Check that files exist in profile.cli_state_dir
+            self.assertTrue((prof.cli_state_dir / "conversation_summaries.db").exists())
+            self.assertTrue((prof.cli_state_dir / "user_sessions.db").exists())
+            self.assertTrue((prof.cli_state_dir / "mcp_config.json").exists())
+            self.assertTrue((prof.cli_state_dir / "brain" / "data.txt").exists())
+            self.assertTrue((prof.cli_state_dir / "artifacts" / "art.txt").exists())
 
             # Check backup copies created in legacy_dir
             backups = list(legacy_dir.glob("*.bak_*"))
@@ -348,8 +350,8 @@ class TestProfileIsolation(unittest.TestCase):
 
             same_chat_id = 99999
 
-            # Profile A has valid auth, Profile B does NOT
-            (prof_a.state_dir / "settings.json").write_text('{"email": "bot_a@example.com"}')
+            # Profile A has valid auth in cli_state_dir, Profile B does NOT
+            (prof_a.cli_state_dir / "settings.json").write_text('{"email": "bot_a@example.com"}')
 
             # a) Missing auth in Profile B returns 'Not Logged In' and does not read Profile A
             email_a = get_active_account_email(profile=prof_a)
@@ -365,8 +367,8 @@ class TestProfileIsolation(unittest.TestCase):
             env_a = mcp_a.get_env_dict()
             env_b = mcp_b.get_env_dict()
 
-            self.assertTrue((prof_a.state_dir / "mcp_config.json").exists())
-            self.assertFalse((prof_b.state_dir / "mcp_config.json").exists())
+            self.assertTrue((prof_a.cli_state_dir / "mcp_config.json").exists())
+            self.assertFalse((prof_b.cli_state_dir / "mcp_config.json").exists())
 
             # c) Sessions with same chat_id under prof_a vs prof_b spawn disjoint state & PTY env
             session_a = AgySession(chat_id=same_chat_id, profile=prof_a)
@@ -395,11 +397,10 @@ class TestProfileIsolation(unittest.TestCase):
                 self.assertEqual(env_pty_b["AGY_PROFILE_DIR"], str(prof_b.state_dir))
                 self.assertNotEqual(env_pty_a["AGY_PROFILE_DIR"], env_pty_b["AGY_PROFILE_DIR"])
 
-
-            # F-01 check: default profile DB path is in profile.state_dir
+            # F-01 check: default profile DB path is in profile.cli_state_dir
             prof_default = BotProfile("default")
             from src.conversations import _resolve_db_path
-            self.assertEqual(_resolve_db_path(prof_default), prof_default.state_dir / "conversation_summaries.db")
+            self.assertEqual(_resolve_db_path(prof_default), prof_default.cli_state_dir / "conversation_summaries.db")
 
     def test_f03_mcp_config_deepcopy_isolation(self):
         """Test F-03: MCPConfigManager uses deepcopy so DEFAULT_MCP_CONFIG is untouched on toggle."""
@@ -426,11 +427,11 @@ class TestProfileIsolation(unittest.TestCase):
             status = migrate_legacy_shared_state(target_profile=prof, legacy_dir=legacy_dir)
             self.assertIn("brain", status["migrated"])
 
-            marker = prof.state_dir / ".migration_complete"
+            marker = prof.cli_state_dir / ".migration_complete"
             self.assertTrue(marker.exists())
 
             # Check permissions
-            target_sub_dir = prof.state_dir / "brain" / "sub_folder"
+            target_sub_dir = prof.cli_state_dir / "brain" / "sub_folder"
             target_file = target_sub_dir / "nested.txt"
             self.assertEqual(target_sub_dir.stat().st_mode & 0o777, 0o700)
             self.assertEqual(target_file.stat().st_mode & 0o777, 0o600)
@@ -440,7 +441,7 @@ class TestProfileIsolation(unittest.TestCase):
         """Test F-06: check_and_send_artifacts rejects symlink artifacts and paths escaping state_dir."""
         with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
             prof = BotProfile("artifact_test_bot")
-            brain_dir = prof.state_dir / "brain" / "conv123"
+            brain_dir = prof.cli_state_dir / "brain" / "conv123"
             brain_dir.mkdir(parents=True, exist_ok=True)
 
             # Create an outside secret file and symlink into brain_dir

@@ -48,6 +48,7 @@ class BotProfile:
             raise ValueError(f"Path traversal detected for profile name '{name}': '{target_dir}' escapes allowed root '{allowed_root}'")
 
         self.state_dir: Path = target_dir
+        self.cli_state_dir: Path = self.state_dir / ".gemini" / "antigravity-cli"
         self.system_prompt_path: Path = self.state_dir / "SOUL.md"
 
         # Initialize directory structure with restrictive permissions (0700)
@@ -67,13 +68,27 @@ class BotProfile:
         except Exception:
             pass
 
-        # Create brain directory inside profile
-        brain_dir = self.state_dir / "brain"
-        brain_dir.mkdir(parents=True, exist_ok=True)
+        self.cli_state_dir.mkdir(parents=True, exist_ok=True)
         try:
-            brain_dir.chmod(0o700)
+            self.cli_state_dir.chmod(0o700)
         except Exception:
             pass
+
+        # Create brain and artifacts directories inside cli_state_dir
+        for sub_dir in [self.cli_state_dir / "brain", self.cli_state_dir / "artifacts"]:
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                sub_dir.chmod(0o700)
+            except Exception:
+                pass
+
+        # Maintain legacy brain symlink/dir at state_dir level if needed for backward compatibility
+        legacy_brain = self.state_dir / "brain"
+        if not legacy_brain.exists():
+            try:
+                legacy_brain.symlink_to(self.cli_state_dir / "brain")
+            except Exception:
+                legacy_brain.mkdir(parents=True, exist_ok=True)
 
     def enforce_file_permissions(self, file_path: Union[str, Path]) -> None:
         """Enforce restrictive permissions (0600) for profile state files."""
@@ -93,8 +108,8 @@ def migrate_legacy_shared_state(
     target_profile: Optional[BotProfile] = None,
     legacy_dir: Optional[Path] = None
 ) -> dict:
-    """Migrates legacy shared state files/dirs into target profile state directory.
-    Creates a timestamped backup copy (.bak_<timestamp>) BEFORE copying/moving files to profile.state_dir.
+    """Migrates legacy shared state files/dirs into target profile's cli_state_dir.
+    Creates a timestamped backup copy (.bak_<timestamp>) BEFORE copying/moving files.
     Returns a transactional status dict.
     """
     import datetime
@@ -130,7 +145,7 @@ def migrate_legacy_shared_state(
 
     for item_name in items_to_migrate:
         legacy_item = legacy_dir / item_name
-        target_item = target_profile.state_dir / item_name
+        target_item = target_profile.cli_state_dir / item_name
 
         if not legacy_item.exists():
             status["skipped"].append(item_name)
@@ -163,7 +178,7 @@ def migrate_legacy_shared_state(
                     pass
                 status["backed_up"].append(str(backup_item.name))
 
-            # Step 2: Copy to profile state dir (or move if legacy item)
+            # Step 2: Copy to profile cli_state_dir
             if legacy_item.is_dir():
                 shutil.copytree(legacy_item, target_item, symlinks=True, dirs_exist_ok=True)
             else:
@@ -184,7 +199,7 @@ def migrate_legacy_shared_state(
             logger.error(f"Error migrating legacy state item '{item_name}': {e}")
             status["errors"].append({"item": item_name, "error": str(e)})
 
-    # Post-migration: recursively enforce permissions on target_profile.state_dir and set marker
+    # Post-migration: recursively enforce permissions on target_profile.state_dir and set marker inside cli_state_dir
     if target_profile.state_dir.exists():
         for root, dirs, files in os.walk(target_profile.state_dir):
             for d in dirs:
@@ -198,7 +213,7 @@ def migrate_legacy_shared_state(
                 except Exception as perm_err:
                     logger.debug(f"Permission setting error for file {f}: {perm_err}")
         try:
-            marker = target_profile.state_dir / ".migration_complete"
+            marker = target_profile.cli_state_dir / ".migration_complete"
             marker.write_text(f"migrated_at={timestamp}\n")
             os.chmod(marker, 0o600)
         except Exception as marker_err:

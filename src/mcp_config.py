@@ -96,7 +96,7 @@ def resolve_mcp_config_path(profile: Optional[BotProfile] = None, config_path: O
     if config_path is not None:
         return config_path
     if profile:
-        return profile.state_dir / "mcp_config.json"
+        return profile.cli_state_dir / "mcp_config.json"
     return DEFAULT_MCP_CONFIG_PATH
 
 
