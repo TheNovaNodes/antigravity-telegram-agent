@@ -10,12 +10,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Allowlisted root directories for sandbox paths
-ALLOWED_SANDBOX_ROOTS = [
-    Path("/tmp").resolve(),
-    Path.home().resolve(),
-    Path("/root/projects").resolve() if Path("/root/projects").exists() else Path.home().resolve()
-]
+def get_allowed_sandbox_roots() -> List[Path]:
+    """Safely return default allowlisted root directories for sandbox paths without failing on import."""
+    candidates = [Path("/tmp"), Path.home(), Path("/root/projects")]
+    roots = []
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                roots.append(candidate.resolve())
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Skipping sandbox root candidate {candidate} due to permission/OS error: {e}")
+    if not roots:
+        roots.append(Path.home().resolve() if try_resolve_home() else Path("/tmp"))
+    return roots
+
+
+def try_resolve_home() -> bool:
+    try:
+        return Path.home().exists()
+    except (PermissionError, OSError):
+        return False
+
 
 class VerificationEngine:
     """Runs protected tests to objectively verify patches inside a Docker Sandbox.
@@ -35,7 +50,7 @@ class VerificationEngine:
             raise ValueError(f"Symlink sandbox path rejected: '{canonical_path}' is a symlink")
 
         # Validate owned/allowlisted root
-        roots = allowed_roots or ALLOWED_SANDBOX_ROOTS
+        roots = allowed_roots if allowed_roots is not None else get_allowed_sandbox_roots()
         is_allowlisted = False
         for root in roots:
             try:

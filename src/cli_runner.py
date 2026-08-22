@@ -85,9 +85,17 @@ def _get_gemini_dir(profile: Optional[BotProfile] = None) -> Path:
 
 def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
     """Retrieve the currently authenticated Google account email via OAuth, JWT payload, or CLI logs."""
-    base_dir = _get_gemini_dir(profile)
+    if profile:
+        base_dir = profile.state_dir
+    else:
+        base_dir = _get_gemini_dir(profile=None)
+
     token_file = base_dir / "antigravity-oauth-token"
+    settings_file = base_dir / "settings.json"
     
+    if profile and not token_file.exists() and not settings_file.exists():
+        return "Not Logged In"
+
     if token_file.exists():
         try:
             data = json.loads(token_file.read_text(encoding="utf-8"))
@@ -124,7 +132,6 @@ def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
         except Exception as e:
             logger.debug(f"Error reading antigravity-oauth-token: {e}")
 
-    settings_file = base_dir / "settings.json"
     if settings_file.exists():
         try:
             settings_data = json.loads(settings_file.read_text(encoding="utf-8"))
@@ -134,21 +141,21 @@ def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
         except Exception as e:
             logger.debug(f"Failed to read or parse settings.json for email: {e}")
 
-    # Fall back to root gemini dir if profile-specific didn't have token
-    if profile and base_dir != Path.home() / ".gemini" / "antigravity-cli":
-        return get_active_account_email(profile=None)
-
-    return ""
+    return "Not Logged In" if profile else ""
 
 
 def get_auth_state_signature(profile: Optional[BotProfile] = None) -> str:
     """Calculate a hash signature of active auth tokens and account configs."""
-    base_dir = _get_gemini_dir(profile)
-    sig_parts = []
+    if profile:
+        base_dir = profile.state_dir
+    else:
+        base_dir = _get_gemini_dir(profile=None)
 
+    sig_parts = []
     token_file = base_dir / "antigravity-oauth-token"
-    if not token_file.exists() and profile:
-        token_file = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+
+    if profile and not token_file.exists():
+        return ""
 
     if token_file.exists():
         try:
@@ -342,7 +349,8 @@ class AgySession:
             if self.profile:
                 env["AGY_PROFILE_DIR"] = str(self.profile.state_dir)
             
-            mcp_env = mcp_config.get_env_dict()
+            from src.mcp_config import MCPConfigManager
+            mcp_env = MCPConfigManager(profile=self.profile).get_env_dict()
             env.update(mcp_env)
 
             if self.profile:

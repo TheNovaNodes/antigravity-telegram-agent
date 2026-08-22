@@ -5,10 +5,23 @@ import hashlib
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from src.autonomous_loop.verification import VerificationEngine, DiagnosticEngine, ALLOWED_SANDBOX_ROOTS
+import sys
+import importlib
+
+from src.autonomous_loop.verification import VerificationEngine, DiagnosticEngine, get_allowed_sandbox_roots
 
 
 class TestVerifierSecurity(unittest.TestCase):
+    def test_import_safety_with_permission_error(self):
+        """Test that importing verification module and resolving roots safely catches PermissionError/OSError."""
+        with patch.object(Path, "exists", side_effect=PermissionError("Permission denied")):
+            roots = get_allowed_sandbox_roots()
+            self.assertIsInstance(roots, list)
+            # Ensure importing or re-importing the module raises no exceptions
+            if "src.autonomous_loop.verification" in sys.modules:
+                importlib.reload(sys.modules["src.autonomous_loop.verification"])
+            else:
+                importlib.import_module("src.autonomous_loop.verification")
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.tmp_dir.name).resolve()

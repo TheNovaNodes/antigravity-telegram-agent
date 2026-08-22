@@ -88,8 +88,8 @@ def get_menu_text(session, is_start=False) -> str:
     from src.config import AGY_BINARY_PATH
     import os
     agy_exists = os.path.exists(AGY_BINARY_PATH)
-    email = get_active_account_email()
-    health_emoji = "✅" if agy_exists and email != "Not Logged In" else "⚠️"
+    email = get_active_account_email(session.profile)
+    health_emoji = "✅" if agy_exists and email != "Not Logged In" and email != "" else "⚠️"
 
     header = "👋 <b>Welcome to Antigravity Telegram Agent!</b>\n\nI am your mobile interface to <b>Google Antigravity (agy)</b>. Send me a prompt, and I will execute it in your workspace.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
     
@@ -169,8 +169,9 @@ def get_mode_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_mcp_keyboard() -> InlineKeyboardMarkup:
-    servers = mcp_manager.config_manager.config.get("servers", {})
+def get_mcp_keyboard(profile: Optional[BotProfile] = None) -> InlineKeyboardMarkup:
+    mgr = MCPManager(MCPConfigManager(profile=profile))
+    servers = mgr.config_manager.config.get("servers", {})
     buttons = []
     
     icons = {
@@ -188,7 +189,6 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
     for key, srv in servers.items():
         state_icon = "✅" if srv.get("enabled") else "❌"
         btn_text = icons.get(key, f"🔌 {srv.get('name', key)}")
-        # Shorten text if needed to fit nicely on mobile
         if len(btn_text) > 30:
             btn_text = btn_text[:27] + "..."
         buttons.append([InlineKeyboardButton(text=f"{btn_text}: {state_icon}", callback_data=f"toggle_mcp:{key}")])
@@ -227,8 +227,11 @@ async def cmd_menu(message: Message):
 async def cmd_mcp(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    report = mcp_manager.get_status_report()
-    await message.answer(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
+    mgr = MCPManager(MCPConfigManager(profile=session.profile))
+    report = mgr.get_status_report()
+    await message.answer(report, reply_markup=get_mcp_keyboard(profile=session.profile), parse_mode="HTML")
 
 @router.message(Command("models"))
 async def cmd_models(message: Message):
@@ -250,8 +253,8 @@ async def cmd_effort(message: Message):
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
     await message.answer(
-        f"⚡ <b>Current Reasoning Effort:</b> <code>{session.effort}</code>\n\n"
-        "Select the agent's reasoning effort depth:",
+        f"⚙️ <b>Current Effort:</b> <code>{session.effort}</code>\n\n"
+        "Select reasoning effort:",
         reply_markup=get_effort_keyboard(),
         parse_mode="HTML"
     )
@@ -262,12 +265,21 @@ async def cmd_mode(message: Message):
         return
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
+    mode_desc = AVAILABLE_MODES.get(session.mode, session.mode)
     await message.answer(
-        f"🎯 <b>Current Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+        f"🎯 <b>Current Mode:</b> <code>{mode_desc}</code>\n\n"
         "Select execution mode:",
         reply_markup=get_mode_keyboard(),
         parse_mode="HTML"
     )
+
+@router.message(Command("reset"))
+async def cmd_reset(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    key = get_session_key(message, message.bot)
+    session_manager.new_session(key)
+    await message.answer("🔄 <b>Session state reset!</b> Next message will launch a fresh agy process.", parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("menu:"))
 async def process_menu_navigation(callback_query: CallbackQuery):
@@ -278,18 +290,56 @@ async def process_menu_navigation(callback_query: CallbackQuery):
     session = session_manager.get_session(key)
 
     if action == "main":
+        await callback_query.answer()
         await callback_query.message.edit_text(
             get_menu_text(session, is_start=False),
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
+    elif action == "mcp":
+        await callback_query.answer()
+        mgr = MCPManager(MCPConfigManager(profile=session.profile))
+        report = mgr.get_status_report()
+        await callback_query.message.edit_text(
+            report,
+            reply_markup=get_mcp_keyboard(profile=session.profile),
+            parse_mode="HTML"
+        )
     elif action == "models":
-        await callback_query.message.edit_text("🎯 <b>AI Model Selection:</b>", reply_markup=get_models_keyboard(), parse_mode="HTML")
+        await callback_query.answer()
+        await callback_query.message.edit_text(
+            f"🎯 <b>Current Model:</b> <code>{session.model_name}</code>\n\n"
+            "Select a model to switch:",
+            reply_markup=get_models_keyboard(),
+            parse_mode="HTML"
+        )
     elif action == "effort":
-        await callback_query.message.edit_text("⚡ <b>Reasoning Effort Selection:</b>", reply_markup=get_effort_keyboard(), parse_mode="HTML")
+        await callback_query.answer()
+        await callback_query.message.edit_text(
+            f"⚙️ <b>Current Effort:</b> <code>{session.effort}</code>\n\n"
+            "Select reasoning effort:",
+            reply_markup=get_effort_keyboard(),
+            parse_mode="HTML"
+        )
     elif action == "mode":
-        await callback_query.message.edit_text("🎯 <b>Execution Mode Selection:</b>", reply_markup=get_mode_keyboard(), parse_mode="HTML")
+        await callback_query.answer()
+        mode_desc = AVAILABLE_MODES.get(session.mode, session.mode)
+        await callback_query.message.edit_text(
+            f"🎯 <b>Current Mode:</b> <code>{mode_desc}</code>\n\n"
+            "Select execution mode:",
+            reply_markup=get_mode_keyboard(),
+            parse_mode="HTML"
+        )
+    elif action == "reset":
+        session_manager.new_session(key)
+        await callback_query.answer("Session reset!")
+        await callback_query.message.edit_text(
+            "✨ <b>Session reset complete!</b> Next message will launch a fresh conversation.",
+            reply_markup=get_main_menu_keyboard(session_manager.get_session(key)),
+            parse_mode="HTML"
+        )
     elif action == "workspace":
+        from src.workspace_utils import get_workspace_keyboard
         await callback_query.message.edit_text(
             f"📂 <b>Current Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
             "Select a project/folder to pin for the session:",
@@ -398,7 +448,7 @@ async def process_account_reload_callback(callback_query: CallbackQuery):
     key = get_session_key(callback_query, callback_query.bot)
     session = session_manager.get_session(key)
     session.close()
-    email = get_active_account_email()
+    email = get_active_account_email(session.profile)
     text = (
         f"⚡ <b>Authorization successfully reloaded!</b>\n\n"
         f"👤 <b>Active Account:</b> <code>{email}</code>\n\n"
@@ -412,12 +462,15 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     await callback_query.answer("Running MCP endpoint health checks...")
-    results = await mcp_manager.health_check_all()
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
+    mgr = MCPManager(MCPConfigManager(profile=session.profile))
+    results = await mgr.health_check_all()
 
     report_lines = [
         "🧪 <b>MCP Health Check Results</b>\n"
     ]
-    for key, info in results.items():
+    for k, info in results.items():
         status_text = info.get("status", "unknown").lower()
         if info.get("ok"):
             status_icon = "✅"
@@ -428,7 +481,7 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
         else:
             status_icon = "❌"
             
-        name = info.get("name", key)
+        name = info.get("name", k)
         status = status_text.upper()
         target = info.get("target", "N/A")
         report_lines.append(f"{status_icon} <b>{name}</b> ({status})\n   Target: <code>{target}</code>")
@@ -459,18 +512,21 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
         report += f"\n\n🌐 <b>Search Ecosystem Status</b>\n⚠️ Could not fetch deeper metrics."
     # ---------------------------------------
 
-    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(profile=session.profile), parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
 async def process_mcp_toggle_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
-    key = callback_query.data.split(":")[1]
-    new_state = mcp_manager.toggle_server(key)
+    key_name = callback_query.data.split(":")[1]
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
+    mgr = MCPManager(MCPConfigManager(profile=session.profile))
+    new_state = mgr.toggle_server(key_name)
     state_str = "enabled ✅" if new_state else "disabled ⚪"
-    await callback_query.answer(f"MCP server {key} {state_str}")
-    report = mcp_manager.get_status_report()
-    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+    await callback_query.answer(f"MCP server {key_name} {state_str}")
+    report = mgr.get_status_report()
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(profile=session.profile), parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_model:"))
 async def process_model_callback(callback_query: CallbackQuery):

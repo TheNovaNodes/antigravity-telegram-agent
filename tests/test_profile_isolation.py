@@ -287,32 +287,112 @@ class TestProfileIsolation(unittest.TestCase):
             self.assertIn("report_a.txt", call_kwargs["caption"])
             self.assertNotIn("report_b.txt", call_kwargs["caption"])
 
-    def test_migrate_legacy_shared_state(self):
-        """Test migrate_legacy_shared_state backs up legacy DB with .bak before moving to profile."""
+    def test_auth_negative_fail_closed_no_global_leak(self):
+        """Test a new profile without auth returns 'Not Logged In' and empty signature without leaking shared global credentials."""
         with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
-            prof = BotProfile("default")
-            legacy_dir = self.tmp_path / "legacy_gemini"
-            legacy_dir.mkdir(parents=True, exist_ok=True)
-            legacy_db = legacy_dir / "conversation_summaries.db"
-            legacy_db.write_text("legacy db content")
+            prof = BotProfile("empty_profile")
+
+            # Put global credentials in user home ~/.gemini/antigravity-cli/
+            global_gemini = self.tmp_path / ".gemini" / "antigravity-cli"
+            global_gemini.mkdir(parents=True, exist_ok=True)
+            (global_gemini / "antigravity-oauth-token").write_text('{"token":{"access_token":"global_secret_token"}}')
+            (global_gemini / "settings.json").write_text('{"email": "global_user@example.com"}')
 
             with patch("pathlib.Path.home", return_value=self.tmp_path):
-                # recreate legacy location under fake home
-                fake_legacy = self.tmp_path / ".gemini" / "antigravity-cli"
-                fake_legacy.mkdir(parents=True, exist_ok=True)
-                fake_db = fake_legacy / "conversation_summaries.db"
-                fake_db.write_text("legacy db content")
+                # Request email & signature for profile without local auth
+                email = get_active_account_email(profile=prof)
+                sig = get_auth_state_signature(profile=prof)
 
-                migrate_legacy_shared_state(prof)
+                self.assertEqual(email, "Not Logged In")
+                self.assertEqual(sig, "")
 
-                backup_db = fake_legacy / "conversation_summaries.db.bak"
-                target_db = prof.state_dir / "conversation_summaries.db"
+    def test_backup_first_migration_protocol(self):
+        """Test backup-first migration protocol creates timestamped backups before moving shared state items."""
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof = BotProfile("migrated_bot")
+            legacy_dir = self.tmp_path / "legacy_gemini"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
 
-                self.assertTrue(backup_db.exists())
-                self.assertTrue(target_db.exists())
-                self.assertFalse(fake_db.exists())
-                self.assertEqual(target_db.read_text(), "legacy db content")
-                self.assertEqual(backup_db.read_text(), "legacy db content")
+            (legacy_dir / "conversation_summaries.db").write_text("legacy_summaries")
+            (legacy_dir / "user_sessions.db").write_text("legacy_sessions")
+            (legacy_dir / "mcp_config.json").write_text('{"legacy": true}')
+            (legacy_dir / "antigravity-oauth-token").write_text("legacy_token")
+            (legacy_dir / "settings.json").write_text("legacy_settings")
+            (legacy_dir / "brain").mkdir()
+            (legacy_dir / "brain" / "data.txt").write_text("brain_content")
+            (legacy_dir / "artifacts").mkdir()
+            (legacy_dir / "artifacts" / "art.txt").write_text("artifact_content")
+
+            status = migrate_legacy_shared_state(target_profile=prof, legacy_dir=legacy_dir)
+
+            self.assertIn("conversation_summaries.db", status["migrated"])
+            self.assertIn("brain", status["migrated"])
+            self.assertEqual(len(status["backed_up"]), 7)
+
+            # Check that files exist in profile.state_dir
+            self.assertTrue((prof.state_dir / "conversation_summaries.db").exists())
+            self.assertTrue((prof.state_dir / "user_sessions.db").exists())
+            self.assertTrue((prof.state_dir / "mcp_config.json").exists())
+            self.assertTrue((prof.state_dir / "brain" / "data.txt").exists())
+            self.assertTrue((prof.state_dir / "artifacts" / "art.txt").exists())
+
+            # Check backup copies created in legacy_dir
+            backups = list(legacy_dir.glob("*.bak_*"))
+            self.assertEqual(len(backups), 7)
+
+    def test_multi_profile_same_chat_id_disjoint_environments(self):
+        """Test multi-profile integration verifying two bots with the same chat_id maintain disjoint auth, MCP, PTY, and history."""
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof_a = BotProfile("profile_bot_a", bot_id=801)
+            prof_b = BotProfile("profile_bot_b", bot_id=802)
+
+            same_chat_id = 99999
+
+            # Profile A has valid auth, Profile B does NOT
+            (prof_a.state_dir / "settings.json").write_text('{"email": "bot_a@example.com"}')
+
+            # a) Missing auth in Profile B returns 'Not Logged In' and does not read Profile A
+            email_a = get_active_account_email(profile=prof_a)
+            email_b = get_active_account_email(profile=prof_b)
+            self.assertEqual(email_a, "bot_a@example.com")
+            self.assertEqual(email_b, "Not Logged In")
+
+            # b) MCP toggle in Profile A does NOT alter Profile B config or PTY env
+            mcp_a = MCPConfigManager(profile=prof_a)
+            mcp_b = MCPConfigManager(profile=prof_b)
+
+            mcp_a.toggle_server("searxng")
+            env_a = mcp_a.get_env_dict()
+            env_b = mcp_b.get_env_dict()
+
+            self.assertTrue((prof_a.state_dir / "mcp_config.json").exists())
+            self.assertFalse((prof_b.state_dir / "mcp_config.json").exists())
+
+            # c) Sessions with same chat_id under prof_a vs prof_b spawn disjoint state & PTY env
+            session_a = AgySession(chat_id=same_chat_id, profile=prof_a)
+            session_b = AgySession(chat_id=same_chat_id, profile=prof_b)
+
+            self.assertEqual(session_a.profile.name, "profile_bot_a")
+            self.assertEqual(session_b.profile.name, "profile_bot_b")
+            self.assertNotEqual(session_a.profile.state_dir, session_b.profile.state_dir)
+
+            with patch("pexpect.spawn") as mock_spawn:
+                mock_child = MagicMock()
+                mock_child.isalive.return_value = True
+                mock_child.exitstatus = 0
+                mock_spawn.return_value = mock_child
+
+                asyncio.run(session_a._ensure_started())
+                env_pty_a = mock_spawn.call_args[1].get("env", {})
+                session_a.close()
+
+                asyncio.run(session_b._ensure_started())
+                env_pty_b = mock_spawn.call_args[1].get("env", {})
+                session_b.close()
+
+                self.assertEqual(env_pty_a["AGY_PROFILE_DIR"], str(prof_a.state_dir))
+                self.assertEqual(env_pty_b["AGY_PROFILE_DIR"], str(prof_b.state_dir))
+                self.assertNotEqual(env_pty_a["AGY_PROFILE_DIR"], env_pty_b["AGY_PROFILE_DIR"])
 
 
 if __name__ == "__main__":

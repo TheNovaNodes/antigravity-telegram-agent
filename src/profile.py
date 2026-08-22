@@ -89,25 +89,95 @@ class BotProfile:
             path.chmod(0o600)
 
 
-def migrate_legacy_shared_state(target_profile: Optional[BotProfile] = None) -> None:
-    """Migrates legacy shared state (e.g. conversation_summaries.db) into profile state directory.
-    Backs up legacy DB with .bak before moving to target profile state dir.
+def migrate_legacy_shared_state(
+    target_profile: Optional[BotProfile] = None,
+    legacy_dir: Optional[Path] = None
+) -> dict:
+    """Migrates legacy shared state files/dirs into target profile state directory.
+    Creates a timestamped backup copy (.bak_<timestamp>) BEFORE copying/moving files to profile.state_dir.
+    Returns a transactional status dict.
     """
+    import datetime
     if target_profile is None:
         target_profile = BotProfile("default")
 
-    legacy_dir = Path.home() / ".gemini" / "antigravity-cli"
-    legacy_db = legacy_dir / "conversation_summaries.db"
-    target_db = target_profile.state_dir / "conversation_summaries.db"
+    if legacy_dir is None:
+        legacy_dir = Path.home() / ".gemini" / "antigravity-cli"
 
-    if legacy_db.exists() and not target_db.exists():
-        logger.info(f"Migrating legacy DB '{legacy_db}' to profile '{target_profile.name}' at '{target_db}'")
-        backup_db = legacy_dir / "conversation_summaries.db.bak"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    items_to_migrate = [
+        "conversation_summaries.db",
+        "user_sessions.db",
+        "mcp_config.json",
+        "antigravity-oauth-token",
+        "settings.json",
+        "brain",
+        "artifacts",
+    ]
+
+    status = {
+        "timestamp": timestamp,
+        "target_profile": target_profile.name,
+        "migrated": [],
+        "backed_up": [],
+        "skipped": [],
+        "errors": []
+    }
+
+    if not legacy_dir.exists():
+        logger.debug(f"Legacy directory '{legacy_dir}' does not exist. Skipping migration.")
+        return status
+
+    for item_name in items_to_migrate:
+        legacy_item = legacy_dir / item_name
+        target_item = target_profile.state_dir / item_name
+
+        if not legacy_item.exists():
+            status["skipped"].append(item_name)
+            continue
+
+        if target_item.exists():
+            status["skipped"].append(f"{item_name} (target already exists)")
+            continue
+
+        backup_item = legacy_dir / f"{item_name}.bak_{timestamp}"
+
         try:
-            shutil.copy2(legacy_db, backup_db)
-            os.chmod(backup_db, 0o600)
-            shutil.move(legacy_db, target_db)
-            target_profile.enforce_file_permissions(target_db)
-            logger.info("Legacy DB migration completed successfully.")
+            # Step 1: Create backup copy
+            if legacy_item.is_dir():
+                shutil.copytree(legacy_item, backup_item, symlinks=True)
+            else:
+                shutil.copy2(legacy_item, backup_item)
+
+            if backup_item.exists():
+                try:
+                    if backup_item.is_file():
+                        os.chmod(backup_item, 0o600)
+                    elif backup_item.is_dir():
+                        os.chmod(backup_item, 0o700)
+                except Exception:
+                    pass
+                status["backed_up"].append(str(backup_item.name))
+
+            # Step 2: Copy to profile state dir (or move if legacy item)
+            if legacy_item.is_dir():
+                shutil.copytree(legacy_item, target_item, symlinks=True)
+            else:
+                shutil.copy2(legacy_item, target_item)
+
+            if target_item.exists():
+                try:
+                    if target_item.is_file():
+                        target_profile.enforce_file_permissions(target_item)
+                    elif target_item.is_dir():
+                        os.chmod(target_item, 0o700)
+                except Exception as perm_err:
+                    logger.debug(f"Permission setting error for {target_item}: {perm_err}")
+
+                status["migrated"].append(item_name)
+                logger.info(f"Successfully migrated '{item_name}' to profile '{target_profile.name}'")
         except Exception as e:
-            logger.error(f"Error during legacy shared state migration: {e}")
+            logger.error(f"Error migrating legacy state item '{item_name}': {e}")
+            status["errors"].append({"item": item_name, "error": str(e)})
+
+    return status

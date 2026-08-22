@@ -76,7 +76,6 @@ def get_profile_for_bot(bot_id: int) -> BotProfile:
                 primary_id = int(BOT_TOKENS[0].split(":")[0])
             except (ValueError, IndexError):
                 pass
-        
         if primary_id and bot_id == primary_id:
             matched_prof_name = "default"
         else:
@@ -85,4 +84,3 @@ def get_profile_for_bot(bot_id: int) -> BotProfile:
     profile = BotProfile(name=matched_prof_name, bot_id=bot_id)
     BOT_ID_PROFILE_MAP[bot_id] = profile
     return profile
-
