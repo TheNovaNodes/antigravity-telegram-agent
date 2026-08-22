@@ -466,5 +466,44 @@ class TestProfileIsolation(unittest.TestCase):
                     self.assertNotIn("escaped_art.txt", str(file_path))
 
 
+    def test_migration_error_handling(self):
+        """Test migration failure behavior: status FAILED, migration_status.json recorded, .migration_complete NOT created."""
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof = BotProfile("error_migrated_bot")
+            legacy_dir = self.tmp_path / "legacy_error"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            (legacy_dir / "settings.json").write_text("legacy_settings")
+
+            with patch("shutil.copy2", side_effect=OSError("Disk write error")):
+                status = migrate_legacy_shared_state(target_profile=prof, legacy_dir=legacy_dir)
+
+            self.assertEqual(status["status"], "FAILED")
+            self.assertEqual(len(status["errors"]), 1)
+            self.assertFalse((prof.cli_state_dir / ".migration_complete").exists())
+            status_json_path = prof.cli_state_dir / "migration_status.json"
+            self.assertTrue(status_json_path.exists())
+            import json
+            logged_status = json.loads(status_json_path.read_text())
+            self.assertEqual(logged_status["status"], "FAILED")
+
+    def test_migration_success_journal_and_marker(self):
+        """Test migration success behavior: status SUCCESS, migration_status.json and .migration_complete created atomically."""
+        with patch("src.profile.PROFILES_ROOT", self.tmp_path / "profiles"):
+            prof = BotProfile("success_migrated_bot")
+            legacy_dir = self.tmp_path / "legacy_success"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            (legacy_dir / "settings.json").write_text("legacy_settings")
+
+            status = migrate_legacy_shared_state(target_profile=prof, legacy_dir=legacy_dir)
+
+            self.assertEqual(status["status"], "SUCCESS")
+            self.assertTrue((prof.cli_state_dir / ".migration_complete").exists())
+            status_json_path = prof.cli_state_dir / "migration_status.json"
+            self.assertTrue(status_json_path.exists())
+            import json
+            logged_status = json.loads(status_json_path.read_text())
+            self.assertEqual(logged_status["status"], "SUCCESS")
+
+
 if __name__ == "__main__":
     unittest.main()

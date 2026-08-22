@@ -113,6 +113,9 @@ def migrate_legacy_shared_state(
     Returns a transactional status dict.
     """
     import datetime
+    import json
+    import tempfile
+
     if target_profile is None:
         target_profile = BotProfile("default")
 
@@ -135,12 +138,22 @@ def migrate_legacy_shared_state(
         "target_profile": target_profile.name,
         "migrated": [],
         "backed_up": [],
-        "skipped": [],
+        "skipped": {
+            "missing_source": [],
+            "idempotent_existing": []
+        },
         "errors": []
     }
 
     if not legacy_dir.exists():
         logger.debug(f"Legacy directory '{legacy_dir}' does not exist. Skipping migration.")
+        status["status"] = "SUCCESS"
+        status_path = target_profile.cli_state_dir / "migration_status.json"
+        try:
+            status_path.write_text(json.dumps(status, indent=2))
+            os.chmod(status_path, 0o600)
+        except Exception as e:
+            logger.error(f"Failed to write migration status log: {e}")
         return status
 
     for item_name in items_to_migrate:
@@ -148,7 +161,7 @@ def migrate_legacy_shared_state(
         target_item = target_profile.cli_state_dir / item_name
 
         if not legacy_item.exists():
-            status["skipped"].append(item_name)
+            status["skipped"]["missing_source"].append(item_name)
             continue
 
         if target_item.exists():
@@ -156,7 +169,7 @@ def migrate_legacy_shared_state(
                 # Empty directory created during BotProfile init, allow copying into it
                 pass
             else:
-                status["skipped"].append(f"{item_name} (target already exists)")
+                status["skipped"]["idempotent_existing"].append(item_name)
                 continue
 
         backup_item = legacy_dir / f"{item_name}.bak_{timestamp}"
@@ -199,7 +212,7 @@ def migrate_legacy_shared_state(
             logger.error(f"Error migrating legacy state item '{item_name}': {e}")
             status["errors"].append({"item": item_name, "error": str(e)})
 
-    # Post-migration: recursively enforce permissions on target_profile.state_dir and set marker inside cli_state_dir
+    # Post-migration: recursively enforce permissions on target_profile.state_dir
     if target_profile.state_dir.exists():
         for root, dirs, files in os.walk(target_profile.state_dir):
             for d in dirs:
@@ -212,11 +225,31 @@ def migrate_legacy_shared_state(
                     os.chmod(os.path.join(root, f), 0o600)
                 except Exception as perm_err:
                     logger.debug(f"Permission setting error for file {f}: {perm_err}")
+
+    # Set overall migration status
+    if len(status["errors"]) == 0:
+        status["status"] = "SUCCESS"
+    else:
+        status["status"] = "FAILED"
+
+    # Journal migration status log to migration_status.json
+    status_path = target_profile.cli_state_dir / "migration_status.json"
+    try:
+        status_path.write_text(json.dumps(status, indent=2))
+        os.chmod(status_path, 0o600)
+    except Exception as e:
+        logger.error(f"Failed to write migration status log: {e}")
+
+    # Write .migration_complete marker file ONLY IF zero errors and status is SUCCESS
+    if len(status["errors"]) == 0 and status["status"] == "SUCCESS":
         try:
             marker = target_profile.cli_state_dir / ".migration_complete"
-            marker.write_text(f"migrated_at={timestamp}\n")
-            os.chmod(marker, 0o600)
+            fd, tmp_marker_path = tempfile.mkstemp(dir=str(target_profile.cli_state_dir), prefix=".tmp_marker_")
+            with os.fdopen(fd, 'w') as f:
+                f.write(f"migrated_at={timestamp}\n")
+            os.chmod(tmp_marker_path, 0o600)
+            os.replace(tmp_marker_path, marker)
         except Exception as marker_err:
-            logger.error(f"Failed to write migration marker: {marker_err}")
+            logger.error(f"Failed to atomically write migration marker: {marker_err}")
 
     return status
