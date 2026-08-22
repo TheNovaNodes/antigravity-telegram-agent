@@ -74,21 +74,91 @@ class BotProfile:
         except Exception:
             pass
 
-        # Create brain and artifacts directories inside cli_state_dir
-        for sub_dir in [self.cli_state_dir / "brain", self.cli_state_dir / "artifacts"]:
+        # Create brain, artifacts, and cache directories inside cli_state_dir
+        for sub_dir in [self.cli_state_dir / "brain", self.cli_state_dir / "artifacts", self.cli_state_dir / "cache"]:
             sub_dir.mkdir(parents=True, exist_ok=True)
             try:
                 sub_dir.chmod(0o700)
             except Exception:
                 pass
 
-        # Maintain legacy brain symlink/dir at state_dir level if needed for backward compatibility
+        # Bypass the interactive agy onboarding tutorial for bot profiles.
+        # agy checks ~/.gemini/antigravity-cli/cache/onboarding.json to decide
+        # whether to show the color scheme + TOS interactive wizard.
+        # Without this file, agy hangs waiting for user input on the tutorial screen.
+        onboarding_file = self.cli_state_dir / "cache" / "onboarding.json"
+        if not onboarding_file.exists():
+            import json
+            onboarding_file.write_text(json.dumps({
+                "consumerOnboardingComplete": True,
+                "enterpriseOnboardingComplete": False,
+                "onboardingComplete": True
+            }, indent=2))
+            try:
+                onboarding_file.chmod(0o600)
+            except Exception:
+                pass
+
+        # Create XDG config symlink so agy resolves ~/.config/agy -> cli_state_dir
+        config_dir = self.state_dir / ".config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        agy_link = config_dir / "agy"
+        if not agy_link.exists():
+            try:
+                agy_link.symlink_to(self.cli_state_dir)
+            except Exception:
+                pass
+
+        # Lightweight auth bootstrap: copy ONLY small auth files from global agy
+        # into the profile so bots inherit the login session. NO backups, NO
+        # copying huge directories (brain, conversations, implicit — those belong
+        # to the global agy instance and are NOT bot-specific).
+        self._bootstrap_auth_files()
+
+        # Maintain legacy brain symlink/dir at state_dir level for backward compatibility
         legacy_brain = self.state_dir / "brain"
         if not legacy_brain.exists():
             try:
                 legacy_brain.symlink_to(self.cli_state_dir / "brain")
             except Exception:
                 legacy_brain.mkdir(parents=True, exist_ok=True)
+
+    def _bootstrap_auth_files(self) -> None:
+        """Copy essential small auth/config files from global agy into this profile.
+
+        Only copies files that don't already exist in the profile. Never creates
+        backups. Never copies large directories (brain, conversations, etc.).
+        This is idempotent and disk-safe.
+        """
+        # Derive global agy dir from PROFILES_ROOT so test mocks are respected
+        global_agy_dir = PROFILES_ROOT.parent
+
+        # Don't copy from ourselves
+        try:
+            if global_agy_dir.resolve() == self.cli_state_dir.resolve():
+                return
+        except Exception:
+            return
+
+        if not global_agy_dir.exists():
+            return
+
+        # Only small, critical auth/config files — NO large dirs
+        auth_files = [
+            "antigravity-oauth-token",
+            "settings.json",
+            "installation_id",
+        ]
+
+        for fname in auth_files:
+            src = global_agy_dir / fname
+            dst = self.cli_state_dir / fname
+            if src.exists() and src.is_file() and not dst.exists():
+                try:
+                    shutil.copy2(src, dst)
+                    dst.chmod(0o600)
+                except Exception as e:
+                    logger.debug(f"Could not bootstrap {fname} to profile {self.name}: {e}")
 
     def enforce_file_permissions(self, file_path: Union[str, Path]) -> None:
         """Enforce restrictive permissions (0600) for profile state files."""
@@ -111,6 +181,10 @@ def migrate_legacy_shared_state(
     """Migrates legacy shared state files/dirs into target profile's cli_state_dir.
     Creates a timestamped backup copy (.bak_<timestamp>) BEFORE copying/moving files.
     Returns a transactional status dict.
+
+    NOTE: This function is intended for EXPLICIT one-time migration calls only.
+    It is NOT called automatically from BotProfile.__init__() to prevent
+    runaway disk consumption from repeated backup creation.
     """
     import datetime
     import json
@@ -129,6 +203,12 @@ def migrate_legacy_shared_state(
         "mcp_config.json",
         "antigravity-oauth-token",
         "settings.json",
+        "installation_id",
+        "history.jsonl",
+        "implicit",
+        "knowledge",
+        "jetski_state.pbtxt",
+        "conversations",
         "brain",
         "artifacts",
     ]
@@ -148,6 +228,13 @@ def migrate_legacy_shared_state(
     if not legacy_dir.exists():
         logger.debug(f"Legacy directory '{legacy_dir}' does not exist. Skipping migration.")
         status["status"] = "SUCCESS"
+        # Write marker so we don't re-check
+        try:
+            marker = target_profile.cli_state_dir / ".migration_complete"
+            marker.write_text(f"migrated_at={timestamp}\nstatus=SKIPPED_NO_LEGACY\n")
+            marker.chmod(0o600)
+        except Exception:
+            pass
         status_path = target_profile.cli_state_dir / "migration_status.json"
         try:
             status_path.write_text(json.dumps(status, indent=2))

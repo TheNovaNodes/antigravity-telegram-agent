@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import signal
+import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import pexpect
