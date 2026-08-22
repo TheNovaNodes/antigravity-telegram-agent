@@ -54,6 +54,8 @@ AVAILABLE_EFFORTS = ["low", "medium", "high"]
 AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-edits": "Auto-Edits Mode"}
 
 
+from src.profile import BotProfile, PROFILES_ROOT
+
 def _get_gemini_dir() -> Path:
     """Find the active .gemini/antigravity-cli directory across possible HOME paths."""
     homes_to_check = [Path.home()]
@@ -162,10 +164,12 @@ class AgySession:
         mode: str = "default",
         conversation_id: Optional[str] = None,
         workspace: Optional[str] = None,
-        session_key: Optional[any] = None
+        session_key: Optional[any] = None,
+        profile: Optional[BotProfile] = None
     ):
         self.chat_id = chat_id
         self.session_key = session_key or chat_id
+        self.profile: Optional[BotProfile] = profile
         self.child = None
         self.model_name = model_name
         self.effort = effort
@@ -251,7 +255,7 @@ class AgySession:
         if self.conversation_id == "latest":
             try:
                 from src.conversations import get_latest_conversation_id
-                resolved = get_latest_conversation_id()
+                resolved = get_latest_conversation_id(profile=self.profile)
                 if resolved:
                     logger.info(f"Resolved 'latest' conversation_id to {resolved} for session {self.session_key}")
                     self.conversation_id = resolved
@@ -261,7 +265,11 @@ class AgySession:
                 logger.warning(f"Failed to resolve 'latest' conversation_id for session {self.session_key}: {e}")
 
         # Strategy 2: Delta-detection for brand new sessions (conversation_id=None)
-        brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+        if self.profile:
+            brain_base = self.profile.state_dir / "brain"
+        else:
+            brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+
         if not brain_base.exists():
             return
 
@@ -307,7 +315,7 @@ class AgySession:
                 else:
                     args.extend(["--conversation", self.conversation_id])
 
-            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace}")
+            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace} profile={self.profile.name if self.profile else 'default'}")
             
             # Security: Do not inherit full os.environ to prevent token leaks
             env = {
@@ -321,11 +329,18 @@ class AgySession:
                 "DO_NOT_TRACK": "1",
                 "CI": "1"
             }
+
+            if self.profile:
+                env["AGY_PROFILE_DIR"] = str(self.profile.state_dir)
             
             mcp_env = mcp_config.get_env_dict()
             env.update(mcp_env)
 
-            brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+            if self.profile:
+                brain_base = self.profile.state_dir / "brain"
+            else:
+                brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+
             if brain_base.exists():
                 self._spawn_brain_dirs = set(d.name for d in brain_base.iterdir() if d.is_dir())
             else:

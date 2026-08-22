@@ -3,21 +3,35 @@ import logging
 from contextlib import closing
 from pathlib import Path
 from typing import List, Dict, Optional
+from src.profile import BotProfile
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path.home() / ".gemini" / "antigravity-cli" / "conversation_summaries.db"
+DEFAULT_DB_PATH = Path.home() / ".gemini" / "antigravity-cli" / "conversation_summaries.db"
 
 
-def get_available_conversations(limit: int = 8) -> List[Dict[str, str]]:
+def _resolve_db_path(profile: Optional[BotProfile] = None) -> Path:
+    """Resolve database path for profile, falling back to default if profile is None or name is default."""
+    if profile and profile.name and profile.name != "default":
+        prof_db = profile.state_dir / "conversation_summaries.db"
+        if prof_db.exists():
+            return prof_db
+        # Return profile db path if state_dir exists so queries execute against profile db
+        return prof_db
+    return DEFAULT_DB_PATH
+
+
+def get_available_conversations(limit: int = 8, profile: Optional[BotProfile] = None) -> List[Dict[str, str]]:
     """Retrieve recent active agy conversations with summary, step count, and date."""
     conversations = []
-    if not DB_PATH.exists():
-        logger.warning(f"Conversation summaries DB not found at {DB_PATH}")
+    db_path = _resolve_db_path(profile)
+
+    if not db_path.exists():
+        logger.warning(f"Conversation summaries DB not found at {db_path}")
         return conversations
 
     try:
-        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT conversation_id, preview, title, step_count, last_modified_time
@@ -55,13 +69,14 @@ def get_available_conversations(limit: int = 8) -> List[Dict[str, str]]:
 
     return conversations
 
-def rename_conversation(conversation_id: str, new_title: str) -> bool:
+def rename_conversation(conversation_id: str, new_title: str, profile: Optional[BotProfile] = None) -> bool:
     """Manually rename a conversation title in the agy CLI SQLite database."""
-    if not DB_PATH.exists() or not conversation_id:
+    db_path = _resolve_db_path(profile)
+    if not db_path.exists() or not conversation_id:
         return False
     
     try:
-        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             conn.execute(
                 "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
                 (new_title, conversation_id)
@@ -72,12 +87,13 @@ def rename_conversation(conversation_id: str, new_title: str) -> bool:
         logger.error(f"Failed to rename conversation {conversation_id}: {e}", exc_info=True)
         return False
 
-def get_latest_conversation_id() -> Optional[str]:
+def get_latest_conversation_id(profile: Optional[BotProfile] = None) -> Optional[str]:
     """Retrieve the most recent conversation_id from conversation_summaries.db."""
-    if not DB_PATH.exists():
+    db_path = _resolve_db_path(profile)
+    if not db_path.exists():
         return None
     try:
-        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             row = conn.execute(
                 "SELECT conversation_id FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 1"
             ).fetchone()
@@ -87,12 +103,13 @@ def get_latest_conversation_id() -> Optional[str]:
         logger.error(f"Failed to fetch latest conversation ID: {e}", exc_info=True)
     return None
 
-def get_conversation_title(conversation_id: str) -> Optional[str]:
+def get_conversation_title(conversation_id: str, profile: Optional[BotProfile] = None) -> Optional[str]:
     """Retrieve the summary or title of a specific conversation by its ID."""
-    if not conversation_id or not DB_PATH.exists():
+    db_path = _resolve_db_path(profile)
+    if not conversation_id or not db_path.exists():
         return None
     try:
-        with closing(sqlite3.connect(str(DB_PATH), timeout=5.0)) as conn, conn:
+        with closing(sqlite3.connect(str(db_path), timeout=5.0)) as conn, conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT preview, title FROM conversation_summaries WHERE conversation_id = ?",

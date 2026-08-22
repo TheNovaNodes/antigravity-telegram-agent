@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from typing import Optional
 from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -81,7 +82,7 @@ def get_menu_text(session, is_start=False) -> str:
         if session.conversation_id == "latest":
             active_session_title = "Latest Active Session (--continue)"
         else:
-            title = get_conversation_title(session.conversation_id)
+            title = get_conversation_title(session.conversation_id, profile=session.profile)
             active_session_title = f"{title} ({session.conversation_id[:8]})" if title else f"ID: {session.conversation_id[:8]}"
 
     from src.config import AGY_BINARY_PATH
@@ -128,9 +129,11 @@ def get_models_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMarkup:
+from src.profile import BotProfile
+
+def get_resume_keyboard(current_conversation_id: str = None, profile: Optional[BotProfile] = None) -> InlineKeyboardMarkup:
     """Build resume keyboard with current session indicator and new session button."""
-    conversations = get_available_conversations(limit=15)
+    conversations = get_available_conversations(limit=15, profile=profile)
     buttons = [
         [InlineKeyboardButton(text="🆕 New Session (Clean Chat)", callback_data="resume_set:new")],
         [InlineKeyboardButton(text="🔄 Resume Latest Session (--continue)", callback_data="resume_set:latest")]
@@ -301,7 +304,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         session_manager.new_session(key)
         await callback_query.message.edit_text("🔄 <b>Session Reset!</b> Next prompt will start a new conversation context in the background process.", parse_mode="HTML")
     elif action == "resume":
-        kb = get_resume_keyboard(session.conversation_id)
+        kb = get_resume_keyboard(session.conversation_id, profile=session.profile)
         await callback_query.message.edit_text("💬 <b>Select a conversation to resume:</b>", reply_markup=kb, parse_mode="HTML")
     elif action == "jules":
         from src.jules_monitor import ACTIVE_JULES_SESSIONS
@@ -554,7 +557,7 @@ async def cmd_rename(message: Message):
     
     # Needs import: from src.conversations import rename_conversation
     from src.conversations import rename_conversation
-    success = rename_conversation(session.conversation_id, new_title)
+    success = rename_conversation(session.conversation_id, new_title, profile=session.profile)
     
     if success:
         await message.answer(f"✅ <b>Session renamed!</b>\nNew name: <i>{new_title}</i>", parse_mode="HTML")
@@ -946,7 +949,7 @@ async def cmd_resume(message: Message):
         return
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
-    kb = get_resume_keyboard(current_conversation_id=session.conversation_id)
+    kb = get_resume_keyboard(current_conversation_id=session.conversation_id, profile=session.profile)
     current_info = ""
     if session.conversation_id:
         if session.conversation_id == "latest":
@@ -977,7 +980,7 @@ async def process_resume_callback(callback_query: CallbackQuery):
         text = "🔄 <b>Resumed latest active agy CLI session (<code>--continue</code>)!</b>"
     else:
         session.set_conversation(conv_id)
-        title = get_conversation_title(conv_id)
+        title = get_conversation_title(conv_id, profile=session.profile)
         title_display = f"\n📝 <b>Name:</b> <i>{title}</i>" if title else ""
         text = f"✅ <b>Session resumed!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nThe next request will continue in the context of the selected chat."
 
