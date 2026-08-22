@@ -16,6 +16,21 @@ DB_PATH = Path(os.environ.get("AG_TEST_DB_PATH", DATA_DIR / "antigravity-telegra
 _conn = None
 _db_lock = threading.Lock()
 
+def _enforce_db_permissions():
+    """Ensure database file and WAL journal files have strict 0600 permissions."""
+    if DB_PATH.exists():
+        try:
+            os.chmod(DB_PATH, 0o600)
+        except Exception:
+            pass
+    for suffix in ("-wal", "-shm"):
+        p = Path(str(DB_PATH) + suffix)
+        if p.exists():
+            try:
+                os.chmod(p, 0o600)
+            except Exception:
+                pass
+
 def _get_connection() -> sqlite3.Connection:
     """Create data directory and open a shared SQLite connection with WAL mode."""
     global _conn
@@ -25,7 +40,9 @@ def _get_connection() -> sqlite3.Connection:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.row_factory = sqlite3.Row
+        _enforce_db_permissions()
     return _conn
+
 
 def reset_db_connection():
     """Reset global DB connection (useful for tests changing DB_PATH)."""
@@ -95,6 +112,7 @@ def init_db(default_bot_id: int = 0):
                 conn.execute("DROP TABLE user_sessions_legacy;")
 
         conn.commit()
+        _enforce_db_permissions()
     logger.info("SQLite database initialized for multi-bot session persistence.")
 
 

@@ -16,3 +16,8 @@ raw_output.txt
 data.db
 *.log
 mcp_config.json
+first_slice_demo.py
+translate.py
+translate_all.py
+test_bot.py
+scratch/

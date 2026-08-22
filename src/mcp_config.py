@@ -120,10 +120,13 @@ class MCPConfigManager:
         return DEFAULT_MCP_CONFIG.copy()
 
     def save_config(self) -> bool:
-        """Persist current configuration to JSON file."""
+        """Persist current configuration to JSON file with strict 0600 permissions."""
         try:
+            if self.config_path.parent:
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
+            os.chmod(self.config_path, 0o600)
             return True
         except Exception as exc:
                 import logging
@@ -224,4 +227,3 @@ class MCPConfigManager:
 
 
 mcp_config = MCPConfigManager()
-mcp_config.save_config()
