@@ -17,6 +17,14 @@ class BotProfile:
     """Represents an isolated bot profile with dedicated state directory and configurations."""
 
     def __init__(self, name: str, bot_id: Optional[int] = None, role_name: Optional[str] = None):
+        # Strict path traversal protection on raw name input before sanitizing
+        allowed_root = PROFILES_ROOT.resolve()
+        raw_target_dir = (allowed_root / name).resolve()
+        try:
+            raw_target_dir.relative_to(allowed_root)
+        except ValueError:
+            raise ValueError(f"Path traversal detected for profile name '{name}': '{raw_target_dir}' escapes allowed root '{allowed_root}'")
+
         sanitized_name = sanitize_profile_name(name)
         if not sanitized_name:
             sanitized_name = "default"
@@ -24,11 +32,7 @@ class BotProfile:
         self.bot_id: Optional[int] = bot_id
         self.role_name: str = role_name or self.name
 
-        # Resolve state directory under allowed root
-        allowed_root = PROFILES_ROOT.resolve()
         target_dir = (allowed_root / self.name).resolve()
-
-        # Strict path traversal protection
         try:
             target_dir.relative_to(allowed_root)
         except ValueError:
