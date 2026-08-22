@@ -235,5 +235,3 @@ class MCPConfigManager:
                 env_dict["SEARXNG_URL"] = s["url"]
         return env_dict
 
-
-mcp_config = MCPConfigManager()

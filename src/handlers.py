@@ -1223,7 +1223,7 @@ async def check_and_send_artifacts(message: Message, session):
 
     # Recursively find artifact files modified in the last 120 seconds
     artifacts_to_send = []
-    canonical_state_dir = profile.state_dir.resolve() if profile else Path.home().resolve() / ".gemini" / "antigravity-cli"
+    canonical_state_dir = profile.cli_state_dir.resolve() if profile else (Path.home() / ".gemini" / "antigravity-cli").resolve()
 
     for brain_dir in scan_dirs:
         try:
