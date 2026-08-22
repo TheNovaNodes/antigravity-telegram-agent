@@ -82,8 +82,20 @@ class BotProfile:
             except Exception:
                 pass
 
+        # Create XDG config symlink so agy does not think this is a fresh install and trigger the TOS/color scheme tutorial
+        config_dir = self.state_dir / ".config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        agy_link = config_dir / "agy"
+        if not agy_link.exists():
+            try:
+                agy_link.symlink_to(self.cli_state_dir)
+            except Exception:
+                pass
+
         # Maintain legacy brain symlink/dir at state_dir level if needed for backward compatibility
         legacy_brain = self.state_dir / "brain"
+        if not (self.cli_state_dir / ".migration_complete").exists():
+            migrate_legacy_shared_state(self)
         if not legacy_brain.exists():
             try:
                 legacy_brain.symlink_to(self.cli_state_dir / "brain")
@@ -129,6 +141,12 @@ def migrate_legacy_shared_state(
         "mcp_config.json",
         "antigravity-oauth-token",
         "settings.json",
+        "installation_id",
+        "history.jsonl",
+        "implicit",
+        "knowledge",
+        "jetski_state.pbtxt",
+        "conversations",
         "brain",
         "artifacts",
     ]
