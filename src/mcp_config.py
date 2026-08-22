@@ -6,8 +6,10 @@ Supports dual-plane separation: Control Plane (Management) vs Data Plane (Operat
 
 import json
 import os
+import copy
 from pathlib import Path
 from typing import Dict, Any, Optional
+from src.profile import BotProfile
 
 DEFAULT_MCP_CONFIG_PATH = Path("mcp_config.json")
 
@@ -89,11 +91,21 @@ DEFAULT_MCP_CONFIG = {
 }
 
 
+def resolve_mcp_config_path(profile: Optional[BotProfile] = None, config_path: Optional[Path] = None) -> Path:
+    """Resolves profile-scoped mcp_config.json path if profile is provided."""
+    if config_path is not None:
+        return config_path
+    if profile:
+        return profile.cli_state_dir / "mcp_config.json"
+    return DEFAULT_MCP_CONFIG_PATH
+
+
 class MCPConfigManager:
     """Manages reading, writing, and formatting MCP server configs for Control/Data Planes."""
 
-    def __init__(self, config_path: Path = DEFAULT_MCP_CONFIG_PATH):
-        self.config_path = config_path
+    def __init__(self, config_path: Optional[Path] = None, profile: Optional[BotProfile] = None):
+        self.profile = profile
+        self.config_path = resolve_mcp_config_path(profile=profile, config_path=config_path)
         self.config = self.load_config()
 
     def load_config(self) -> Dict[str, Any]:
@@ -102,8 +114,7 @@ class MCPConfigManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    merged = DEFAULT_MCP_CONFIG.copy()
-                    merged["servers"] = DEFAULT_MCP_CONFIG["servers"].copy()
+                    merged = copy.deepcopy(DEFAULT_MCP_CONFIG)
                     if "servers" in data:
                         for key, server in data["servers"].items():
                             if key in merged["servers"]:
@@ -116,8 +127,8 @@ class MCPConfigManager:
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).error(f"Error loading MCP config from {self.config_path}: {exc}")
-                return DEFAULT_MCP_CONFIG.copy()
-        return DEFAULT_MCP_CONFIG.copy()
+                return copy.deepcopy(DEFAULT_MCP_CONFIG)
+        return copy.deepcopy(DEFAULT_MCP_CONFIG)
 
     def save_config(self) -> bool:
         """Persist current configuration to JSON file with strict 0600 permissions."""
@@ -129,9 +140,9 @@ class MCPConfigManager:
             os.chmod(self.config_path, 0o600)
             return True
         except Exception as exc:
-                import logging
-                logging.getLogger(__name__).error(f"Error saving MCP config to {self.config_path}: {exc}")
-                return False
+            import logging
+            logging.getLogger(__name__).error(f"Error saving MCP config to {self.config_path}: {exc}")
+            return False
 
     def get_server(self, server_key: str) -> Optional[Dict[str, Any]]:
         """Retrieve settings for a specific MCP server."""
@@ -208,7 +219,6 @@ class MCPConfigManager:
                     }
         return {"mcpServers": mcp_servers}
 
-
     def get_env_dict(self) -> Dict[str, str]:
         """Returns environment variables dictionary for child CLI processes."""
         env_dict = {}
@@ -224,6 +234,3 @@ class MCPConfigManager:
             if s.get("url"):
                 env_dict["SEARXNG_URL"] = s["url"]
         return env_dict
-
-
-mcp_config = MCPConfigManager()

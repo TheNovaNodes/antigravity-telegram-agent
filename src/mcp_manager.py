@@ -3,14 +3,14 @@ MCP Manager helper for checking server status and integration with AntigravityTe
 """
 
 from typing import Dict, Any
-from src.mcp_config import mcp_config
+from src.mcp_config import MCPConfigManager
 
 
 class MCPManager:
     """Handles operational checks and UI formatting for MCP servers."""
 
-    def __init__(self, manager=mcp_config):
-        self.config_manager = manager
+    def __init__(self, config_manager: MCPConfigManager):
+        self.config_manager = config_manager
 
     def get_status_report(self) -> str:
         """Generates a human-readable Telegram report on MCP server statuses."""
@@ -233,7 +233,4 @@ class MCPManager:
             }
 
         return results
-
-
-mcp_manager = MCPManager()
 

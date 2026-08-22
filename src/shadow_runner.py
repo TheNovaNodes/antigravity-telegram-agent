@@ -6,25 +6,28 @@ import pyte
 from typing import Optional
 from src.config import AGY_BINARY_PATH
 from src.formatters import extract_new_response_lines
+from src.profile import BotProfile
 
 logger = logging.getLogger(__name__)
 
-async def run_shadow_prompt(prompt: str, workspace: Optional[str] = None, timeout: int = 60) -> str:
+async def run_shadow_prompt(prompt: str, workspace: Optional[str] = None, timeout: int = 60, profile: Optional[BotProfile] = None) -> str:
     """
     Executes a prompt in an ephemeral, headless shadow PTY session.
-    Completely isolated from active interactive Telegram sessions.
+    Completely isolated from active interactive Telegram sessions and routed through profile.state_dir.
     """
     cmd = f"{AGY_BINARY_PATH}"
     # Security: Do not inherit full os.environ
     env = {
         "PATH": os.environ.get("PATH", "/bin:/usr/bin"),
         "USER": os.environ.get("USER", "root"),
-        "HOME": os.environ.get("HOME", "/root")
+        "HOME": str(profile.state_dir) if profile else os.environ.get("HOME", "/root")
     }
+    if profile:
+        env["AGY_PROFILE_DIR"] = str(profile.state_dir)
     if workspace:
         env["AGY_WORKSPACE"] = workspace
 
-    logger.info(f"Spawning Shadow PTY for prompt: {prompt[:40]}...")
+    logger.info(f"Spawning Shadow PTY for prompt: {prompt[:40]}... (profile={profile.name if profile else 'default'})")
     
     # Spawn ephemeral process
     child = pexpect.spawn(

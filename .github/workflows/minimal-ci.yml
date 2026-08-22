@@ -16,6 +16,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: "dummy"
           ALLOWED_USER_IDS: "12345"
           AGY_BINARY_PATH: "agy"
+      - run: git diff --check origin/main...HEAD || git diff --check
       - run: python -m pytest tests/
         env:
           TELEGRAM_BOT_TOKEN: "dummy"

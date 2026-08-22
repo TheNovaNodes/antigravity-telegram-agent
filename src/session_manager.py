@@ -27,6 +27,8 @@ class SessionManager:
         if sk not in self.sessions:
             # Check SQLite DB for previously saved user settings across deployments
             saved = load_user_session(sk)
+            from src.config import get_profile_for_bot
+            profile = get_profile_for_bot(sk.bot_id)
             if saved:
                 logger.info(f"Restored session configuration from DB for key={sk}: {saved}")
                 session = AgySession(
@@ -36,11 +38,12 @@ class SessionManager:
                     mode=saved.get("mode", "default"),
                     conversation_id=saved.get("conversation_id"),
                     workspace=saved.get("workspace"),
-                    session_key=sk
+                    session_key=sk,
+                    profile=profile
                 )
             else:
                 logger.info(f"Creating new default session object for key={sk}")
-                session = AgySession(sk.chat_id, session_key=sk)
+                session = AgySession(sk.chat_id, session_key=sk, profile=profile)
                 # Persist initial session defaults to SQLite DB
                 save_user_session(sk, session.model_name, session.effort, session.mode, session.conversation_id, session.workspace)
             self.sessions[sk] = session
@@ -64,6 +67,8 @@ class SessionManager:
                 "workspace": saved.get("workspace") if saved else None,
             }
 
+        from src.config import get_profile_for_bot
+        profile = get_profile_for_bot(sk.bot_id)
         new = AgySession(
             sk.chat_id,
             model_name=preserved["model_name"],
@@ -71,7 +76,8 @@ class SessionManager:
             mode=preserved["mode"],
             conversation_id=None,
             workspace=preserved["workspace"],
-            session_key=sk
+            session_key=sk,
+            profile=profile
         )
         self.sessions[sk] = new
         self.last_accessed[sk] = time.time()

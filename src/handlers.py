@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from typing import Optional
 from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -9,7 +10,8 @@ from aiogram.enums import ChatAction
 from src.config import ALLOWED_USER_IDS
 from src.session_manager import session_manager
 from src.cli_runner import AVAILABLE_MODELS, AVAILABLE_EFFORTS, AVAILABLE_MODES, get_active_account_email
-from src.mcp_manager import mcp_manager
+from src.mcp_config import MCPConfigManager
+from src.mcp_manager import MCPManager
 from src.audit import log_audit_event
 from src.formatters import safe_html_truncate
 
@@ -81,14 +83,14 @@ def get_menu_text(session, is_start=False) -> str:
         if session.conversation_id == "latest":
             active_session_title = "Latest Active Session (--continue)"
         else:
-            title = get_conversation_title(session.conversation_id)
+            title = get_conversation_title(session.conversation_id, profile=session.profile)
             active_session_title = f"{title} ({session.conversation_id[:8]})" if title else f"ID: {session.conversation_id[:8]}"
 
     from src.config import AGY_BINARY_PATH
     import os
     agy_exists = os.path.exists(AGY_BINARY_PATH)
-    email = get_active_account_email()
-    health_emoji = "✅" if agy_exists and email != "Not Logged In" else "⚠️"
+    email = get_active_account_email(session.profile)
+    health_emoji = "✅" if agy_exists and email != "Not Logged In" and email != "" else "⚠️"
 
     header = "👋 <b>Welcome to Antigravity Telegram Agent!</b>\n\nI am your mobile interface to <b>Google Antigravity (agy)</b>. Send me a prompt, and I will execute it in your workspace.\n\n" if is_start else "🎛️ <b>Antigravity Telegram Agent Control Center</b>\n\n"
     
@@ -128,9 +130,11 @@ def get_models_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMarkup:
+from src.profile import BotProfile
+
+def get_resume_keyboard(current_conversation_id: str = None, profile: Optional[BotProfile] = None) -> InlineKeyboardMarkup:
     """Build resume keyboard with current session indicator and new session button."""
-    conversations = get_available_conversations(limit=15)
+    conversations = get_available_conversations(limit=15, profile=profile)
     buttons = [
         [InlineKeyboardButton(text="🆕 New Session (Clean Chat)", callback_data="resume_set:new")],
         [InlineKeyboardButton(text="🔄 Resume Latest Session (--continue)", callback_data="resume_set:latest")]
@@ -166,8 +170,9 @@ def get_mode_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_mcp_keyboard() -> InlineKeyboardMarkup:
-    servers = mcp_manager.config_manager.config.get("servers", {})
+def get_mcp_keyboard(profile: Optional[BotProfile] = None) -> InlineKeyboardMarkup:
+    mgr = MCPManager(MCPConfigManager(profile=profile))
+    servers = mgr.config_manager.config.get("servers", {})
     buttons = []
     
     icons = {
@@ -185,7 +190,6 @@ def get_mcp_keyboard() -> InlineKeyboardMarkup:
     for key, srv in servers.items():
         state_icon = "✅" if srv.get("enabled") else "❌"
         btn_text = icons.get(key, f"🔌 {srv.get('name', key)}")
-        # Shorten text if needed to fit nicely on mobile
         if len(btn_text) > 30:
             btn_text = btn_text[:27] + "..."
         buttons.append([InlineKeyboardButton(text=f"{btn_text}: {state_icon}", callback_data=f"toggle_mcp:{key}")])
@@ -224,8 +228,11 @@ async def cmd_menu(message: Message):
 async def cmd_mcp(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    report = mcp_manager.get_status_report()
-    await message.answer(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
+    mgr = MCPManager(MCPConfigManager(profile=session.profile))
+    report = mgr.get_status_report()
+    await message.answer(report, reply_markup=get_mcp_keyboard(profile=session.profile), parse_mode="HTML")
 
 @router.message(Command("models"))
 async def cmd_models(message: Message):
@@ -247,8 +254,8 @@ async def cmd_effort(message: Message):
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
     await message.answer(
-        f"⚡ <b>Current Reasoning Effort:</b> <code>{session.effort}</code>\n\n"
-        "Select the agent's reasoning effort depth:",
+        f"⚙️ <b>Current Effort:</b> <code>{session.effort}</code>\n\n"
+        "Select reasoning effort:",
         reply_markup=get_effort_keyboard(),
         parse_mode="HTML"
     )
@@ -259,12 +266,21 @@ async def cmd_mode(message: Message):
         return
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
+    mode_desc = AVAILABLE_MODES.get(session.mode, session.mode)
     await message.answer(
-        f"🎯 <b>Current Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
+        f"🎯 <b>Current Mode:</b> <code>{mode_desc}</code>\n\n"
         "Select execution mode:",
         reply_markup=get_mode_keyboard(),
         parse_mode="HTML"
     )
+
+@router.message(Command("reset"))
+async def cmd_reset(message: Message):
+    if not is_allowed(message.from_user.id):
+        return
+    key = get_session_key(message, message.bot)
+    session_manager.new_session(key)
+    await message.answer("🔄 <b>Session state reset!</b> Next message will launch a fresh agy process.", parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("menu:"))
 async def process_menu_navigation(callback_query: CallbackQuery):
@@ -275,34 +291,66 @@ async def process_menu_navigation(callback_query: CallbackQuery):
     session = session_manager.get_session(key)
 
     if action == "main":
+        await callback_query.answer()
         await callback_query.message.edit_text(
             get_menu_text(session, is_start=False),
             reply_markup=get_main_menu_keyboard(session),
             parse_mode="HTML"
         )
+    elif action == "mcp":
+        await callback_query.answer()
+        mgr = MCPManager(MCPConfigManager(profile=session.profile))
+        report = mgr.get_status_report()
+        await callback_query.message.edit_text(
+            report,
+            reply_markup=get_mcp_keyboard(profile=session.profile),
+            parse_mode="HTML"
+        )
     elif action == "models":
-        await callback_query.message.edit_text("🎯 <b>AI Model Selection:</b>", reply_markup=get_models_keyboard(), parse_mode="HTML")
+        await callback_query.answer()
+        await callback_query.message.edit_text(
+            f"🎯 <b>Current Model:</b> <code>{session.model_name}</code>\n\n"
+            "Select a model to switch:",
+            reply_markup=get_models_keyboard(),
+            parse_mode="HTML"
+        )
     elif action == "effort":
-        await callback_query.message.edit_text("⚡ <b>Reasoning Effort Selection:</b>", reply_markup=get_effort_keyboard(), parse_mode="HTML")
+        await callback_query.answer()
+        await callback_query.message.edit_text(
+            f"⚙️ <b>Current Effort:</b> <code>{session.effort}</code>\n\n"
+            "Select reasoning effort:",
+            reply_markup=get_effort_keyboard(),
+            parse_mode="HTML"
+        )
     elif action == "mode":
-        await callback_query.message.edit_text("🎯 <b>Execution Mode Selection:</b>", reply_markup=get_mode_keyboard(), parse_mode="HTML")
+        await callback_query.answer()
+        mode_desc = AVAILABLE_MODES.get(session.mode, session.mode)
+        await callback_query.message.edit_text(
+            f"🎯 <b>Current Mode:</b> <code>{mode_desc}</code>\n\n"
+            "Select execution mode:",
+            reply_markup=get_mode_keyboard(),
+            parse_mode="HTML"
+        )
+    elif action == "reset":
+        session_manager.new_session(key)
+        await callback_query.answer("Session reset!")
+        await callback_query.message.edit_text(
+            "✨ <b>Session reset complete!</b> Next message will launch a fresh conversation.",
+            reply_markup=get_main_menu_keyboard(session_manager.get_session(key)),
+            parse_mode="HTML"
+        )
     elif action == "workspace":
+        from src.workspace_utils import get_workspace_keyboard
         await callback_query.message.edit_text(
             f"📂 <b>Current Workspace:</b> <code>{session.workspace if session.workspace else 'Home Directory (/root)'}</code>\n\n"
             "Select a project/folder to pin for the session:",
             reply_markup=get_workspace_keyboard(),
             parse_mode="HTML"
         )
-    elif action == "mcp":
-        report = mcp_manager.get_status_report()
-        await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
-    elif action == "reset":
-        key = get_session_key(callback_query, callback_query.bot)
-        session_manager.new_session(key)
-        await callback_query.message.edit_text("🔄 <b>Session Reset!</b> Next prompt will start a new conversation context in the background process.", parse_mode="HTML")
     elif action == "resume":
-        kb = get_resume_keyboard(session.conversation_id)
+        kb = get_resume_keyboard(session.conversation_id, profile=session.profile)
         await callback_query.message.edit_text("💬 <b>Select a conversation to resume:</b>", reply_markup=kb, parse_mode="HTML")
+
     elif action == "jules":
         from src.jules_monitor import ACTIVE_JULES_SESSIONS
         sessions_str = ""
@@ -319,7 +367,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "account":
-        email = get_active_account_email()
+        email = get_active_account_email(session.profile)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 View API Quotas & Usage", callback_data="menu:usage")],
             [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
@@ -355,7 +403,7 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         ])
         await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     elif action == "status":
-        email = get_active_account_email()
+        email = get_active_account_email(session.profile)
         await callback_query.answer(f"Status: OK | Account: {email} | Model: {session.model_name}", show_alert=True)
 
 @router.message(Command("usage"))
@@ -374,7 +422,9 @@ async def cmd_usage(message: Message):
 async def cmd_account(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    email = get_active_account_email()
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
+    email = get_active_account_email(session.profile)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Reconnect Authorization (Hot Reload)", callback_data="account:reload")],
         [InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]
@@ -395,7 +445,7 @@ async def process_account_reload_callback(callback_query: CallbackQuery):
     key = get_session_key(callback_query, callback_query.bot)
     session = session_manager.get_session(key)
     session.close()
-    email = get_active_account_email()
+    email = get_active_account_email(session.profile)
     text = (
         f"⚡ <b>Authorization successfully reloaded!</b>\n\n"
         f"👤 <b>Active Account:</b> <code>{email}</code>\n\n"
@@ -409,12 +459,15 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     await callback_query.answer("Running MCP endpoint health checks...")
-    results = await mcp_manager.health_check_all()
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
+    mgr = MCPManager(MCPConfigManager(profile=session.profile))
+    results = await mgr.health_check_all()
 
     report_lines = [
         "🧪 <b>MCP Health Check Results</b>\n"
     ]
-    for key, info in results.items():
+    for k, info in results.items():
         status_text = info.get("status", "unknown").lower()
         if info.get("ok"):
             status_icon = "✅"
@@ -425,7 +478,7 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
         else:
             status_icon = "❌"
             
-        name = info.get("name", key)
+        name = info.get("name", k)
         status = status_text.upper()
         target = info.get("target", "N/A")
         report_lines.append(f"{status_icon} <b>{name}</b> ({status})\n   Target: <code>{target}</code>")
@@ -456,18 +509,21 @@ async def process_mcp_health_check_callback(callback_query: CallbackQuery):
         report += f"\n\n🌐 <b>Search Ecosystem Status</b>\n⚠️ Could not fetch deeper metrics."
     # ---------------------------------------
 
-    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(profile=session.profile), parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("toggle_mcp:"))
 async def process_mcp_toggle_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
-    key = callback_query.data.split(":")[1]
-    new_state = mcp_manager.toggle_server(key)
+    key_name = callback_query.data.split(":")[1]
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
+    mgr = MCPManager(MCPConfigManager(profile=session.profile))
+    new_state = mgr.toggle_server(key_name)
     state_str = "enabled ✅" if new_state else "disabled ⚪"
-    await callback_query.answer(f"MCP server {key} {state_str}")
-    report = mcp_manager.get_status_report()
-    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
+    await callback_query.answer(f"MCP server {key_name} {state_str}")
+    report = mgr.get_status_report()
+    await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(profile=session.profile), parse_mode="HTML")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("set_model:"))
 async def process_model_callback(callback_query: CallbackQuery):
@@ -554,7 +610,7 @@ async def cmd_rename(message: Message):
     
     # Needs import: from src.conversations import rename_conversation
     from src.conversations import rename_conversation
-    success = rename_conversation(session.conversation_id, new_title)
+    success = rename_conversation(session.conversation_id, new_title, profile=session.profile)
     
     if success:
         await message.answer(f"✅ <b>Session renamed!</b>\nNew name: <i>{new_title}</i>", parse_mode="HTML")
@@ -776,10 +832,10 @@ async def cmd_debug(message: Message):
     pty_pid = session.child.pid if session.child else None
 
     from src.conversations import get_latest_conversation_id
-    latest_conv = get_latest_conversation_id()
+    latest_conv = get_latest_conversation_id(profile=session.profile)
 
     from pathlib import Path
-    brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+    brain_base = session.profile.cli_state_dir / "brain" if session.profile else Path.home() / ".gemini" / "antigravity-cli" / "brain"
     brain_dirs_count = 0
     if brain_base.exists():
         brain_dirs_count = sum(1 for d in brain_base.iterdir() if d.is_dir() and not d.name.startswith("."))
@@ -788,12 +844,17 @@ async def cmd_debug(message: Message):
         f"🔍 <b>Debug Info — Session State</b>\n\n"
         f"<b>chat_id:</b> <code>{message.chat.id}</code>\n"
         f"<b>user_id:</b> <code>{message.from_user.id}</code>\n\n"
+        f"<b>── Profile ──</b>\n"
+        f"<b>profile_name:</b> <code>{session.profile.name if session.profile else 'default'}</code>\n"
+        f"<b>state_dir:</b> <code>{session.profile.state_dir if session.profile else 'N/A'}</code>\n"
+        f"<b>cli_state_dir:</b> <code>{session.profile.cli_state_dir if session.profile else 'N/A'}</code>\n\n"
         f"<b>── Session ──</b>\n"
         f"<b>conversation_id:</b> <code>{session.conversation_id or 'None (new session)'}</code>\n"
         f"<b>model:</b> <code>{session.model_name}</code>\n"
         f"<b>effort:</b> <code>{session.effort}</code>\n"
         f"<b>mode:</b> <code>{session.mode}</code>\n"
         f"<b>workspace:</b> <code>{session.workspace or 'Home Directory'}</code>\n\n"
+
         f"<b>── PTY Process ──</b>\n"
         f"<b>PTY alive:</b> <code>{pty_alive}</code>\n"
         f"<b>PTY PID:</b> <code>{pty_pid or 'N/A'}</code>\n"
@@ -801,7 +862,7 @@ async def cmd_debug(message: Message):
         f"<b>── System ──</b>\n"
         f"<b>active sessions:</b> <code>{len(session_manager.sessions)}</code>\n"
         f"<b>brain directories:</b> <code>{brain_dirs_count}</code>\n"
-        f"<b>latest conv (global):</b> <code>{latest_conv[:8] + '...' if latest_conv else 'None'}</code>\n"
+        f"<b>latest conv (profile):</b> <code>{latest_conv[:8] + '...' if latest_conv else 'None'}</code>\n"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -946,7 +1007,7 @@ async def cmd_resume(message: Message):
         return
     key = get_session_key(message, message.bot)
     session = session_manager.get_session(key)
-    kb = get_resume_keyboard(current_conversation_id=session.conversation_id)
+    kb = get_resume_keyboard(current_conversation_id=session.conversation_id, profile=session.profile)
     current_info = ""
     if session.conversation_id:
         if session.conversation_id == "latest":
@@ -977,7 +1038,7 @@ async def process_resume_callback(callback_query: CallbackQuery):
         text = "🔄 <b>Resumed latest active agy CLI session (<code>--continue</code>)!</b>"
     else:
         session.set_conversation(conv_id)
-        title = get_conversation_title(conv_id)
+        title = get_conversation_title(conv_id, profile=session.profile)
         title_display = f"\n📝 <b>Name:</b> <i>{title}</i>" if title else ""
         text = f"✅ <b>Session resumed!</b>\n\n🆔 <b>Conversation ID</b>: <code>{conv_id}</code>{title_display}\n\nThe next request will continue in the context of the selected chat."
 
@@ -1102,63 +1163,90 @@ from aiogram.types import FSInputFile
 from src.conversations import get_latest_conversation_id
 
 async def check_and_send_artifacts(message: Message, session):
-    """Detect and send newly generated artifacts from agy session brain directory to Telegram chat.
+    """Detect and send newly generated artifacts from agy session brain and artifacts directories to Telegram chat.
 
-    Uses a multi-strategy approach to find the correct brain directory:
-    1. Check the session's tracked conversation_id directory (set by _detect_conversation_id)
-    2. Fall back to latest conversation from agy CLI database
-    3. Scan ALL brain directories modified in the last 120 seconds
+    Uses a multi-strategy approach to find the correct brain and artifacts directories for the profile:
+    1. Check the session's profile cli_state_dir / brain and session's profile cli_state_dir / artifacts
+    2. Check the session's tracked conversation_id directory (set by _detect_conversation_id)
+    3. Fall back to latest conversation from agy CLI database for session's profile
+    4. Scan ALL brain directories modified in the last 120 seconds
 
     Recursively walks directories, excluding system folders (.system_generated, scratch, .user_uploaded).
     Deduplicates artifacts by filename to prevent double-sending.
     """
-    brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
-    if not brain_base.exists():
-        logger.debug(f"Brain base directory {brain_base} does not exist, skipping artifact check")
-        return
+    profile = getattr(session, "profile", None)
+    if profile:
+        profile_brain_base = profile.cli_state_dir / "brain"
+        profile_artifacts_base = profile.cli_state_dir / "artifacts"
+    else:
+        profile_brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+        profile_artifacts_base = Path.home() / ".gemini" / "antigravity-cli" / "artifacts"
 
     now = time.time()
     ignore_dirs = {".system_generated", ".user_uploaded", "scratch"}
     scan_dirs = []
 
-    # Strategy 1: Use session's tracked conversation_id (populated by _detect_conversation_id)
-    conv_id = session.conversation_id
-    if conv_id and conv_id != "latest":
-        target = brain_base / conv_id
-        if target.exists() and target.is_dir():
-            scan_dirs.append(target)
+    if profile_artifacts_base.exists() and profile_artifacts_base.is_dir():
+        scan_dirs.append(profile_artifacts_base)
 
-    # Strategy 2: Fall back to latest conversation from agy CLI database
-    if not scan_dirs:
-        fallback_id = get_latest_conversation_id()
-        if fallback_id:
-            target = brain_base / fallback_id
+    if profile_brain_base.exists() and profile_brain_base.is_dir():
+        # Strategy 1: Use session's tracked conversation_id (populated by _detect_conversation_id)
+        conv_id = session.conversation_id
+        if conv_id and conv_id != "latest":
+            target = profile_brain_base / conv_id
             if target.exists() and target.is_dir():
                 scan_dirs.append(target)
 
-    # Strategy 3: Scan any brain directory modified in the last 120 seconds
-    try:
-        for d in brain_base.iterdir():
-            if d.is_dir() and not d.name.startswith(".") and d not in scan_dirs:
-                try:
-                    if now - d.stat().st_mtime < 120:
-                        scan_dirs.append(d)
-                except OSError as e:
-                    logger.debug(f"Could not stat directory {d}: {e}")
-    except Exception as e:
-        logger.warning(f"Failed to scan brain base directory: {e}")
+        # Strategy 2: Fall back to latest conversation from agy CLI database
+        if not any(d.parent == profile_brain_base for d in scan_dirs):
+            fallback_id = get_latest_conversation_id(profile=profile)
+            if fallback_id:
+                target = profile_brain_base / fallback_id
+                if target.exists() and target.is_dir():
+                    scan_dirs.append(target)
+
+        # Strategy 3: Scan any brain directory modified in the last 120 seconds
+        try:
+            for d in profile_brain_base.iterdir():
+                if d.is_dir() and not d.name.startswith(".") and d not in scan_dirs:
+                    try:
+                        if now - d.stat().st_mtime < 120:
+                            scan_dirs.append(d)
+                    except OSError as e:
+                        logger.debug(f"Could not stat directory {d}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to scan brain base directory: {e}")
+
+    if not scan_dirs:
+        logger.debug("No active artifact/brain scan directories found, skipping artifact check")
+        return
 
     # Recursively find artifact files modified in the last 120 seconds
     artifacts_to_send = []
+    canonical_state_dir = profile.cli_state_dir.resolve() if profile else (Path.home() / ".gemini" / "antigravity-cli").resolve()
+
     for brain_dir in scan_dirs:
         try:
             for item in brain_dir.rglob("*"):
+                if item.is_symlink():
+                    continue
                 if not item.is_file():
                     continue
-                # Skip files inside system directories
-                rel_parts = item.relative_to(brain_dir).parts
-                if any(part in ignore_dirs for part in rel_parts):
+                try:
+                    canonical_file = item.resolve()
+                    if canonical_file.is_symlink():
+                        continue
+                    canonical_file.relative_to(canonical_state_dir)
+                except (ValueError, RuntimeError, OSError) as escape_err:
+                    logger.warning(f"Rejecting artifact path traversal / symlink escape candidate {item}: {escape_err}")
                     continue
+                # Skip files inside system directories
+                try:
+                    rel_parts = item.relative_to(brain_dir).parts
+                    if any(part in ignore_dirs for part in rel_parts):
+                        continue
+                except ValueError:
+                    pass
                 # Skip metadata and bot-generated response files
                 if item.name.endswith(".metadata.json") or item.name == "agent_response.md":
                     continue
@@ -1168,7 +1256,7 @@ async def check_and_send_artifacts(message: Message, session):
                 except OSError as e:
                     logger.debug(f"Could not stat artifact {item}: {e}")
         except Exception as e:
-            logger.warning(f"Failed to scan brain directory {brain_dir}: {e}")
+            logger.warning(f"Failed to scan artifact directory {brain_dir}: {e}")
 
     # Deduplicate by filename (same artifact name from different strategies)
     seen_names = set()

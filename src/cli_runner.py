@@ -6,15 +6,12 @@ import logging
 import os
 import re
 import signal
-import urllib.request
 from pathlib import Path
-from typing import Optional
-
+from typing import Optional, Dict, Any, List
 import pexpect
 import pyte
 from src.config import AGY_BINARY_PATH
 from src.db import save_user_session
-from src.mcp_config import mcp_config
 from src.formatters import format_dyslexia_friendly_text, extract_new_response_lines, is_tui_noise
 
 logger = logging.getLogger(__name__)
@@ -54,13 +51,18 @@ AVAILABLE_EFFORTS = ["low", "medium", "high"]
 AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-edits": "Auto-Edits Mode"}
 
 
-def _get_gemini_dir() -> Path:
-    """Find the active .gemini/antigravity-cli directory across possible HOME paths."""
+from src.profile import BotProfile, PROFILES_ROOT
+
+def _get_gemini_dir(profile: Optional[BotProfile] = None) -> Path:
+    """Find the active .gemini/antigravity-cli directory across possible HOME paths or profile cli_state_dir."""
+    if profile:
+        return profile.cli_state_dir
+
     homes_to_check = [Path.home()]
     sudo_user = os.getenv("SUDO_USER")
     if sudo_user:
         homes_to_check.append(Path(f"/home/{sudo_user}"))
-    
+
     if Path("/root").exists():
         homes_to_check.append(Path("/root"))
     if Path("/home").exists():
@@ -78,11 +80,19 @@ def _get_gemini_dir() -> Path:
     return Path.home() / ".gemini" / "antigravity-cli"
 
 
-def get_active_account_email() -> str:
+def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
     """Retrieve the currently authenticated Google account email via OAuth, JWT payload, or CLI logs."""
-    base_dir = _get_gemini_dir()
+    if profile:
+        base_dir = profile.cli_state_dir
+    else:
+        base_dir = _get_gemini_dir(profile=None)
+
     token_file = base_dir / "antigravity-oauth-token"
+    settings_file = base_dir / "settings.json"
     
+    if profile and not token_file.exists() and not settings_file.exists():
+        return "Not Logged In"
+
     if token_file.exists():
         try:
             data = json.loads(token_file.read_text(encoding="utf-8"))
@@ -119,7 +129,6 @@ def get_active_account_email() -> str:
         except Exception as e:
             logger.debug(f"Error reading antigravity-oauth-token: {e}")
 
-    settings_file = base_dir / "settings.json"
     if settings_file.exists():
         try:
             settings_data = json.loads(settings_file.read_text(encoding="utf-8"))
@@ -129,15 +138,22 @@ def get_active_account_email() -> str:
         except Exception as e:
             logger.debug(f"Failed to read or parse settings.json for email: {e}")
 
-    return ""
+    return "Not Logged In" if profile else ""
 
 
-def get_auth_state_signature() -> str:
+def get_auth_state_signature(profile: Optional[BotProfile] = None) -> str:
     """Calculate a hash signature of active auth tokens and account configs."""
-    base_dir = _get_gemini_dir()
+    if profile:
+        base_dir = profile.cli_state_dir
+    else:
+        base_dir = _get_gemini_dir(profile=None)
+
     sig_parts = []
-    
     token_file = base_dir / "antigravity-oauth-token"
+
+    if profile and not token_file.exists():
+        return ""
+
     if token_file.exists():
         try:
             st = token_file.stat()
@@ -147,8 +163,18 @@ def get_auth_state_signature() -> str:
         except Exception as e:
             logger.warning(f"Failed to read auth token for signature: {e}")
 
+    settings_file = base_dir / "settings.json"
+    if settings_file.exists():
+        try:
+            st = settings_file.stat()
+            content = settings_file.read_bytes()
+            h = hashlib.sha256(content).hexdigest()
+            sig_parts.append(f"settings:{st.st_mtime}:{h}")
+        except Exception as e:
+            logger.warning(f"Failed to read settings for signature: {e}")
 
     return "|".join(sig_parts) if sig_parts else "none"
+
 
 
 class AgySession:
@@ -162,10 +188,12 @@ class AgySession:
         mode: str = "default",
         conversation_id: Optional[str] = None,
         workspace: Optional[str] = None,
-        session_key: Optional[any] = None
+        session_key: Optional[any] = None,
+        profile: Optional[BotProfile] = None
     ):
         self.chat_id = chat_id
         self.session_key = session_key or chat_id
+        self.profile: Optional[BotProfile] = profile
         self.child = None
         self.model_name = model_name
         self.effort = effort
@@ -251,7 +279,7 @@ class AgySession:
         if self.conversation_id == "latest":
             try:
                 from src.conversations import get_latest_conversation_id
-                resolved = get_latest_conversation_id()
+                resolved = get_latest_conversation_id(profile=self.profile)
                 if resolved:
                     logger.info(f"Resolved 'latest' conversation_id to {resolved} for session {self.session_key}")
                     self.conversation_id = resolved
@@ -261,7 +289,11 @@ class AgySession:
                 logger.warning(f"Failed to resolve 'latest' conversation_id for session {self.session_key}: {e}")
 
         # Strategy 2: Delta-detection for brand new sessions (conversation_id=None)
-        brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+        if self.profile:
+            brain_base = self.profile.cli_state_dir / "brain"
+        else:
+            brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+
         if not brain_base.exists():
             return
 
@@ -283,7 +315,7 @@ class AgySession:
             logger.warning(f"Failed to detect conversation_id for session {self.session_key}: {e}")
 
     async def _ensure_started(self):
-        current_auth_sig = get_auth_state_signature()
+        current_auth_sig = get_auth_state_signature(self.profile)
 
         if self.child and self.child.isalive():
             if self.spawn_auth_signature and self.spawn_auth_signature != current_auth_sig:
@@ -297,8 +329,13 @@ class AgySession:
             args = [
                 "--model", self.model_name,
                 "--effort", self.effort,
-                "--dangerously-skip-permissions"
             ]
+            skip_perm_env = os.environ.get("AGY_SKIP_PERMISSIONS", "").lower() in ("1", "true", "yes")
+            skip_perm_attr = getattr(self, "skip_permissions", None)
+            should_skip = skip_perm_attr if skip_perm_attr is not None else skip_perm_env
+            if should_skip:
+                args.append("--dangerously-skip-permissions")
+
             if self.mode != "default":
                 args.extend(["--mode", self.mode])
             if self.conversation_id:
@@ -307,13 +344,13 @@ class AgySession:
                 else:
                     args.extend(["--conversation", self.conversation_id])
 
-            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace}")
+            logger.info(f"Spawning agy PTY process for chat_id={self.chat_id} args={args} cwd={self.workspace} profile={self.profile.name if self.profile else 'default'}")
             
             # Security: Do not inherit full os.environ to prevent token leaks
             env = {
                 "PATH": os.environ.get("PATH", "/bin:/usr/bin"),
                 "USER": os.environ.get("USER", "root"),
-                "HOME": os.environ.get("HOME", "/root"),
+                "HOME": str(self.profile.state_dir) if self.profile else os.environ.get("HOME", "/root"),
                 "TERM": "xterm-256color",
                 "LANG": "en_US.UTF-8",
                 "LC_ALL": "en_US.UTF-8",
@@ -321,11 +358,20 @@ class AgySession:
                 "DO_NOT_TRACK": "1",
                 "CI": "1"
             }
+
+            if self.profile:
+                env["AGY_PROFILE_DIR"] = str(self.profile.state_dir)
             
-            mcp_env = mcp_config.get_env_dict()
+            from src.mcp_config import MCPConfigManager
+            mcp_env = MCPConfigManager(profile=self.profile).get_env_dict()
             env.update(mcp_env)
 
-            brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+            if self.profile:
+                brain_base = self.profile.cli_state_dir / "brain"
+            else:
+                brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+
+
             if brain_base.exists():
                 self._spawn_brain_dirs = set(d.name for d in brain_base.iterdir() if d.is_dir())
             else:
@@ -663,7 +709,7 @@ class AgySession:
                     logger.debug(f"Failed to send Escape to close modal: {e}")
 
             logger.debug(f"Usage modal captured {len(all_lines)} unique lines")
-            email = get_active_account_email()
+            email = get_active_account_email(self.profile)
             return format_usage_response(all_lines, email)
 
     def clear_context(self):
