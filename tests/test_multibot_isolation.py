@@ -98,5 +98,36 @@ class TestMultiBotIsolation(unittest.TestCase):
         self.assertIn("102:daily_job", job_ids)
 
 
+    def test_sentinel_fail_closed_on_unregistered_bot(self):
+        """Verify SentinelScheduler does not fallback to arbitrary bot if bot_id is not registered."""
+        scheduler = SentinelScheduler()
+        bot1 = MagicMock(id=101)
+        bot_registry.register(bot1)
+
+        with patch("src.scheduler.run_shadow_prompt") as mock_shadow:
+            import asyncio
+            asyncio.run(scheduler.execute_sentinel_briefing(chat_id=500, prompt="test prompt", bot_id=999))
+            mock_shadow.assert_not_called()
+            bot1.send_message.assert_not_called()
+
+    def test_handler_router_get_session_key_extraction(self):
+        """Verify handler get_session_key extracts bot_id and chat_id correctly."""
+        from src.handlers import get_session_key
+        from aiogram.types import Message, Chat, CallbackQuery
+
+        bot_a = MagicMock(id=1001)
+        bot_b = MagicMock(id=1002)
+
+        msg_a = MagicMock(spec=Message, chat=MagicMock(spec=Chat, id=444))
+        msg_b = MagicMock(spec=Message, chat=MagicMock(spec=Chat, id=444))
+
+        key_a = get_session_key(msg_a, bot_a)
+        key_b = get_session_key(msg_b, bot_b)
+
+        self.assertEqual(key_a, SessionKey(bot_id=1001, chat_id=444))
+        self.assertEqual(key_b, SessionKey(bot_id=1002, chat_id=444))
+        self.assertNotEqual(key_a, key_b)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,9 +28,9 @@ class SentinelScheduler:
 
     async def execute_sentinel_briefing(self, chat_id: int, prompt: str, bot_id: int = 0):
         """Runs a shadow PTY LLM briefing and sends the AI summary directly to Telegram."""
-        bot = bot_registry.get_bot(bot_id) or bot_registry.get_any_bot()
+        bot = bot_registry.get_bot(bot_id)
         if not bot:
-            logger.error(f"Cannot execute sentinel briefing for bot_id={bot_id}: No registered bot instance found.")
+            logger.error(f"Cannot execute sentinel briefing for bot_id={bot_id}: Specific bot instance not registered (fail-closed).")
             return
 
         logger.info(f"Triggering Autonomous Sentinel Briefing for bot_id={bot_id}, chat_id={chat_id}")
