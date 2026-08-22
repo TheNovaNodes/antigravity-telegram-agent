@@ -4,9 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN is missing in .env")
+raw_tokens = os.getenv("TELEGRAM_BOT_TOKENS") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+BOT_TOKENS = [t.strip() for t in raw_tokens.split(",") if t.strip()]
+
+if not BOT_TOKENS:
+    raise ValueError("TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKENS is missing in environment")
+
+BOT_TOKEN = BOT_TOKENS[0]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 

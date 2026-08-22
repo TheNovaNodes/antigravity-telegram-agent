@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from aiogram import Router, types
+from aiogram import Router, types, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.enums import ChatAction
@@ -13,14 +13,38 @@ from src.mcp_manager import mcp_manager
 from src.audit import log_audit_event
 from src.formatters import safe_html_truncate
 
+from src.session_key import SessionKey
+
 logger = logging.getLogger(__name__)
 router = Router()
+
+def get_session_key(event: types.TelegramObject, bot: Bot) -> SessionKey:
+    """Helper to consistently extract composite SessionKey from Bot and Telegram event.
+    Fails closed if bot or chat context is missing.
+    """
+    if not bot or not getattr(bot, "id", None):
+        raise ValueError("Cannot resolve SessionKey: Bot instance missing or invalid bot.id")
+
+    chat_id = None
+    if isinstance(event, Message) and getattr(event, "chat", None):
+        chat_id = event.chat.id
+    elif isinstance(event, CallbackQuery) and event.message and getattr(event.message, "chat", None):
+        chat_id = event.message.chat.id
+    elif getattr(event, "chat", None):
+        chat_id = event.chat.id
+
+    if chat_id is None:
+        raise ValueError("Cannot resolve SessionKey: Event missing valid chat context")
+
+    return SessionKey(bot_id=bot.id, chat_id=chat_id)
+
 
 def is_allowed(user_id: int) -> bool:
     if not ALLOWED_USER_IDS:
         logger.error("ALLOWED_USER_IDS is empty! Failing closed for security.")
         return False
     return user_id in ALLOWED_USER_IDS
+
 
 def get_main_menu_keyboard(session) -> InlineKeyboardMarkup:
     buttons = [
@@ -175,7 +199,8 @@ async def cmd_start(message: Message):
         logger.warning(f"Unauthorized access attempt from user_id={message.from_user.id}")
         return
 
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     await message.answer(
         get_menu_text(session, is_start=True),
         reply_markup=get_main_menu_keyboard(session),
@@ -186,7 +211,8 @@ async def cmd_start(message: Message):
 async def cmd_menu(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     await message.answer(
         get_menu_text(session, is_start=False),
         reply_markup=get_main_menu_keyboard(session),
@@ -204,7 +230,8 @@ async def cmd_mcp(message: Message):
 async def cmd_models(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     await message.answer(
         f"🎯 <b>Current Model:</b> <code>{session.model_name}</code>\n\n"
         "Select a model to switch:",
@@ -216,7 +243,8 @@ async def cmd_models(message: Message):
 async def cmd_effort(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     await message.answer(
         f"⚡ <b>Current Reasoning Effort:</b> <code>{session.effort}</code>\n\n"
         "Select the agent's reasoning effort depth:",
@@ -228,7 +256,8 @@ async def cmd_effort(message: Message):
 async def cmd_mode(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     await message.answer(
         f"🎯 <b>Current Execution Mode:</b> <code>{AVAILABLE_MODES.get(session.mode, session.mode)}</code>\n\n"
         "Select execution mode:",
@@ -241,7 +270,8 @@ async def process_menu_navigation(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     action = callback_query.data.split(":")[1]
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
 
     if action == "main":
         await callback_query.message.edit_text(
@@ -266,7 +296,8 @@ async def process_menu_navigation(callback_query: CallbackQuery):
         report = mcp_manager.get_status_report()
         await callback_query.message.edit_text(report, reply_markup=get_mcp_keyboard(), parse_mode="HTML")
     elif action == "reset":
-        session_manager.new_session(callback_query.message.chat.id)
+        key = get_session_key(callback_query, callback_query.bot)
+        session_manager.new_session(key)
         await callback_query.message.edit_text("🔄 <b>Session Reset!</b> Next prompt will start a new conversation context in the background process.", parse_mode="HTML")
     elif action == "resume":
         kb = get_resume_keyboard(session.conversation_id)
@@ -303,7 +334,8 @@ async def process_menu_navigation(callback_query: CallbackQuery):
     elif action == "usage":
         await callback_query.bot.send_chat_action(chat_id=callback_query.message.chat.id, action=ChatAction.TYPING)
         await callback_query.answer("Requesting full quota information...")
-        session = session_manager.get_session(callback_query.message.chat.id)
+        key = get_session_key(callback_query, callback_query.bot)
+        session = session_manager.get_session(key)
         formatted = await session.get_usage_info()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")]])
         try:
@@ -331,7 +363,8 @@ async def cmd_usage(message: Message):
         return
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     placeholder = await message.answer("📊 <i>Requesting full quota information...</i>", parse_mode="HTML")
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     formatted = await session.get_usage_info()
     await safe_edit_text(placeholder, formatted)
 
@@ -358,7 +391,8 @@ async def cmd_account(message: Message):
 async def process_account_reload_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
     session.close()
     email = get_active_account_email()
     text = (
@@ -439,7 +473,8 @@ async def process_model_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     alias = callback_query.data.split(":")[1]
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
     if session.set_model(alias):
         await callback_query.answer("Model changed!")
         await callback_query.message.edit_text(
@@ -455,7 +490,8 @@ async def process_effort_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     level = callback_query.data.split(":")[1]
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
     if session.set_effort(level):
         await callback_query.answer("Effort changed!")
         await callback_query.message.edit_text(
@@ -471,7 +507,8 @@ async def process_mode_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     mode_key = callback_query.data.split(":")[1]
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
     if session.set_mode(mode_key):
         await callback_query.answer("Mode changed!")
         await callback_query.message.edit_text(
@@ -486,8 +523,8 @@ async def process_mode_callback(callback_query: CallbackQuery):
 async def cmd_reset(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    chat_id = message.chat.id
-    new = session_manager.new_session(chat_id)
+    key = get_session_key(message, message.bot)
+    new = session_manager.new_session(key)
     await message.answer(
         f"✨ <b>New session created!</b>\n\n"
         f"Settings saved: <code>{new.model_name}</code> / <code>{new.effort}</code> / <code>{AVAILABLE_MODES.get(new.mode, new.mode)}</code>\n"
@@ -501,7 +538,8 @@ async def cmd_rename(message: Message):
     if not is_allowed(message.from_user.id):
         return
     
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     if not session.conversation_id:
         await message.answer("⚠️ No active session to rename. First start a chat or select one via /resume.", parse_mode="HTML")
         return
@@ -561,7 +599,8 @@ async def process_jules_test_callback(callback_query: CallbackQuery):
     session_name = patch_data["session_name"]
     patch_text = patch_data["patch_text"]
     
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
     target_dir = session.workspace if session.workspace else os.getcwd()
     
     try:
@@ -730,7 +769,8 @@ async def cmd_debug(message: Message):
     """Debug command: shows full session state for troubleshooting."""
     if not is_allowed(message.from_user.id):
         return
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     pty_alive = bool(session.child and session.child.isalive())
     pty_pid = session.child.pid if session.child else None
 
@@ -829,7 +869,8 @@ async def process_workspace_callback(callback_query: CallbackQuery):
             await callback_query.answer("❌ Error: Folder not found", show_alert=True)
             return
 
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
     session.set_workspace(new_ws)
 
     display_ws = new_ws if new_ws else "Home Directory (/root)"
@@ -848,7 +889,8 @@ async def cmd_cd(message: Message):
     if not is_allowed(message.from_user.id):
         return
     
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     parts = message.text.split(maxsplit=1)
     
     if len(parts) < 2:
@@ -901,7 +943,8 @@ async def cmd_cd(message: Message):
 async def cmd_resume(message: Message):
     if not is_allowed(message.from_user.id):
         return
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
     kb = get_resume_keyboard(current_conversation_id=session.conversation_id)
     current_info = ""
     if session.conversation_id:
@@ -921,10 +964,12 @@ async def process_resume_callback(callback_query: CallbackQuery):
     if not is_allowed(callback_query.from_user.id):
         return
     conv_id = callback_query.data.split("resume_set:")[1]
-    session = session_manager.get_session(callback_query.message.chat.id)
+    key = get_session_key(callback_query, callback_query.bot)
+    session = session_manager.get_session(key)
 
     if conv_id == "new":
-        session_manager.new_session(callback_query.message.chat.id)
+        key = get_session_key(callback_query, callback_query.bot)
+        session_manager.new_session(key)
         text = f"✨ <b>New clean session created!</b>\nSettings saved. The next request will start a new chat."
     elif conv_id == "latest":
         session.set_conversation("latest")
@@ -1245,7 +1290,8 @@ async def handle_message(message: Message):
     # Trigger Telegram typing action
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     placeholder = await message.answer("🤔 Thinking...")
-    session = session_manager.get_session(message.chat.id)
+    key = get_session_key(message, message.bot)
+    session = session_manager.get_session(key)
 
     last_edit_time = 0
     last_text = ""

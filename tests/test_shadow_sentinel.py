@@ -25,6 +25,8 @@ async def test_shadow_runner_execution():
 async def test_sentinel_scheduler_job_lifecycle():
     scheduler = SentinelScheduler()
     mock_bot = AsyncMock()
+    mock_bot.id = 999
+    mock_bot.send_message = AsyncMock()
     scheduler.set_bot(mock_bot)
     scheduler.start()
 
@@ -46,7 +48,7 @@ async def test_sentinel_scheduler_job_lifecycle():
             mock_child.isalive.return_value = True
             mock_spawn.return_value = mock_child
             
-            await scheduler.execute_sentinel_briefing(12345, "Health Check")
+            await scheduler.execute_sentinel_briefing(12345, "Health Check", bot_id=999)
             
         mock_bot.send_message.assert_called_once()
         assert "Autonomous Sentinel Briefing" in mock_bot.send_message.call_args[1]["text"]
