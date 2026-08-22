@@ -56,13 +56,16 @@ AVAILABLE_MODES = {"default": "Standard Chat", "plan": "Planning Mode", "accept-
 
 from src.profile import BotProfile, PROFILES_ROOT
 
-def _get_gemini_dir() -> Path:
-    """Find the active .gemini/antigravity-cli directory across possible HOME paths."""
+def _get_gemini_dir(profile: Optional[BotProfile] = None) -> Path:
+    """Find the active .gemini/antigravity-cli directory across possible HOME paths or profile state_dir."""
+    if profile:
+        return profile.state_dir
+
     homes_to_check = [Path.home()]
     sudo_user = os.getenv("SUDO_USER")
     if sudo_user:
         homes_to_check.append(Path(f"/home/{sudo_user}"))
-    
+
     if Path("/root").exists():
         homes_to_check.append(Path("/root"))
     if Path("/home").exists():
@@ -80,9 +83,9 @@ def _get_gemini_dir() -> Path:
     return Path.home() / ".gemini" / "antigravity-cli"
 
 
-def get_active_account_email() -> str:
+def get_active_account_email(profile: Optional[BotProfile] = None) -> str:
     """Retrieve the currently authenticated Google account email via OAuth, JWT payload, or CLI logs."""
-    base_dir = _get_gemini_dir()
+    base_dir = _get_gemini_dir(profile)
     token_file = base_dir / "antigravity-oauth-token"
     
     if token_file.exists():
@@ -131,15 +134,22 @@ def get_active_account_email() -> str:
         except Exception as e:
             logger.debug(f"Failed to read or parse settings.json for email: {e}")
 
+    # Fall back to root gemini dir if profile-specific didn't have token
+    if profile and base_dir != Path.home() / ".gemini" / "antigravity-cli":
+        return get_active_account_email(profile=None)
+
     return ""
 
 
-def get_auth_state_signature() -> str:
+def get_auth_state_signature(profile: Optional[BotProfile] = None) -> str:
     """Calculate a hash signature of active auth tokens and account configs."""
-    base_dir = _get_gemini_dir()
+    base_dir = _get_gemini_dir(profile)
     sig_parts = []
-    
+
     token_file = base_dir / "antigravity-oauth-token"
+    if not token_file.exists() and profile:
+        token_file = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+
     if token_file.exists():
         try:
             st = token_file.stat()
@@ -148,7 +158,6 @@ def get_auth_state_signature() -> str:
             sig_parts.append(f"token:{st.st_mtime}:{h}")
         except Exception as e:
             logger.warning(f"Failed to read auth token for signature: {e}")
-
 
     return "|".join(sig_parts) if sig_parts else "none"
 
@@ -291,7 +300,7 @@ class AgySession:
             logger.warning(f"Failed to detect conversation_id for session {self.session_key}: {e}")
 
     async def _ensure_started(self):
-        current_auth_sig = get_auth_state_signature()
+        current_auth_sig = get_auth_state_signature(self.profile)
 
         if self.child and self.child.isalive():
             if self.spawn_auth_signature and self.spawn_auth_signature != current_auth_sig:
@@ -321,7 +330,7 @@ class AgySession:
             env = {
                 "PATH": os.environ.get("PATH", "/bin:/usr/bin"),
                 "USER": os.environ.get("USER", "root"),
-                "HOME": os.environ.get("HOME", "/root"),
+                "HOME": str(self.profile.state_dir) if self.profile else os.environ.get("HOME", "/root"),
                 "TERM": "xterm-256color",
                 "LANG": "en_US.UTF-8",
                 "LC_ALL": "en_US.UTF-8",

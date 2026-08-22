@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional
+from src.profile import BotProfile
 
 DEFAULT_MCP_CONFIG_PATH = Path("mcp_config.json")
 
@@ -89,11 +90,21 @@ DEFAULT_MCP_CONFIG = {
 }
 
 
+def resolve_mcp_config_path(profile: Optional[BotProfile] = None, config_path: Optional[Path] = None) -> Path:
+    """Resolves profile-scoped mcp_config.json path if profile is provided."""
+    if config_path is not None:
+        return config_path
+    if profile:
+        return profile.state_dir / "mcp_config.json"
+    return DEFAULT_MCP_CONFIG_PATH
+
+
 class MCPConfigManager:
     """Manages reading, writing, and formatting MCP server configs for Control/Data Planes."""
 
-    def __init__(self, config_path: Path = DEFAULT_MCP_CONFIG_PATH):
-        self.config_path = config_path
+    def __init__(self, config_path: Optional[Path] = None, profile: Optional[BotProfile] = None):
+        self.profile = profile
+        self.config_path = resolve_mcp_config_path(profile=profile, config_path=config_path)
         self.config = self.load_config()
 
     def load_config(self) -> Dict[str, Any]:
@@ -129,9 +140,9 @@ class MCPConfigManager:
             os.chmod(self.config_path, 0o600)
             return True
         except Exception as exc:
-                import logging
-                logging.getLogger(__name__).error(f"Error saving MCP config to {self.config_path}: {exc}")
-                return False
+            import logging
+            logging.getLogger(__name__).error(f"Error saving MCP config to {self.config_path}: {exc}")
+            return False
 
     def get_server(self, server_key: str) -> Optional[Dict[str, Any]]:
         """Retrieve settings for a specific MCP server."""
@@ -207,7 +218,6 @@ class MCPConfigManager:
                         "env": env_dict
                     }
         return {"mcpServers": mcp_servers}
-
 
     def get_env_dict(self) -> Dict[str, str]:
         """Returns environment variables dictionary for child CLI processes."""

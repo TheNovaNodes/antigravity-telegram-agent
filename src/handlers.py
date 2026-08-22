@@ -779,10 +779,10 @@ async def cmd_debug(message: Message):
     pty_pid = session.child.pid if session.child else None
 
     from src.conversations import get_latest_conversation_id
-    latest_conv = get_latest_conversation_id()
+    latest_conv = get_latest_conversation_id(profile=session.profile)
 
     from pathlib import Path
-    brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+    brain_base = session.profile.state_dir / "brain" if session.profile else Path.home() / ".gemini" / "antigravity-cli" / "brain"
     brain_dirs_count = 0
     if brain_base.exists():
         brain_dirs_count = sum(1 for d in brain_base.iterdir() if d.is_dir() and not d.name.startswith("."))
@@ -791,6 +791,9 @@ async def cmd_debug(message: Message):
         f"🔍 <b>Debug Info — Session State</b>\n\n"
         f"<b>chat_id:</b> <code>{message.chat.id}</code>\n"
         f"<b>user_id:</b> <code>{message.from_user.id}</code>\n\n"
+        f"<b>── Profile ──</b>\n"
+        f"<b>profile_name:</b> <code>{session.profile.name if session.profile else 'default'}</code>\n"
+        f"<b>state_dir:</b> <code>{session.profile.state_dir if session.profile else 'N/A'}</code>\n\n"
         f"<b>── Session ──</b>\n"
         f"<b>conversation_id:</b> <code>{session.conversation_id or 'None (new session)'}</code>\n"
         f"<b>model:</b> <code>{session.model_name}</code>\n"
@@ -804,7 +807,7 @@ async def cmd_debug(message: Message):
         f"<b>── System ──</b>\n"
         f"<b>active sessions:</b> <code>{len(session_manager.sessions)}</code>\n"
         f"<b>brain directories:</b> <code>{brain_dirs_count}</code>\n"
-        f"<b>latest conv (global):</b> <code>{latest_conv[:8] + '...' if latest_conv else 'None'}</code>\n"
+        f"<b>latest conv (profile):</b> <code>{latest_conv[:8] + '...' if latest_conv else 'None'}</code>\n"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -1105,51 +1108,63 @@ from aiogram.types import FSInputFile
 from src.conversations import get_latest_conversation_id
 
 async def check_and_send_artifacts(message: Message, session):
-    """Detect and send newly generated artifacts from agy session brain directory to Telegram chat.
+    """Detect and send newly generated artifacts from agy session brain and artifacts directories to Telegram chat.
 
-    Uses a multi-strategy approach to find the correct brain directory:
-    1. Check the session's tracked conversation_id directory (set by _detect_conversation_id)
-    2. Fall back to latest conversation from agy CLI database
-    3. Scan ALL brain directories modified in the last 120 seconds
+    Uses a multi-strategy approach to find the correct brain and artifacts directories for the profile:
+    1. Check the session's profile state_dir / brain and session's profile state_dir / artifacts
+    2. Check the session's tracked conversation_id directory (set by _detect_conversation_id)
+    3. Fall back to latest conversation from agy CLI database for session's profile
+    4. Scan ALL brain directories modified in the last 120 seconds
 
     Recursively walks directories, excluding system folders (.system_generated, scratch, .user_uploaded).
     Deduplicates artifacts by filename to prevent double-sending.
     """
-    brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
-    if not brain_base.exists():
-        logger.debug(f"Brain base directory {brain_base} does not exist, skipping artifact check")
-        return
+    profile = getattr(session, "profile", None)
+    if profile:
+        profile_brain_base = profile.state_dir / "brain"
+        profile_artifacts_base = profile.state_dir / "artifacts"
+    else:
+        profile_brain_base = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+        profile_artifacts_base = Path.home() / ".gemini" / "antigravity-cli" / "artifacts"
 
     now = time.time()
     ignore_dirs = {".system_generated", ".user_uploaded", "scratch"}
     scan_dirs = []
 
-    # Strategy 1: Use session's tracked conversation_id (populated by _detect_conversation_id)
-    conv_id = session.conversation_id
-    if conv_id and conv_id != "latest":
-        target = brain_base / conv_id
-        if target.exists() and target.is_dir():
-            scan_dirs.append(target)
+    if profile_artifacts_base.exists() and profile_artifacts_base.is_dir():
+        scan_dirs.append(profile_artifacts_base)
 
-    # Strategy 2: Fall back to latest conversation from agy CLI database
-    if not scan_dirs:
-        fallback_id = get_latest_conversation_id()
-        if fallback_id:
-            target = brain_base / fallback_id
+    if profile_brain_base.exists() and profile_brain_base.is_dir():
+        # Strategy 1: Use session's tracked conversation_id (populated by _detect_conversation_id)
+        conv_id = session.conversation_id
+        if conv_id and conv_id != "latest":
+            target = profile_brain_base / conv_id
             if target.exists() and target.is_dir():
                 scan_dirs.append(target)
 
-    # Strategy 3: Scan any brain directory modified in the last 120 seconds
-    try:
-        for d in brain_base.iterdir():
-            if d.is_dir() and not d.name.startswith(".") and d not in scan_dirs:
-                try:
-                    if now - d.stat().st_mtime < 120:
-                        scan_dirs.append(d)
-                except OSError as e:
-                    logger.debug(f"Could not stat directory {d}: {e}")
-    except Exception as e:
-        logger.warning(f"Failed to scan brain base directory: {e}")
+        # Strategy 2: Fall back to latest conversation from agy CLI database
+        if not any(d.parent == profile_brain_base for d in scan_dirs):
+            fallback_id = get_latest_conversation_id(profile=profile)
+            if fallback_id:
+                target = profile_brain_base / fallback_id
+                if target.exists() and target.is_dir():
+                    scan_dirs.append(target)
+
+        # Strategy 3: Scan any brain directory modified in the last 120 seconds
+        try:
+            for d in profile_brain_base.iterdir():
+                if d.is_dir() and not d.name.startswith(".") and d not in scan_dirs:
+                    try:
+                        if now - d.stat().st_mtime < 120:
+                            scan_dirs.append(d)
+                    except OSError as e:
+                        logger.debug(f"Could not stat directory {d}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to scan brain base directory: {e}")
+
+    if not scan_dirs:
+        logger.debug("No active artifact/brain scan directories found, skipping artifact check")
+        return
 
     # Recursively find artifact files modified in the last 120 seconds
     artifacts_to_send = []
@@ -1159,9 +1174,12 @@ async def check_and_send_artifacts(message: Message, session):
                 if not item.is_file():
                     continue
                 # Skip files inside system directories
-                rel_parts = item.relative_to(brain_dir).parts
-                if any(part in ignore_dirs for part in rel_parts):
-                    continue
+                try:
+                    rel_parts = item.relative_to(brain_dir).parts
+                    if any(part in ignore_dirs for part in rel_parts):
+                        continue
+                except ValueError:
+                    pass
                 # Skip metadata and bot-generated response files
                 if item.name.endswith(".metadata.json") or item.name == "agent_response.md":
                     continue
@@ -1171,7 +1189,7 @@ async def check_and_send_artifacts(message: Message, session):
                 except OSError as e:
                     logger.debug(f"Could not stat artifact {item}: {e}")
         except Exception as e:
-            logger.warning(f"Failed to scan brain directory {brain_dir}: {e}")
+            logger.warning(f"Failed to scan artifact directory {brain_dir}: {e}")
 
     # Deduplicate by filename (same artifact name from different strategies)
     seen_names = set()
