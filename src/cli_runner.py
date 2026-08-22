@@ -6,15 +6,12 @@ import logging
 import os
 import re
 import signal
-import urllib.request
 from pathlib import Path
-from typing import Optional
-
+from typing import Optional, Dict, Any, List
 import pexpect
 import pyte
 from src.config import AGY_BINARY_PATH
 from src.db import save_user_session
-from src.mcp_config import mcp_config
 from src.formatters import format_dyslexia_friendly_text, extract_new_response_lines, is_tui_noise
 
 logger = logging.getLogger(__name__)

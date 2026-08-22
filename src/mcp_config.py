@@ -234,4 +234,3 @@ class MCPConfigManager:
             if s.get("url"):
                 env_dict["SEARXNG_URL"] = s["url"]
         return env_dict
-
