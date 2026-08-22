@@ -28,7 +28,7 @@ def get_available_conversations(limit: int = 8) -> List[Dict[str, str]]:
             """, (limit,)).fetchall()
 
             for r in rows:
-                summary = r["preview"] or r["title"] or "Untitled dialog"
+                summary = r["title"] or r["preview"] or "Untitled dialog"
                 # Format short date (e.g. 07.08 06:09)
                 date_str = ""
                 if r["last_modified_time"]:
@@ -99,7 +99,7 @@ def get_conversation_title(conversation_id: str) -> Optional[str]:
                 (conversation_id,)
             ).fetchone()
             if row:
-                return row["preview"] or row["title"] or "Untitled dialog"
+                return row["title"] or row["preview"] or "Untitled dialog"
     except Exception as e:
         logger.error(f"Failed to fetch conversation title for {conversation_id}: {e}", exc_info=True)
     return None

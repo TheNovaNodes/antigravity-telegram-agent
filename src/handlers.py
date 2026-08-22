@@ -139,7 +139,8 @@ def get_resume_keyboard(current_conversation_id: str = None) -> InlineKeyboardMa
         date_part = f" ({conv['date']})" if conv['date'] else ""
         is_current = current_conversation_id and conv['id'] == current_conversation_id
         marker = "✅ " if is_current else "💬 "
-        label = f"{marker}{conv['summary'][:28]}{date_part}"
+        short_id = conv['id'][:4]
+        label = f"{marker}[{short_id}] {conv['summary'][:22]}{date_part}"
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"resume_set:{conv['id']}")])
 
     buttons.append([InlineKeyboardButton(text="◀️ Back to Menu", callback_data="menu:main")])
