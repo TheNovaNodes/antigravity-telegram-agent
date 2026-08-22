@@ -1,7 +1,8 @@
 # 📐 AntigravityTelegramAgent Architecture & Design Specification
 
 > **Автор**: Trickster (`trickster@labdoctorm.ru`)  
-> **Статус**: Производственный стандарт (v1.4.0)  
+> **Статус**: Производственный стандарт (v1.5.0)  
+> **Дата последнего обновления**: 2026-08-22  
 > **Платформа**: Python 3.12+ / Aiogram 3.x / pexpect / pyte / SQLite
 
 ---
