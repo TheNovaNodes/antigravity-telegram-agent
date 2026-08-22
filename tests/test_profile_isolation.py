@@ -380,6 +380,7 @@ class TestProfileIsolation(unittest.TestCase):
                 mock_child = MagicMock()
                 mock_child.isalive.return_value = True
                 mock_child.exitstatus = 0
+                mock_child.read_nonblocking.return_value = b"> "
                 mock_spawn.return_value = mock_child
 
                 asyncio.run(session_a._ensure_started())

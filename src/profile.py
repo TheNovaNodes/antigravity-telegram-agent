@@ -137,8 +137,12 @@ def migrate_legacy_shared_state(
             continue
 
         if target_item.exists():
-            status["skipped"].append(f"{item_name} (target already exists)")
-            continue
+            if target_item.is_dir() and not any(target_item.iterdir()):
+                # Empty directory created during BotProfile init, allow copying into it
+                pass
+            else:
+                status["skipped"].append(f"{item_name} (target already exists)")
+                continue
 
         backup_item = legacy_dir / f"{item_name}.bak_{timestamp}"
 
@@ -161,7 +165,7 @@ def migrate_legacy_shared_state(
 
             # Step 2: Copy to profile state dir (or move if legacy item)
             if legacy_item.is_dir():
-                shutil.copytree(legacy_item, target_item, symlinks=True)
+                shutil.copytree(legacy_item, target_item, symlinks=True, dirs_exist_ok=True)
             else:
                 shutil.copy2(legacy_item, target_item)
 
