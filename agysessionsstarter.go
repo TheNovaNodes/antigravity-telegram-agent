@@ -169,6 +169,12 @@ func (s *AgySession) start() {
 	}
 
 	s.Cmd = exec.Command("/tmp/agy_wrapper.sh", args...)
+	
+	// Set the actual OS-level CWD (Personal Office) for the agent
+	agentDir := fmt.Sprintf("/root/.agents/%s", s.BotName)
+	os.MkdirAll(agentDir, 0755)
+	s.Cmd.Dir = agentDir
+
 	stdin, _ := s.Cmd.StdinPipe()
 	stdout, _ := s.Cmd.StdoutPipe()
 	s.Stdin = stdin
