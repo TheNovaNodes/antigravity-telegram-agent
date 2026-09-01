@@ -25,6 +25,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// User represents the User data structure.
 type User struct {
 	ID           int64
 	Workspace    string
@@ -33,6 +34,7 @@ type User struct {
 	SessionID    string
 }
 
+// AgySession represents the AgySession data structure.
 type AgySession struct {
 	BotName      string
 	Model        string
@@ -221,6 +223,7 @@ func (s *AgySession) start() {
 	}()
 }
 
+// Restart performs the Restart method.
 func (s *AgySession) Restart() {
 	if s.Cmd != nil && s.Cmd.Process != nil {
 		s.Cmd.Process.Kill()
