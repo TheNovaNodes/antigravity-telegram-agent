@@ -450,9 +450,9 @@ ProcessInput:
 	}
 
 	if text == "/start" || text == fmt.Sprintf("/start@%s", botName) {
-		sessionTitle := "(пусто)"
+		sessionTitle := "(empty)"
 		stepsCount := 0
-		uptimeStr := "0 м"
+		uptimeStr := "0 m"
 		
 		brainDir := "/root/.gemini/antigravity-cli/brain"
 		sessionDir := filepath.Join(brainDir, user.SessionID)
@@ -483,38 +483,38 @@ ProcessInput:
 			if !firstStepTime.IsZero() {
 				dur := time.Since(firstStepTime)
 				if dur.Hours() >= 1 {
-					uptimeStr = fmt.Sprintf("%d ч %d м", int(dur.Hours()), int(dur.Minutes())%60)
+					uptimeStr = fmt.Sprintf("%d h %d m", int(dur.Hours()), int(dur.Minutes())%60)
 				} else {
-					uptimeStr = fmt.Sprintf("%d м", int(dur.Minutes()))
+					uptimeStr = fmt.Sprintf("%d m", int(dur.Minutes()))
 				}
 			}
-			if sessionTitle == "(пусто)" && stepsCount > 0 {
-				sessionTitle = "Сессия активна"
+			if sessionTitle == "(empty)" && stepsCount > 0 {
+				sessionTitle = "Session active"
 			}
 		}
 
-		respText := fmt.Sprintf(`🛰 *Терминал Агента*
-🤖 *Агент:* `+"`@%s`"+`
-🟢 *Статус:* Ожидание задачи
+		respText := fmt.Sprintf(`🛰 *Agent Terminal*
+🤖 *Agent:* `+"`@%s`"+`
+🟢 *Status:* Awaiting task
 
 📂 *CWD:* `+"`%s`"+`
-🧠 *Модель:* `+"`%s`"+`
+🧠 *Model:* `+"`%s`"+`
 
-📋 *Сессия:* %s
-⏱ *Аптайм:* %s
-👣 *Шагов:* %d`, botName, user.Workspace, user.Model, sessionTitle, uptimeStr, stepsCount)
+📋 *Session:* %s
+⏱ *Uptime:* %s
+👣 *Steps:* %d`, botName, user.Workspace, user.Model, sessionTitle, uptimeStr, stepsCount)
 
 		m := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🧠 Модель", "cmd:model"),
-				tgbotapi.NewInlineKeyboardButtonData("📊 Квота", "cmd:usage"),
+				tgbotapi.NewInlineKeyboardButtonData("🧠 Model", "cmd:model"),
+				tgbotapi.NewInlineKeyboardButtonData("📊 Usage", "cmd:usage"),
 			),
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🧼 Очистить", "cmd:clear"),
-				tgbotapi.NewInlineKeyboardButtonData("🔄 Сессии", "cmd:resume"),
+				tgbotapi.NewInlineKeyboardButtonData("🧼 Clear", "cmd:clear"),
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Sessions", "cmd:resume"),
 			),
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✏️ Переименовать", "cmd:rename"),
+				tgbotapi.NewInlineKeyboardButtonData("✏️ Rename", "cmd:rename"),
 				tgbotapi.NewInlineKeyboardButtonData("🆘 Help", "cmd:help"),
 			),
 		)
@@ -705,15 +705,15 @@ ProcessInput:
 		bot.Send(msg)
 		return
 	} else if text == "/help" || text == fmt.Sprintf("/help@%s", botName) {
-		respText := "🆘 *Справка по командам:*\n\n" +
-			"• /start - Показать дашборд\n" +
-			"• /model - Изменить модель LLM\n" +
-			"• /usage - Просмотр квоты\n" +
-			"• /clear - Очистить контекст (сбросить сессию)\n" +
-			"• /resume - Вернуться к предыдущей сессии\n" +
-			"• /rename <имя> - Переименовать текущую сессию\n" +
-			"• /workspace <путь> - Сменить рабочую папку\n\n" +
-			"*Отправь любой текст или файл, чтобы Агент начал работу.*"
+		respText := "🆘 *Command Reference:*\n\n" +
+			"• /start - Show dashboard\n" +
+			"• /model - Change LLM model\n" +
+			"• /usage - Check API quota\n" +
+			"• /clear - Clear context (reset session)\n" +
+			"• /resume - Resume previous session\n" +
+			"• /rename <name> - Rename current session\n" +
+			"• /workspace <path> - Change working directory\n\n" +
+			"*Send any text or file to start the Agent.*"
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
