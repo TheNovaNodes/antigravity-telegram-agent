@@ -1040,6 +1040,14 @@ func (s *AgySession) readStdoutLoop() {
 					} else {
 						sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, "❌ Error from agent: "+errMsg)
 					}
+					
+					// Auto-heal: kill the broken process so it restarts on the next message
+					s.mu.Lock()
+					if s.Cmd != nil && s.Cmd.Process != nil {
+						s.Cmd.Process.Kill()
+					}
+					s.mu.Unlock()
+
 					s.ActiveMessageID = 0
 					s.TextBuffer = ""
 					continue
