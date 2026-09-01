@@ -430,7 +430,11 @@ ProcessInput:
 			resp, err := http.Get(fileURL)
 			if err == nil {
 				defer resp.Body.Close()
-				out, _ := os.Create(safePath)
+				out, err := os.Create(safePath)
+				if err != nil {
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save file to disk."))
+					return
+				}
 				io.Copy(out, resp.Body)
 				out.Close()
 				
@@ -440,6 +444,9 @@ ProcessInput:
 				}
 				text = fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
 				downloadedFile = true
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
+				return
 			}
 		}
 	}
