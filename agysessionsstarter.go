@@ -792,6 +792,7 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 		{Command: "resume", Description: "Resume previous conversation"},
 		{Command: "rename", Description: "Rename current session"},
 		{Command: "workspace", Description: "Change target workspace directory"},
+		{Command: "model", Description: "Select LLM model"},
 	}
 	cfg := tgbotapi.NewSetMyCommands(commands...)
 	if _, err := bot.Request(cfg); err != nil {
