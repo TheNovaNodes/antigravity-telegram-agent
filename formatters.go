@@ -335,12 +335,14 @@ func SplitHTMLChunks(text string, maxChunkSize int) []string {
 				currentLength = 0
 			}
 
-			// If a single paragraph is too large, split it aggressively
-			for len(p) > maxChunkSize {
-				part := p[:maxChunkSize]
+			// If a single paragraph is too large, split it aggressively by runes to preserve UTF-8
+			runes := []rune(p)
+			for len(runes) > maxChunkSize {
+				part := string(runes[:maxChunkSize])
 				chunks = append(chunks, balanceAndSanitizeTelegramHTML(part))
-				p = p[maxChunkSize:]
+				runes = runes[maxChunkSize:]
 			}
+			p = string(runes)
 
 			if len(p) > 0 {
 				currentChunk = append(currentChunk, p)
