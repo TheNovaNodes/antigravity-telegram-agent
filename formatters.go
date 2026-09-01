@@ -112,6 +112,8 @@ func balanceAndSanitizeTelegramHTML(rawHTML string) string {
 	return out.String()
 }
 
+// MarkdownToTelegramHTML converts standard Markdown into Telegram-compatible HTML.
+// It handles bold, italic, code blocks, tables, and special Antigravity blocks like <think>.
 func MarkdownToTelegramHTML(text string) string {
 	if text == "" {
 		return ""
@@ -312,6 +314,8 @@ func MarkdownToTelegramHTML(text string) string {
 	return balanceAndSanitizeTelegramHTML(text)
 }
 
+// SplitHTMLChunks breaks a long HTML string into an array of smaller chunks
+// that comply with Telegram's message length limits, ensuring HTML tags are balanced.
 func SplitHTMLChunks(text string, maxChunkSize int) []string {
 	if len(text) <= maxChunkSize {
 		return []string{balanceAndSanitizeTelegramHTML(text)}
