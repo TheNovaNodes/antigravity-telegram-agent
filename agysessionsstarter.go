@@ -71,14 +71,14 @@ func initDB(botName string) *sql.DB {
 	return db
 }
 
-func getUser(db *sql.DB, userID int64) User {
+func getUser(db *sql.DB, userID int64, botName string) User {
 	var u User
 	err := db.QueryRow("SELECT user_id, workspace, model, is_first_start, session_id FROM users WHERE user_id = ?", userID).Scan(
 		&u.ID, &u.Workspace, &u.Model, &u.IsFirstStart, &u.SessionID)
 	if err == sql.ErrNoRows {
 		u = User{
 			ID:           userID,
-			Workspace:    "/root/.agents",
+			Workspace:    fmt.Sprintf("/root/.agents/%s", botName),
 			Model:        "gemini-3.1-pro-high",
 			IsFirstStart: true,
 			SessionID:    uuid.New().String(),
@@ -295,8 +295,8 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 		text = update.CallbackQuery.Data
 	}
 
-	user := getUser(db, userID)
 	botName := bot.Self.UserName
+	user := getUser(db, userID, botName)
 
 	// Handle Callbacks
 	if update.CallbackQuery != nil {
