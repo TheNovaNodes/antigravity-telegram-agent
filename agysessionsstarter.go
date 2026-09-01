@@ -395,6 +395,22 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			newUUID := uuid.New().String()
 			updateUserSession(db, userID, newUUID)
 			respText = "🧼 Context cleared!\n`" + newUUID + "`"
+		} else if data == "cmd:usage" {
+			text = "/usage"
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+			goto ProcessInput
+		} else if data == "cmd:resume" {
+			text = "/resume"
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+			goto ProcessInput
+		} else if data == "cmd:rename" {
+			text = "/rename"
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+			goto ProcessInput
+		} else if data == "cmd:help" {
+			text = "/help"
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+			goto ProcessInput
 		}
 
 		msg := tgbotapi.NewMessage(chatID, respText)
@@ -441,15 +457,72 @@ ProcessInput:
 	}
 
 	if text == "/start" || text == fmt.Sprintf("/start@%s", botName) {
-		respText := "👋 Welcome to Antigravity CLI Telegram Bot!\nI am a persistent AI agent running in a headless Linux environment.\nSend me any task and I will execute it."
+		sessionTitle := "(пусто)"
+		stepsCount := 0
+		uptimeStr := "0 м"
+		
+		brainDir := "/root/.gemini/antigravity-cli/brain"
+		sessionDir := filepath.Join(brainDir, user.SessionID)
+		
+		titleFile := filepath.Join(sessionDir, ".title")
+		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			sessionTitle = string(bytes.TrimSpace(b))
+		}
+		
+		transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
+		if f, err := os.Open(transcriptFile); err == nil {
+			scanner := bufio.NewScanner(f)
+			var firstStepTime time.Time
+			for scanner.Scan() {
+				stepsCount++
+				if stepsCount == 1 {
+					var step map[string]interface{}
+					if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
+						if createdRaw, ok := step["created_at"].(string); ok {
+							if t, err := time.Parse(time.RFC3339, createdRaw); err == nil {
+								firstStepTime = t
+							}
+						}
+					}
+				}
+			}
+			f.Close()
+			if !firstStepTime.IsZero() {
+				dur := time.Since(firstStepTime)
+				if dur.Hours() >= 1 {
+					uptimeStr = fmt.Sprintf("%d ч %d м", int(dur.Hours()), int(dur.Minutes())%60)
+				} else {
+					uptimeStr = fmt.Sprintf("%d м", int(dur.Minutes()))
+				}
+			}
+			if sessionTitle == "(пусто)" && stepsCount > 0 {
+				sessionTitle = "Сессия активна"
+			}
+		}
+
+		respText := fmt.Sprintf(`🛰 *Терминал Агента*
+🤖 *Агент:* @%s
+🟢 *Статус:* Ожидание задачи
+
+📂 *CWD:* `+"`%s`"+`
+🧠 *Модель:* `+"`%s`"+`
+
+📋 *Сессия:* %s
+⏱ *Аптайм:* %s
+👣 *Шагов:* %d`, botName, user.Workspace, user.Model, sessionTitle, uptimeStr, stepsCount)
+
 		m := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("📊 Status", "cmd:status"),
-				tgbotapi.NewInlineKeyboardButtonData("🧠 Model", "cmd:model"),
+				tgbotapi.NewInlineKeyboardButtonData("🧠 Модель", "cmd:model"),
+				tgbotapi.NewInlineKeyboardButtonData("📊 Квота", "cmd:usage"),
 			),
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🧼 Clear Context", "cmd:clear"),
-				tgbotapi.NewInlineKeyboardButtonData("📜 Changelog", "cmd:changelog"),
+				tgbotapi.NewInlineKeyboardButtonData("🧼 Очистить", "cmd:clear"),
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Сессии", "cmd:resume"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✏️ Переименовать", "cmd:rename"),
+				tgbotapi.NewInlineKeyboardButtonData("🆘 Help", "cmd:help"),
 			),
 		)
 		msg := tgbotapi.NewMessage(chatID, respText)
@@ -634,6 +707,20 @@ ProcessInput:
 		} else {
 			respText = "📊 *Quota Usage:*\n```\n" + strings.TrimSpace(string(out)) + "\n```"
 		}
+		msg := tgbotapi.NewMessage(chatID, respText)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+		return
+	} else if text == "/help" || text == fmt.Sprintf("/help@%s", botName) {
+		respText := "🆘 *Справка по командам:*\n\n" +
+			"• /start - Показать дашборд\n" +
+			"• /model - Изменить модель LLM\n" +
+			"• /usage - Просмотр квоты\n" +
+			"• /clear - Очистить контекст (сбросить сессию)\n" +
+			"• /resume - Вернуться к предыдущей сессии\n" +
+			"• /rename <имя> - Переименовать текущую сессию\n" +
+			"• /workspace <путь> - Сменить рабочую папку\n\n" +
+			"*Отправь любой текст или файл, чтобы Агент начал работу.*"
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
