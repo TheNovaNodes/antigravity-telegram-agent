@@ -372,22 +372,9 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 		} else if data == "cmd:status" {
 			respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
 		} else if data == "cmd:model" {
-			respText = "🧠 Select a model:"
-			// Create keyboard
-			m := tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash High", "model:gemini-3.7-flash-high"),
-					tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash Med", "model:gemini-3.7-flash-medium"),
-				),
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("⚡ 3.6 Flash High", "model:gemini-3.6-flash-high"),
-					tgbotapi.NewInlineKeyboardButtonData("⚡ 3.6 Flash Low", "model:gemini-3.6-flash-low"),
-				),
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("🧠 3.1 Pro High", "model:gemini-3.1-pro-high"),
-				),
-			)
-			markup = &m
+			text = "/model"
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+			goto ProcessInput
 		} else if data == "cmd:clear" {
 			sessionMu.Lock()
 			if old, ok := globalSessions[botName]; ok {
