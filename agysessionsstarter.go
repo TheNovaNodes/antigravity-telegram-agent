@@ -780,7 +780,12 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 func registerBotCommands(bot *tgbotapi.BotAPI) {
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Welcome menu & status"},
+		{Command: "model", Description: "Select LLM model"},
+		{Command: "usage", Description: "Show API quota usage"},
 		{Command: "clear", Description: "Clear context and restart agent"},
+		{Command: "resume", Description: "Resume previous conversation"},
+		{Command: "rename", Description: "Rename current session"},
+		{Command: "workspace", Description: "Change target workspace directory"},
 		{Command: "goal", Description: "Run exhaustive long-running task"},
 		{Command: "schedule", Description: "Set recurring schedule or timer"},
 		{Command: "browser", Description: "Use web browser for a task"},
@@ -788,11 +793,6 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 		{Command: "grill_me", Description: "Interactive design interview"},
 		{Command: "teamwork_preview", Description: "Swarm autonomous agents"},
 		{Command: "learn", Description: "Persist behavior for future tasks"},
-		{Command: "usage", Description: "Show API quota usage"},
-		{Command: "resume", Description: "Resume previous conversation"},
-		{Command: "rename", Description: "Rename current session"},
-		{Command: "workspace", Description: "Change target workspace directory"},
-		{Command: "model", Description: "Select LLM model"},
 	}
 	cfg := tgbotapi.NewSetMyCommands(commands...)
 	if _, err := bot.Request(cfg); err != nil {
