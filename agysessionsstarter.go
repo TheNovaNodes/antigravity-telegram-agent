@@ -60,7 +60,7 @@ func initDB(botName string) *sql.DB {
 	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
-		workspace TEXT DEFAULT '/root',
+		workspace TEXT DEFAULT '/root/.agents',
 		model TEXT DEFAULT 'gemini-3.1-pro-high',
 		is_first_start BOOLEAN DEFAULT 1,
 		session_id TEXT DEFAULT NULL
@@ -78,7 +78,7 @@ func getUser(db *sql.DB, userID int64) User {
 	if err == sql.ErrNoRows {
 		u = User{
 			ID:           userID,
-			Workspace:    "/root",
+			Workspace:    "/root/.agents",
 			Model:        "gemini-3.1-pro-high",
 			IsFirstStart: true,
 			SessionID:    uuid.New().String(),
