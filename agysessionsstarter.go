@@ -36,20 +36,21 @@ type User struct {
 
 // AgySession represents the AgySession data structure.
 type AgySession struct {
-	BotName      string
-	Model        string
-	Workspace    string
-	Conversation string
-	UseContinue  bool
-	Cmd          *exec.Cmd
-	Stdin        io.WriteCloser
-	StdoutScanner *bufio.Scanner
-	mu           sync.Mutex
-	BotAPI       *tgbotapi.BotAPI
-	ChatID       int64
+	BotName         string
+	Model           string
+	Workspace       string
+	Conversation    string
+	UseContinue     bool
+	Cmd             *exec.Cmd
+	Stdin           io.WriteCloser
+	StdoutScanner   *bufio.Scanner
+	mu              sync.Mutex
+	BotAPI          *tgbotapi.BotAPI
+	ChatID          int64
 	ActiveMessageID int
-	TextBuffer   string
-	LastEdit     time.Time
+	TextBuffer      string
+	LastEdit        time.Time
+	UpdateChan      chan struct{}
 }
 
 func initDB(botName string) *sql.DB {
@@ -60,7 +61,7 @@ func initDB(botName string) *sql.DB {
 	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
-		workspace TEXT DEFAULT '/root/.agents',
+		workspace TEXT DEFAULT '',
 		model TEXT DEFAULT 'gemini-3.1-pro-high',
 		is_first_start BOOLEAN DEFAULT 1,
 		session_id TEXT DEFAULT NULL
@@ -78,26 +79,39 @@ func getUser(db *sql.DB, userID int64, botName string) User {
 	if err == sql.ErrNoRows {
 		u = User{
 			ID:           userID,
-			Workspace:    fmt.Sprintf("/root/.agents/%s", botName),
+			Workspace:    filepath.Join(getAgentsDir(), botName),
 			Model:        "gemini-3.1-pro-high",
 			IsFirstStart: true,
 			SessionID:    uuid.New().String(),
 		}
-		db.Exec("INSERT INTO users (user_id, workspace, model, is_first_start, session_id) VALUES (?, ?, ?, ?, ?)",
+		_, err = db.Exec("INSERT INTO users (user_id, workspace, model, is_first_start, session_id) VALUES (?, ?, ?, ?, ?)",
 			u.ID, u.Workspace, u.Model, u.IsFirstStart, u.SessionID)
+		if err != nil {
+			log.Printf("DB Error inserting user %d: %v", u.ID, err)
+		}
 	} else if u.SessionID == "" {
 		u.SessionID = uuid.New().String()
-		db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", u.SessionID, u.ID)
+		_, err = db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", u.SessionID, u.ID)
+		if err != nil {
+			log.Printf("DB Error updating session_id for user %d: %v", u.ID, err)
+		}
 	}
 	return u
 }
 
 func updateUserSession(db *sql.DB, userID int64, sessionID string) {
-	db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)
+	_, err := db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)
+	if err != nil {
+		log.Printf("DB Error updating session for user %d: %v", userID, err)
+	}
 }
 
-func updateUserModel(db *sql.DB, userID int64, model string) {
-	db.Exec("UPDATE users SET model = ? WHERE user_id = ?", model, userID)
+func updateUserModel(db *sql.DB, userID int64, model string) error {
+	_, err := db.Exec("UPDATE users SET model = ? WHERE user_id = ?", model, userID)
+	if err != nil {
+		log.Printf("DB Error updating model for user %d: %v", userID, err)
+	}
+	return err
 }
 
 func loadAllowedAdmins() map[int64]bool {
@@ -122,11 +136,20 @@ func loadAllowedAdmins() map[int64]bool {
 var globalSessions = make(map[string]*AgySession)
 var sessionMu sync.Mutex
 
+func getAgentsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/root/.agents"
+	}
+	return filepath.Join(home, ".agents")
+}
+
 func getSession(botName string, user User) *AgySession {
+	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 
-	session, exists := globalSessions[botName]
+	session, exists := globalSessions[sessionKey]
 	if exists && session.Model == user.Model && session.Workspace == user.Workspace {
 		// check if process is alive
 		if session.Cmd != nil && session.Cmd.ProcessState == nil {
@@ -143,10 +166,11 @@ func getSession(botName string, user User) *AgySession {
 		Model:        user.Model,
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
+		UpdateChan:   make(chan struct{}, 1),
 	}
 
 	session.start()
-	globalSessions[botName] = session
+	globalSessions[sessionKey] = session
 	return session
 }
 
@@ -158,8 +182,8 @@ func (s *AgySession) start() {
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--print-timeout", "1h",
-		"--add-dir", "/root/.agents/common",
-		"--add-dir", "/root/.agents/" + s.BotName,
+		"--add-dir", filepath.Join(getAgentsDir(), "common"),
+		"--add-dir", filepath.Join(getAgentsDir(), s.BotName),
 		"--add-dir", s.Workspace,
 	}
 	if s.UseContinue {
@@ -169,9 +193,9 @@ func (s *AgySession) start() {
 	}
 
 	s.Cmd = exec.Command("/tmp/agy_wrapper.sh", args...)
-	
+
 	// Set the actual OS-level CWD (Personal Office) for the agent
-	agentDir := fmt.Sprintf("/root/.agents/%s", s.BotName)
+	agentDir := filepath.Join(getAgentsDir(), s.BotName)
 	os.MkdirAll(agentDir, 0755)
 	s.Cmd.Dir = agentDir
 
@@ -182,12 +206,19 @@ func (s *AgySession) start() {
 	buf := make([]byte, 0, 64*1024)
 	s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
 	s.Cmd.Start()
-	
+
 	// Streaming throttler loop
 	go func() {
 		var lastSent string
 		var lastSentTime time.Time
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
 		for {
+			select {
+			case <-s.UpdateChan:
+			case <-ticker.C:
+			}
+
 			s.mu.Lock()
 			if s.Cmd == nil {
 				s.mu.Unlock()
@@ -198,25 +229,24 @@ func (s *AgySession) start() {
 			botAPI := s.BotAPI
 			chatID := s.ChatID
 			s.mu.Unlock()
-			
+
 			if currentText != "" && currentText != lastSent && botAPI != nil {
-                if activeMsgID == 0 {
-                    msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
-                    msg.ParseMode = "Markdown"
-                    if sentMsg, err := botAPI.Send(msg); err == nil {
-                        s.mu.Lock()
-                        s.ActiveMessageID = sentMsg.MessageID
-                        activeMsgID = sentMsg.MessageID
-                        s.mu.Unlock()
-                    }
-                }
+				if activeMsgID == 0 {
+					msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+					msg.ParseMode = "Markdown"
+					if sentMsg, err := botAPI.Send(msg); err == nil {
+						s.mu.Lock()
+						s.ActiveMessageID = sentMsg.MessageID
+						activeMsgID = sentMsg.MessageID
+						s.mu.Unlock()
+					}
+				}
 				if activeMsgID != 0 && time.Since(lastSentTime) > 1000*time.Millisecond {
 					sendChunk(botAPI, chatID, activeMsgID, currentText+"\n\n*⏳ Typing...*")
 					lastSent = currentText
 					lastSentTime = time.Now()
 				}
 			}
-			time.Sleep(100 * time.Millisecond) // Fast polling, rate limited sending
 		}
 	}()
 
@@ -303,6 +333,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 
 	botName := bot.Self.UserName
 	user := getUser(db, userID, botName)
+	sessionKey := fmt.Sprintf("%s:%d", botName, userID)
 
 	// Handle Callbacks
 	if update.CallbackQuery != nil {
@@ -317,11 +348,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 
 			sessionMu.Lock()
-			if old, ok := globalSessions[botName]; ok {
+			if old, ok := globalSessions[sessionKey]; ok {
 				if old.Cmd != nil && old.Cmd.Process != nil {
 					old.Cmd.Process.Kill()
 				}
-				delete(globalSessions, botName)
+				delete(globalSessions, sessionKey)
 			}
 			sessionMu.Unlock()
 
@@ -332,10 +363,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 				Model:        user.Model,
 				Workspace:    user.Workspace,
 				Conversation: convID,
+				UpdateChan:   make(chan struct{}, 1),
 			}
 			session.start()
 			sessionMu.Lock()
-			globalSessions[botName] = session
+			globalSessions[sessionKey] = session
 			sessionMu.Unlock()
 
 			// Read the init event to confirm
@@ -357,17 +389,20 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 
 		if strings.HasPrefix(data, "model:") {
 			newModel := strings.TrimPrefix(data, "model:")
-			updateUserModel(db, userID, newModel)
-			
+			if err := updateUserModel(db, userID, newModel); err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
+				return
+			}
+
 			sessionMu.Lock()
-			if old, ok := globalSessions[botName]; ok {
+			if old, ok := globalSessions[sessionKey]; ok {
 				if old.Cmd != nil && old.Cmd.Process != nil {
 					old.Cmd.Process.Kill()
 				}
-				delete(globalSessions, botName)
+				delete(globalSessions, sessionKey)
 			}
 			sessionMu.Unlock()
-			
+
 			respText = "✅ Model changed to `" + newModel + "`"
 		} else if data == "cmd:status" {
 			respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
@@ -377,14 +412,14 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			goto ProcessInput
 		} else if data == "cmd:clear" {
 			sessionMu.Lock()
-			if old, ok := globalSessions[botName]; ok {
+			if old, ok := globalSessions[sessionKey]; ok {
 				if old.Cmd != nil && old.Cmd.Process != nil {
 					old.Cmd.Process.Kill()
 				}
-				delete(globalSessions, botName)
+				delete(globalSessions, sessionKey)
 			}
 			sessionMu.Unlock()
-			
+
 			newUUID := uuid.New().String()
 			updateUserSession(db, userID, newUUID)
 			respText = "🧼 Context cleared!\n`" + newUUID + "`"
@@ -421,12 +456,12 @@ ProcessInput:
 	if fileID != "" {
 		fileURL, err := bot.GetFileDirectURL(fileID)
 		if err == nil {
-			downloadDir := fmt.Sprintf("/root/.agents/%s/scratch/downloads", botName)
+			downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
 			os.MkdirAll(downloadDir, 0755)
 			safePath := filepath.Join(downloadDir, uuid.New().String()+ext)
-			
+
 			bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file..."))
-			
+
 			resp, err := http.Get(fileURL)
 			if err == nil {
 				defer resp.Body.Close()
@@ -437,7 +472,7 @@ ProcessInput:
 				}
 				io.Copy(out, resp.Body)
 				out.Close()
-				
+
 				baseText := text
 				if baseText == "" {
 					baseText = caption
@@ -460,15 +495,15 @@ ProcessInput:
 		sessionTitle := "(empty)"
 		stepsCount := 0
 		uptimeStr := "0 m"
-		
+
 		brainDir := "/root/.gemini/antigravity-cli/brain"
 		sessionDir := filepath.Join(brainDir, user.SessionID)
-		
+
 		titleFile := filepath.Join(sessionDir, ".title")
 		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
 			sessionTitle = string(bytes.TrimSpace(b))
 		}
-		
+
 		transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
 		if f, err := os.Open(transcriptFile); err == nil {
 			scanner := bufio.NewScanner(f)
@@ -569,32 +604,32 @@ ProcessInput:
 			} else {
 				scanner := bufio.NewScanner(f)
 				if scanner.Scan() {
-				var step map[string]interface{}
-				if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
-					content, _ := step["content"].(string)
-					// Extract text between <USER_REQUEST> tags
-					start := strings.Index(content, "<USER_REQUEST>")
-					end := strings.Index(content, "</USER_REQUEST>")
-					if start >= 0 && end > start {
-						inner := strings.TrimSpace(content[start+14 : end])
-						// Strip nested tags
-						for strings.Contains(inner, "<") {
-							tagStart := strings.Index(inner, "<")
-							tagEnd := strings.Index(inner, ">")
-							if tagEnd > tagStart {
-								inner = inner[:tagStart] + inner[tagEnd+1:]
-							} else {
-								break
+					var step map[string]interface{}
+					if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
+						content, _ := step["content"].(string)
+						// Extract text between <USER_REQUEST> tags
+						start := strings.Index(content, "<USER_REQUEST>")
+						end := strings.Index(content, "</USER_REQUEST>")
+						if start >= 0 && end > start {
+							inner := strings.TrimSpace(content[start+14 : end])
+							// Strip nested tags
+							for strings.Contains(inner, "<") {
+								tagStart := strings.Index(inner, "<")
+								tagEnd := strings.Index(inner, ">")
+								if tagEnd > tagStart {
+									inner = inner[:tagStart] + inner[tagEnd+1:]
+								} else {
+									break
+								}
+							}
+							inner = strings.TrimSpace(inner)
+							lines := strings.SplitN(inner, "\n", 2)
+							title = strings.TrimSpace(lines[0])
+							if len(title) > 45 {
+								title = title[:42] + "..."
 							}
 						}
-						inner = strings.TrimSpace(inner)
-						lines := strings.SplitN(inner, "\n", 2)
-						title = strings.TrimSpace(lines[0])
-						if len(title) > 45 {
-							title = title[:42] + "..."
-						}
 					}
-				}
 				}
 			}
 			f.Close()
@@ -643,7 +678,7 @@ ProcessInput:
 	} else if strings.HasPrefix(text, "/workspace") {
 		parts := strings.SplitN(text, " ", 2)
 		if len(parts) < 2 {
-			msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/workspace <absolute path>`\n📂 Current workspace: `" + user.Workspace + "`")
+			msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/workspace <absolute path>`\n📂 Current workspace: `"+user.Workspace+"`")
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 			return
@@ -653,23 +688,23 @@ ProcessInput:
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: path must be absolute (e.g. `/root/projects/app`)"))
 			return
 		}
-		
+
 		_, err := db.Exec("UPDATE users SET workspace = ? WHERE user_id = ?", newWS, userID)
 		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: " + err.Error()))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
 			return
 		}
-		
+
 		sessionMu.Lock()
-		if old, ok := globalSessions[botName]; ok {
+		if old, ok := globalSessions[sessionKey]; ok {
 			if old.Cmd != nil && old.Cmd.Process != nil {
 				old.Cmd.Process.Kill()
 			}
-			delete(globalSessions, botName)
+			delete(globalSessions, sessionKey)
 		}
 		sessionMu.Unlock()
-		
-		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `" + newWS + "`\nSession restarted with new mount!")
+
+		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\nSession restarted with new mount!")
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
 		return
@@ -682,7 +717,7 @@ ProcessInput:
 			return
 		}
 		newName := strings.TrimSpace(parts[1])
-		
+
 		session := getSession(botName, user)
 		if session.Conversation != "" {
 			sessionDir := filepath.Join("/root/.gemini/antigravity-cli/brain", session.Conversation)
@@ -690,9 +725,9 @@ ProcessInput:
 			titleFile := filepath.Join(sessionDir, ".title")
 			err := os.WriteFile(titleFile, []byte(newName), 0644)
 			if err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save name: " + err.Error()))
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save name: "+err.Error()))
 			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "✅ Session renamed to: *" + newName + "*"))
+				bot.Send(tgbotapi.NewMessage(chatID, "✅ Session renamed to: *"+newName+"*"))
 			}
 		} else {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ No active session to rename."))
@@ -749,14 +784,14 @@ ProcessInput:
 		return
 	} else if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
 		sessionMu.Lock()
-		if old, ok := globalSessions[botName]; ok {
+		if old, ok := globalSessions[sessionKey]; ok {
 			if old.Cmd != nil && old.Cmd.Process != nil {
 				old.Cmd.Process.Kill()
 			}
-			delete(globalSessions, botName)
+			delete(globalSessions, sessionKey)
 		}
 		sessionMu.Unlock()
-		
+
 		newUUID := uuid.New().String()
 		updateUserSession(db, userID, newUUID)
 		respText := "🧼 Context cleared!\n`" + newUUID + "`"
@@ -792,9 +827,9 @@ ProcessInput:
 			session.ActiveMessageID = activeMessageID
 		}
 	}
-	
+
 	if session.Cmd == nil || session.Cmd.Process == nil {
-	    session.start()
+		session.start()
 	}
 
 	payload := map[string]interface{}{
@@ -820,7 +855,7 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 	if len(chunks) > 1 && strings.Contains(text, "⏳") {
 		chunkToEdit += "\n\n<i>[Truncated while typing...]</i>"
 	}
-	
+
 	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, chunkToEdit)
 	editMsg.ParseMode = "HTML"
 	_, err := bot.Send(editMsg)
@@ -837,7 +872,7 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 		log.Printf("Failed to init bot: %v", err)
 		return
 	}
-	
+
 	registerBotCommands(bot)
 	db := initDB(bot.Self.UserName)
 	log.Printf("[Bot %s] Started in PURE GO mode", bot.Self.UserName)
@@ -862,7 +897,6 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 		go handleUpdate(bot, update, db)
 	}
 }
-
 
 func registerBotCommands(bot *tgbotapi.BotAPI) {
 	commands := []tgbotapi.BotCommand{
@@ -894,7 +928,7 @@ func main() {
 	if tokensEnv == "" {
 		log.Fatal("BOT_TOKENS env var required")
 	}
-	
+
 	allowedAdmins := loadAllowedAdmins()
 	var wg sync.WaitGroup
 
@@ -926,13 +960,13 @@ func (s *AgySession) readStdoutLoop() {
 		if event == "init" {
 			newID, _ := data["conversation_id"].(string)
 			if newID != "" && newID != s.Conversation {
-			    s.Conversation = newID
-			    // Update DB
-			    dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
-			    if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
-			        localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
-			        localDB.Close()
-			    }
+				s.Conversation = newID
+				// Update DB
+				dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
+				if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
+					localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
+					localDB.Close()
+				}
 			}
 		} else if event == "step_update" {
 			su, ok := data["step_update"].(map[string]interface{})
@@ -940,32 +974,36 @@ func (s *AgySession) readStdoutLoop() {
 				if tcs, ok := su["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
 					for _, tcRaw := range tcs {
 						tc, ok := tcRaw.(map[string]interface{})
-						if !ok { continue }
+						if !ok {
+							continue
+						}
 						if name, _ := tc["name"].(string); name == "ask_question" {
 							argJSON, _ := tc["argumentsJson"].(string)
 							var args map[string]interface{}
 							json.Unmarshal([]byte(argJSON), &args)
-							
+
 							questions, _ := args["questions"].([]interface{})
 							if len(questions) > 0 {
 								qMap, _ := questions[0].(map[string]interface{})
 								qText, _ := qMap["question"].(string)
 								opts, _ := qMap["options"].([]interface{})
-								
+
 								if len(opts) > 0 {
 									var rows [][]tgbotapi.InlineKeyboardButton
 									for _, optRaw := range opts {
 										optStr := fmt.Sprintf("%v", optRaw)
 										callbackData := "ans:" + optStr
-										if len(callbackData) > 64 { callbackData = callbackData[:64] }
+										if len(callbackData) > 64 {
+											callbackData = callbackData[:64]
+										}
 										row := tgbotapi.NewInlineKeyboardRow(
 											tgbotapi.NewInlineKeyboardButtonData(optStr, callbackData),
 										)
 										rows = append(rows, row)
 									}
 									m := tgbotapi.NewInlineKeyboardMarkup(rows...)
-									
-									msg := tgbotapi.NewMessage(s.ChatID, "❓ *Question from Agent:*\n" + qText)
+
+									msg := tgbotapi.NewMessage(s.ChatID, "❓ *Question from Agent:*\n"+qText)
 									msg.ParseMode = "Markdown"
 									msg.ReplyMarkup = m
 									if s.BotAPI != nil {
@@ -978,7 +1016,13 @@ func (s *AgySession) readStdoutLoop() {
 				}
 
 				if delta, ok := su["text_delta"].(string); ok && delta != "" {
+					s.mu.Lock()
 					s.TextBuffer += delta
+					s.mu.Unlock()
+					select {
+					case s.UpdateChan <- struct{}{}:
+					default:
+					}
 				}
 			}
 		} else if event == "result" {
@@ -986,11 +1030,15 @@ func (s *AgySession) readStdoutLoop() {
 			if ok {
 				if status, _ := res["status"].(string); status == "ERROR" {
 					errMsg, _ := res["error"].(string)
+					select {
+					case s.UpdateChan <- struct{}{}:
+					default:
+					}
 					if s.ActiveMessageID == 0 {
-					    msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
-					    s.BotAPI.Send(msg)
+						msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
+						s.BotAPI.Send(msg)
 					} else {
-					    sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, "❌ Error from agent: "+errMsg)
+						sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, "❌ Error from agent: "+errMsg)
 					}
 					s.ActiveMessageID = 0
 					s.TextBuffer = ""
@@ -1001,22 +1049,22 @@ func (s *AgySession) readStdoutLoop() {
 					response = "No response from agent."
 				}
 				if s.ActiveMessageID == 0 {
-						chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
-						for _, chunk := range chunks {
-					    	msg := tgbotapi.NewMessage(s.ChatID, chunk)
+					chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
+					for _, chunk := range chunks {
+						msg := tgbotapi.NewMessage(s.ChatID, chunk)
+						msg.ParseMode = "HTML"
+						s.BotAPI.Send(msg)
+					}
+				} else {
+					chunks := sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, response)
+					if len(chunks) > 1 {
+						for i := 1; i < len(chunks); i++ {
+							msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
 							msg.ParseMode = "HTML"
-					    	s.BotAPI.Send(msg)
-						}
-					} else {
-						chunks := sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, response)
-						if len(chunks) > 1 {
-							for i := 1; i < len(chunks); i++ {
-								msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
-								msg.ParseMode = "HTML"
-								s.BotAPI.Send(msg)
-							}
+							s.BotAPI.Send(msg)
 						}
 					}
+				}
 				sendArtifacts(s.BotAPI, s.ChatID, response)
 				s.ActiveMessageID = 0
 				s.TextBuffer = ""
