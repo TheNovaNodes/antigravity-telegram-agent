@@ -1,17 +1,16 @@
-# SESSION HANDOFF - 2026-09-01
+# Session Handoff (2026-09-01)
 
-**State:** CLOSED
-**Archetype:** Trickster (Telegram Bot Specialist)
+## What Was Done
+1. **Repository Migration**: Initialized work in the new clean-slate repository `antigravity-go-tg-bot-agent`.
+2. **Godoc Coverage**: Added comprehensive GoDoc to all exported symbols in `agysessionsstarter.go` and `formatters.go`. Merged via PR #1.
+3. **Dual-Engine Deployment**: 
+   - Fixed missing `HOME` and `PATH` environment variables in systemd services that caused `agy` subprocesses to crash instantly.
+   - Deployed `bot_new_engine.service` for 4 migrated bots (Tyler, Marla, kairos, toomynamea).
+   - Deployed `bot_old_engine.service` for the remaining 4 bots.
+   - Migrated session databases without data loss.
+4. **Zombie Cleanup**: Identified and killed a rogue legacy `bot.py` process that was holding `getUpdates` and causing silent drops.
 
-## 📝 What was done today
-- Diagnosed the `"timeout waiting for response"` error from the agent subprocess.
-- Verified hypothesis via **Manus AI** that synchronous `bot.Send` calls in the stdout reader loop caused OS pipe buffer (64KB) overruns and deadlocks on HTTP 429.
-- Created a **brand new pristine repository**: `TheNovaNodes/antigravity-go-tg-bot-agent`.
-- Extracted the Pure Go V2 Core into this repository.
-- **Refactored `agysessionsstarter.go`** to fully decouple `bot.Send` calls from `readStdoutLoop`, relying entirely on the async throttler loop to prevent pipe stalls.
-- Applied `Fatality Protocol` for graceful shutdown.
-
-## 🚀 Next Steps (For Tomorrow)
-1. Add more robust unit tests for `formatters.go` and the async throttler.
-2. Build CI/CD pipelines (GitHub Actions) for the new repository.
-3. Fully deprecate the old Python workers in the legacy repository.
+## Explicit Next Steps
+1. **Monitor the New Engine**: Verify that the 4 migrated bots are stable over the next 24 hours.
+2. **Migrate Remaining Bots**: Once stability is confirmed, shut down `bot_old_engine` and move the remaining 4 tokens to `bot_new_engine`.
+3. **Refine Architecture**: Consider moving environment variables out of `systemd` unit files into an `.env` file for better security and maintainability.
