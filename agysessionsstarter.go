@@ -191,8 +191,18 @@ func (s *AgySession) start() {
 			chatID := s.ChatID
 			s.mu.Unlock()
 			
-			if currentText != "" && currentText != lastSent && activeMsgID != 0 && botAPI != nil {
-				if time.Since(lastSentTime) > 1000*time.Millisecond {
+			if currentText != "" && currentText != lastSent && botAPI != nil {
+                if activeMsgID == 0 {
+                    msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+                    msg.ParseMode = "Markdown"
+                    if sentMsg, err := botAPI.Send(msg); err == nil {
+                        s.mu.Lock()
+                        s.ActiveMessageID = sentMsg.MessageID
+                        activeMsgID = sentMsg.MessageID
+                        s.mu.Unlock()
+                    }
+                }
+				if activeMsgID != 0 && time.Since(lastSentTime) > 1000*time.Millisecond {
 					sendChunk(botAPI, chatID, activeMsgID, currentText+"\n\n*⏳ Typing...*")
 					lastSent = currentText
 					lastSentTime = time.Now()
@@ -878,17 +888,6 @@ func (s *AgySession) readStdoutLoop() {
 
 				if delta, ok := su["text_delta"].(string); ok && delta != "" {
 					s.TextBuffer += delta
-					if time.Since(s.LastEdit) > time.Second {
-					    if s.ActiveMessageID == 0 {
-					        msg := tgbotapi.NewMessage(s.ChatID, "*⏳ Thinking...*")
-                            msg.ParseMode = "Markdown"
-                            if sentMsg, err := s.BotAPI.Send(msg); err == nil {
-                                s.ActiveMessageID = sentMsg.MessageID
-                            }
-					    }
-						sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, s.TextBuffer+"\n\n*⏳ Typing...*")
-						s.LastEdit = time.Now()
-					}
 				}
 			}
 		} else if event == "result" {
