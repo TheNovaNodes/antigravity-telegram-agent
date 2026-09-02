@@ -254,7 +254,11 @@ func (s *AgySession) start() {
 		args = append(args, "--conversation", s.Conversation)
 	}
 
-	s.Cmd = exec.Command("/tmp/agy_wrapper.sh", args...)
+		agyPath := os.Getenv("AGY_BINARY")
+	if agyPath == "" {
+		agyPath = "/root/.local/bin/agy"
+	}
+	s.Cmd = exec.Command(agyPath, args...)
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
@@ -804,7 +808,11 @@ ProcessInput:
 		}
 		return
 	} else if text == "/usage" || text == fmt.Sprintf("/usage@%s", botName) {
-		cmd := exec.Command("/tmp/agy_wrapper.sh", "--print", "/usage")
+				agyPath := os.Getenv("AGY_BINARY")
+		if agyPath == "" {
+			agyPath = "/root/.local/bin/agy"
+		}
+		cmd := exec.Command(agyPath, "--print", "/usage")
 		out, err := cmd.CombinedOutput()
 		var respText string
 		if err != nil {
@@ -1010,8 +1018,22 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	<-sigs
 
-	log.Println("Shutting down...")
-	// We don't bother cleanly closing all bots here, systemd handles it.
+	log.Println("Shutting down gracefully...")
+	sessionMu.Lock()
+	for _, s := range globalSessions {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.Cmd != nil && s.Cmd.Process != nil {
+			log.Printf("Killing child PID %d for user session", s.Cmd.Process.Pid)
+			s.Cmd.Process.Kill()
+		}
+	}
+	sessionMu.Unlock()
+	
+	// Give children time to flush
+	time.Sleep(2 * time.Second)
+	log.Println("Goodbye.")
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
