@@ -414,7 +414,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			}
 			sessionMu.Unlock()
 
-			respText = "✅ Model changed to `" + newModel + "`"
+			respText = "✅ Model changed to `" + newModel + "`\n\n⚠️ *Warning:* Agent restarted. Background tasks were stopped."
 		} else if data == "cmd:status" {
 			respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
 		} else if data == "cmd:model" {
@@ -715,7 +715,7 @@ ProcessInput:
 		}
 		sessionMu.Unlock()
 
-		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\nSession restarted with new mount!")
+		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
 		return
