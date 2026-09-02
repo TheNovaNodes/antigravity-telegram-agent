@@ -127,8 +127,9 @@ func loadAllowedAdmins() map[int64]bool {
 			continue
 		}
 		var id int64
-		fmt.Sscanf(idStr, "%d", &id)
-		allowed[id] = true
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err == nil && id != 0 {
+			allowed[id] = true
+		}
 	}
 	return allowed
 }
