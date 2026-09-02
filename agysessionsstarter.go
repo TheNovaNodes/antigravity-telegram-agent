@@ -90,6 +90,9 @@ func initDB(botName string) *sql.DB {
 }
 
 // getUser retrieves a user from the database or creates a new entry with default settings if not found.
+// getUser queries the database for an existing user configuration.
+// If the user does not exist, it initializes a new record with default
+// settings (workspace, model, session UUID) and returns the User struct.
 func getUser(db *sql.DB, userID int64, botName string) User {
 	var u User
 	err := db.QueryRow("SELECT user_id, workspace, model, is_first_start, session_id FROM users WHERE user_id = ?", userID).Scan(
@@ -171,6 +174,9 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
+// replaceSession handles the graceful termination of an existing agent session 
+// and provisions a new isolated agent process with updated environment parameters.
+// It ensures there are no goroutine or memory leaks from the previous context.
 func replaceSession(db *sql.DB, botName string, user User, convID string, newModel string, newWorkspace string, chatID int64) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
 	sessionMu.Lock()

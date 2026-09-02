@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -85,5 +86,58 @@ func TestUpdateChan(t *testing.T) {
 	case session.UpdateChan <- struct{}{}:
 	case <-time.After(1 * time.Second):
 		t.Error("Sending to UpdateChan blocked")
+	}
+}
+
+
+// TestReplaceSession verifies that replaceSession correctly cleans up old sessions
+// and initializes new ones with the updated parameters (chatID isolation).
+func TestReplaceSession(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	user := User{
+		ID:        999,
+		Workspace: "/tmp/workspace",
+		Model:     "test-model",
+		SessionID: "uuid-1",
+	}
+
+	botName := "TestBot"
+	chatID := int64(1001)
+
+	session1 := replaceSession(db, botName, user, "uuid-1", "test-model", "/tmp/workspace", chatID)
+	if session1.Conversation != "uuid-1" {
+		t.Errorf("Expected Conversation uuid-1, got %s", session1.Conversation)
+	}
+	if session1.UserID != 999 {
+		t.Errorf("Expected UserID 999, got %d", session1.UserID)
+	}
+
+	// Verify it was added to globalSessions
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
+	
+	sessionMu.Lock()
+	cached, ok := globalSessions[sessionKey]
+	sessionMu.Unlock()
+	
+	if !ok {
+		t.Errorf("Session not found in globalSessions")
+	}
+	if cached != session1 {
+		t.Errorf("Cached session pointer mismatch")
+	}
+
+	// Create a new session with updated workspace (simulating /workspace command)
+	session2 := replaceSession(db, botName, user, "uuid-2", "test-model", "/tmp/new_workspace", chatID)
+	
+	// The old context should be cancelled
+	if session1.ctx.Err() == nil {
+		// Note: The cancel function might be async if there were delays, but replaceSession calls it synchronously.
+		t.Errorf("Old session context was not cancelled")
+	}
+	
+	if session2.Workspace != "/tmp/new_workspace" {
+		t.Errorf("Expected Workspace /tmp/new_workspace, got %s", session2.Workspace)
 	}
 }
