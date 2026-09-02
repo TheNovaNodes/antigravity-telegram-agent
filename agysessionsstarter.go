@@ -48,6 +48,8 @@ type AgySession struct {
 	mu              sync.Mutex
 	BotAPI          *tgbotapi.BotAPI
 	ChatID          int64
+	UserID          int64
+	DB              *sql.DB
 	ActiveMessageID int
 	TextBuffer      string
 	LastEdit        time.Time
@@ -169,8 +171,8 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
-func replaceSession(botName string, user User, convID string, newModel string, newWorkspace string) *AgySession {
-	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
+func replaceSession(db *sql.DB, botName string, user User, convID string, newModel string, newWorkspace string, chatID int64) *AgySession {
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 
@@ -189,6 +191,8 @@ func replaceSession(botName string, user User, convID string, newModel string, n
 		Model:        newModel,
 		Workspace:    newWorkspace,
 		Conversation: convID,
+		UserID:       user.ID,
+		DB:           db,
 		UpdateChan:   make(chan struct{}, 1),
 		InitChan:     make(chan string, 1),
 	}
@@ -199,8 +203,8 @@ func replaceSession(botName string, user User, convID string, newModel string, n
 }
 
 // getSession retrieves an active session for the user or creates a new isolated agent process.
-func getSession(botName string, user User) *AgySession {
-	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
+func getSession(botName string, user User, chatID int64) *AgySession {
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 
@@ -429,7 +433,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 
 			updateUserSession(db, userID, convID)
-			session := replaceSession(botName, user, convID, user.Model, user.Workspace)
+			session := replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
 
 			select {
 			case newID := <-session.InitChan:
@@ -467,7 +471,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			
 
 			newUUID := uuid.New().String()
-			replaceSession(botName, user, newUUID, user.Model, user.Workspace)
+			replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
 			updateUserSession(db, userID, newUUID)
 			respText = "🧼 Context cleared!\n`" + newUUID + "`"
 		} else if data == "cmd:usage" {
@@ -776,7 +780,9 @@ ProcessInput:
 			return
 		}
 
-		replaceSession(botName, user, user.SessionID, user.Model, newWS)
+		newUUID := uuid.New().String()
+		updateUserSession(db, userID, newUUID)
+		replaceSession(db, botName, user, newUUID, user.Model, newWS, chatID)
 
 		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
 		msg.ParseMode = "Markdown"
@@ -792,7 +798,7 @@ ProcessInput:
 		}
 		newName := strings.TrimSpace(parts[1])
 
-		session := getSession(botName, user)
+		session := getSession(botName, user, chatID)
 		if session.Conversation != "" {
 			sessionDir := filepath.Join("/root/.gemini/antigravity-cli/brain", session.Conversation)
 			os.MkdirAll(sessionDir, 0755)
@@ -862,7 +868,7 @@ ProcessInput:
 		return
 	} else if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
 		newUUID := uuid.New().String()
-		replaceSession(botName, user, newUUID, user.Model, user.Workspace)
+		replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
 		updateUserSession(db, userID, newUUID)
 		respText := "🧼 Context cleared!\n`" + newUUID + "`"
 		msg := tgbotapi.NewMessage(chatID, respText)
@@ -871,7 +877,7 @@ ProcessInput:
 		return
 	}
 
-	session := getSession(botName, user)
+	session := getSession(botName, user, chatID)
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	session.BotAPI = bot
@@ -1055,11 +1061,9 @@ func (s *AgySession) readStdoutLoop() {
 				}
 				if newID != s.Conversation {
 					s.Conversation = newID
-					// Update DB
-					dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
-					if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
-						localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
-						localDB.Close()
+					// Update DB using the shared connection (Fixes #44 and #43)
+					if s.DB != nil {
+						s.DB.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", newID, s.UserID)
 					}
 				}
 			}
