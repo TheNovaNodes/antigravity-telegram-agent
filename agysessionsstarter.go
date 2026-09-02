@@ -909,6 +909,13 @@ ProcessInput:
 	}
 
 	session := getSession(botName, user, chatID)
+	
+	if update.Message != nil && update.Message.Voice != nil {
+		session.mu.Lock()
+		session.VoiceReply = true
+		session.mu.Unlock()
+	}
+
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	session.BotAPI = bot
