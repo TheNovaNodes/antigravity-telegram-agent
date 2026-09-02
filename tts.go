@@ -49,8 +49,8 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 
 	// 3. Basic cleanup
 	cleanText = strings.TrimSpace(cleanText)
-	if len(cleanText) == 0 || len(cleanText) > 1000 {
-		return nil // Too long or empty, skip TTS
+	if len(cleanText) == 0 {
+		return nil // Empty, skip TTS
 	}
 
 	// George Voice ID (default for Russian accent)
