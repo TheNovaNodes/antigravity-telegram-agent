@@ -53,6 +53,7 @@ type AgySession struct {
 	UpdateChan      chan struct{}
 }
 
+// initDB initializes the SQLite database for a specific bot and creates necessary tables.
 func initDB(botName string) *sql.DB {
 	dbPath := fmt.Sprintf("sessions_%s.db", botName)
 	db, err := sql.Open("sqlite3", dbPath)
@@ -72,6 +73,7 @@ func initDB(botName string) *sql.DB {
 	return db
 }
 
+// getUser retrieves a user from the database or creates a new entry with default settings if not found.
 func getUser(db *sql.DB, userID int64, botName string) User {
 	var u User
 	err := db.QueryRow("SELECT user_id, workspace, model, is_first_start, session_id FROM users WHERE user_id = ?", userID).Scan(
@@ -99,6 +101,7 @@ func getUser(db *sql.DB, userID int64, botName string) User {
 	return u
 }
 
+// updateUserSession updates the active conversation session ID for a specific user.
 func updateUserSession(db *sql.DB, userID int64, sessionID string) {
 	_, err := db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)
 	if err != nil {
@@ -106,6 +109,7 @@ func updateUserSession(db *sql.DB, userID int64, sessionID string) {
 	}
 }
 
+// updateUserModel updates the selected LLM model for a specific user.
 func updateUserModel(db *sql.DB, userID int64, model string) error {
 	_, err := db.Exec("UPDATE users SET model = ? WHERE user_id = ?", model, userID)
 	if err != nil {
@@ -114,6 +118,7 @@ func updateUserModel(db *sql.DB, userID int64, model string) error {
 	return err
 }
 
+// loadAllowedAdmins parses the ALLOWED_ADMIN_IDS environment variable into a map for quick lookups.
 func loadAllowedAdmins() map[int64]bool {
 	allowed := make(map[int64]bool)
 	env := os.Getenv("ALLOWED_ADMIN_IDS")
@@ -137,6 +142,7 @@ func loadAllowedAdmins() map[int64]bool {
 var globalSessions = make(map[string]*AgySession)
 var sessionMu sync.Mutex
 
+// getAgentsDir resolves the base directory for all agent workspaces, defaulting to the user's home directory.
 func getAgentsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -145,6 +151,7 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
+// getSession retrieves an active session for the user or creates a new isolated agent process.
 func getSession(botName string, user User) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
 	sessionMu.Lock()
@@ -175,6 +182,7 @@ func getSession(botName string, user User) *AgySession {
 	return session
 }
 
+// start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
 func (s *AgySession) start() {
 	args := []string{
 		"--model", s.Model,
@@ -268,6 +276,7 @@ func (s *AgySession) Restart() {
 	s.start()
 }
 
+// sendArtifacts parses the agent's response for absolute file paths and sends them to the Telegram chat as documents.
 func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	re := regexp.MustCompile(`\(file://(.*?)\)`)
 	matches := re.FindAllStringSubmatch(text, -1)
@@ -286,6 +295,7 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
+// handleUpdate is the primary router for incoming Telegram messages and inline callbacks.
 func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	if update.Message == nil && update.CallbackQuery == nil {
 		return
@@ -849,6 +859,7 @@ ProcessInput:
 	}
 }
 
+// sendChunk safely breaks a large text into valid HTML chunks and sends them sequentially to respect Telegram limits.
 func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) []string {
 	log.Printf("sendChunk called for chatID %d, msgID %d, text len %d", chatID, messageID, len(text))
 	chunks := SplitHTMLChunks(MarkdownToTelegramHTML(text), 4000)
@@ -866,6 +877,7 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 	return chunks
 }
 
+// startBotPolling initializes a Telegram Bot instance and starts its dedicated long-polling loop.
 func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	bot, err := tgbotapi.NewBotAPI(botToken)
@@ -899,6 +911,7 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 	}
 }
 
+// registerBotCommands sets the default slash commands menu for the Telegram bot interface.
 func registerBotCommands(bot *tgbotapi.BotAPI) {
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Welcome menu & status"},
@@ -924,6 +937,7 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 	}
 }
 
+// main is the entry point that spins up multiple bot instances concurrently based on the BOT_TOKENS environment variable.
 func main() {
 	tokensEnv := os.Getenv("BOT_TOKENS")
 	if tokensEnv == "" {
@@ -949,6 +963,7 @@ func main() {
 	// We don't bother cleanly closing all bots here, systemd handles it.
 }
 
+// readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
 func (s *AgySession) readStdoutLoop() {
 	for s.StdoutScanner.Scan() {
 		line := s.StdoutScanner.Text()
@@ -1041,7 +1056,7 @@ func (s *AgySession) readStdoutLoop() {
 					} else {
 						sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, "❌ Error from agent: "+errMsg)
 					}
-					
+
 					// Auto-heal: kill the broken process so it restarts on the next message
 					s.mu.Lock()
 					if s.Cmd != nil && s.Cmd.Process != nil {
