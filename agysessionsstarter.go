@@ -346,7 +346,13 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			if decoded, err := url.PathUnescape(filePath); err == nil {
 				filePath = decoded
 			}
-			if _, err := os.Stat(filePath); err == nil {
+			cleanPath, _ := filepath.Abs(filePath)
+			allowedRoot, _ := filepath.Abs(getAgentsDir())
+			if !strings.HasPrefix(cleanPath, allowedRoot) {
+				log.Printf("sendArtifacts: blocked attempt to send file outside allowed root: %s", cleanPath)
+				continue
+			}
+			if _, err := os.Stat(cleanPath); err == nil {
 				doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 				doc.Caption = "📦 Artifact: " + filepath.Base(filePath)
 				bot.Send(doc)
@@ -501,14 +507,31 @@ ProcessInput:
 
 			resp, err := http.Get(fileURL)
 			if err == nil {
-				defer resp.Body.Close()
 				out, err := os.Create(safePath)
 				if err != nil {
+					resp.Body.Close()
 					bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save file to disk."))
 					return
 				}
-				io.Copy(out, resp.Body)
+				
+				const maxUploadBytes = 100 << 20 // 100 MB
+				if resp.ContentLength > maxUploadBytes {
+					out.Close()
+					resp.Body.Close()
+					os.Remove(safePath)
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ File too large (max 100 MB)"))
+					return
+				}
+				
+				n, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
 				out.Close()
+				resp.Body.Close()
+				
+				if n > maxUploadBytes {
+					os.Remove(safePath)
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ File exceeds 100 MB limit"))
+					return
+				}
 
 				baseText := text
 				if baseText == "" {
@@ -727,10 +750,21 @@ ProcessInput:
 			return
 		}
 		newWS := strings.TrimSpace(parts[1])
-		if !strings.HasPrefix(newWS, "/") {
+		cleanPath := filepath.Clean(newWS)
+		if !filepath.IsAbs(cleanPath) {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: path must be absolute (e.g. `/root/projects/app`)"))
 			return
 		}
+		realPath, evalErr := filepath.EvalSymlinks(cleanPath)
+		if evalErr != nil {
+			realPath = cleanPath
+		}
+		allowedRoot, _ := filepath.Abs(getAgentsDir())
+		if !strings.HasPrefix(realPath, allowedRoot) {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Path must be under " + allowedRoot))
+			return
+		}
+		newWS = realPath
 
 		_, err := db.Exec("UPDATE users SET workspace = ? WHERE user_id = ?", newWS, userID)
 		if err != nil {
@@ -904,6 +938,7 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 
 	registerBotCommands(bot)
 	db := initDB(bot.Self.UserName)
+	defer db.Close()
 	log.Printf("[Bot %s] Started in PURE GO mode", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
