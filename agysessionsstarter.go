@@ -362,8 +362,10 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 				filePath = decoded
 			}
 			cleanPath, _ := filepath.Abs(filePath)
-			allowedRoot, _ := filepath.Abs(getAgentsDir())
-			if !strings.HasPrefix(cleanPath, allowedRoot) {
+			allowedRootAgents, _ := filepath.Abs(getAgentsDir())
+			allowedRootBrain, _ := filepath.Abs("/root/.gemini/antigravity-cli/brain")
+			
+			if !strings.HasPrefix(cleanPath, allowedRootAgents) && !strings.HasPrefix(cleanPath, allowedRootBrain) {
 				log.Printf("sendArtifacts: blocked attempt to send file outside allowed root: %s", cleanPath)
 				continue
 			}
