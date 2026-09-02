@@ -57,6 +57,7 @@ type AgySession struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	InitChan        chan string
+	VoiceReply      bool
 }
 
 // initDB initializes the SQLite database for a specific bot and creates necessary tables.
