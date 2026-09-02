@@ -1210,10 +1210,25 @@ func (s *AgySession) readStdoutLoop() {
 				}
 				sendArtifacts(s.BotAPI, s.ChatID, response)
 				
+				// Mirror Protocol: Trigger TTS on final response
 				s.mu.Lock()
+				shouldVoice := s.VoiceReply
+				s.VoiceReply = false
 				s.ActiveMessageID = 0
 				s.TextBuffer = ""
 				s.mu.Unlock()
+				
+				if shouldVoice && response != "" {
+					go func(chatID int64, txt string) {
+						err := GenerateAndSendVoice(s.BotAPI, chatID, txt)
+						if err != nil {
+							msg := tgbotapi.NewMessage(chatID, "❌ TTS Error: " + err.Error())
+							if s.BotAPI != nil {
+								s.BotAPI.Send(msg)
+							}
+						}
+					}(s.ChatID, response)
+				}
 			}
 		}
 	}
