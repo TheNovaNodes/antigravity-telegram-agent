@@ -63,12 +63,22 @@ func initDB(botName string) *sql.DB {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
 		workspace TEXT DEFAULT '',
-		model TEXT DEFAULT 'gemini-3.1-pro-high',
+		model TEXT DEFAULT 'gemini-3.7-flash-high',
 		is_first_start BOOLEAN DEFAULT 1,
 		session_id TEXT DEFAULT NULL
 	)`)
 	if err != nil {
-		log.Fatalf("Failed to create table in %s: %v", dbPath, err)
+		log.Fatal(err)
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS session_history (
+		user_id INTEGER,
+		session_id TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, session_id)
+	)`)
+	if err != nil {
+		log.Fatal(err)
 	}
 	return db
 }
@@ -106,6 +116,10 @@ func updateUserSession(db *sql.DB, userID int64, sessionID string) {
 	_, err := db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)
 	if err != nil {
 		log.Printf("DB Error updating session for user %d: %v", userID, err)
+	}
+	_, err = db.Exec("INSERT OR IGNORE INTO session_history (user_id, session_id) VALUES (?, ?)", userID, sessionID)
+	if err != nil {
+		log.Printf("DB Error inserting session_history for user %d: %v", userID, err)
 	}
 }
 
@@ -577,13 +591,14 @@ ProcessInput:
 		bot.Send(msg)
 		return
 	} else if text == "/resume" || text == fmt.Sprintf("/resume@%s", botName) {
-		// List recent conversations from brain directory
+		// List recent conversations from user history
 		brainDir := "/root/.gemini/antigravity-cli/brain"
-		entries, err := os.ReadDir(brainDir)
+		dbRows, err := db.Query("SELECT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
 		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read sessions"))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
 			return
 		}
+		defer dbRows.Close()
 
 		type convInfo struct {
 			ID      string
@@ -591,22 +606,27 @@ ProcessInput:
 			Title   string
 		}
 		var convs []convInfo
+		var validSessionIDs []string
 
-		for _, e := range entries {
-			if !e.IsDir() {
+		for dbRows.Next() {
+			var sid string
+			if err := dbRows.Scan(&sid); err == nil {
+				validSessionIDs = append(validSessionIDs, sid)
+			}
+		}
+
+		for _, sid := range validSessionIDs {
+			transcript := filepath.Join(brainDir, sid, ".system_generated", "logs", "transcript.jsonl")
+			stat, err := os.Stat(transcript)
+			if err != nil {
 				continue
 			}
-			transcript := filepath.Join(brainDir, e.Name(), ".system_generated", "logs", "transcript.jsonl")
-			if _, err := os.Stat(transcript); err != nil {
-				continue
-			}
-			info, _ := e.Info()
 			f, err := os.Open(transcript)
 			if err != nil {
 				continue
 			}
 			title := ""
-			titleFile := filepath.Join(brainDir, e.Name(), ".title")
+			titleFile := filepath.Join(brainDir, sid, ".title")
 			if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
 				title = string(bytes.TrimSpace(b))
 				if len(title) > 45 {
@@ -647,7 +667,7 @@ ProcessInput:
 			if title == "" {
 				title = "(empty)"
 			}
-			convs = append(convs, convInfo{ID: e.Name(), ModTime: info.ModTime(), Title: title})
+			convs = append(convs, convInfo{ID: sid, ModTime: stat.ModTime(), Title: title})
 		}
 
 		// Sort by modification time descending
@@ -818,24 +838,18 @@ ProcessInput:
 	session.BotAPI = bot
 	session.ChatID = chatID
 
-	var activeMessageID int
 	if !downloadedFile {
-		msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
-		msg.ParseMode = "Markdown"
-		sentMsg, err := bot.Send(msg)
-		if err == nil {
-			activeMessageID = sentMsg.MessageID
-			session.ActiveMessageID = activeMessageID
-		}
-	} else {
-		// Assuming the "Downloading file..." was the last message, we can't easily edit it without its ID,
-		// so we just send a new message.
-		msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
-		msg.ParseMode = "Markdown"
-		sentMsg, err := bot.Send(msg)
-		if err == nil {
-			activeMessageID = sentMsg.MessageID
-			session.ActiveMessageID = activeMessageID
+		if session.ActiveMessageID == 0 {
+			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+			msg.ParseMode = "Markdown"
+			sentMsg, err := bot.Send(msg)
+			if err == nil {
+				session.ActiveMessageID = sentMsg.MessageID
+			}
+		} else {
+			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
 		}
 	}
 
