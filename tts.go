@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"regexp"
@@ -15,10 +16,28 @@ import (
 
 // GenerateAndSendVoice strips code blocks from text, calls ElevenLabs, and sends a Voice Note.
 func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error {
-	apiKey := os.Getenv("ELEVENLABS_API_KEY")
-	if apiKey == "" {
+	rawEnv := os.Getenv("ELEVENLABS_API_KEY")
+	if rawEnv == "" {
 		return fmt.Errorf("ELEVENLABS_API_KEY not set")
 	}
+
+	keys := strings.FieldsFunc(rawEnv, func(c rune) bool {
+		return c == ',' || c == ' ' || c == '\n' || c == '\r'
+	})
+
+	var validKeys []string
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if strings.HasPrefix(k, "sk_") {
+			validKeys = append(validKeys, k)
+		}
+	}
+
+	if len(validKeys) == 0 {
+		return fmt.Errorf("no valid sk_ keys found in ELEVENLABS_API_KEY")
+	}
+
+	apiKey := validKeys[rand.Intn(len(validKeys))]
 
 	// 1. Strip Markdown code blocks
 	reCodeBlock := regexp.MustCompile("(?s)```.*?```")
@@ -34,17 +53,25 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 		return nil // Too long or empty, skip TTS
 	}
 
-	// Rachel Voice ID (default English/Multilingual)
-	voiceID := "21m00Tcm4TlvDq8ikWAM"
+	// George Voice ID (default for Russian accent)
+	voiceID := "JBFqnCBsd6RMkjVDRZzb"
 	url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", voiceID)
 
 	payload := map[string]interface{}{
-		"text":     cleanText,
+		"text": cleanText,
 		"model_id": "eleven_multilingual_v2",
+		"voice_settings": map[string]interface{}{
+			"stability": 0.5,
+			"similarity_boost": 0.7,
+		},
 	}
-	jsonPayload, _ := json.Marshal(payload)
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	bodyData, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyData))
+	if err != nil {
+		return err
+	}
+
 	req.Header.Add("xi-api-key", apiKey)
 	req.Header.Add("Content-Type", "application/json")
 	req.Header.Add("Accept", "audio/mpeg")
@@ -68,7 +95,7 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 
 	// Send to Telegram as Voice Note
 	fileBytes := tgbotapi.FileBytes{
-		Name:  "voice.mp3",
+		Name:  "voice.ogg",
 		Bytes: audioBytes,
 	}
 	msg := tgbotapi.NewVoice(chatID, fileBytes)
