@@ -14,11 +14,11 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// GenerateAndSendVoice strips code blocks from text, calls ElevenLabs, and sends a Voice Note.
-func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error {
-	rawEnv := os.Getenv("ELEVENLABS_API_KEY")
+// ExtractElevenLabsKeys parses a comma- or whitespace-separated string of API keys,
+// filtering out any keys that do not start with "sk_".
+func ExtractElevenLabsKeys(rawEnv string) ([]string, error) {
 	if rawEnv == "" {
-		return fmt.Errorf("ELEVENLABS_API_KEY not set")
+		return nil, fmt.Errorf("ELEVENLABS_API_KEY not set")
 	}
 
 	keys := strings.FieldsFunc(rawEnv, func(c rune) bool {
@@ -34,11 +34,15 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 	}
 
 	if len(validKeys) == 0 {
-		return fmt.Errorf("no valid sk_ keys found in ELEVENLABS_API_KEY")
+		return nil, fmt.Errorf("no valid sk_ keys found in ELEVENLABS_API_KEY")
 	}
 
-	apiKey := validKeys[rand.Intn(len(validKeys))]
+	return validKeys, nil
+}
 
+// CleanTextForTTS prepares a raw markdown string for Text-To-Speech generation
+// by stripping out Markdown code blocks, inline code, and trimming whitespace.
+func CleanTextForTTS(text string) string {
 	// 1. Strip Markdown code blocks
 	reCodeBlock := regexp.MustCompile("(?s)```.*?```")
 	cleanText := reCodeBlock.ReplaceAllString(text, "")
@@ -48,7 +52,21 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 	cleanText = reInlineCode.ReplaceAllString(cleanText, "")
 
 	// 3. Basic cleanup
-	cleanText = strings.TrimSpace(cleanText)
+	return strings.TrimSpace(cleanText)
+}
+
+// GenerateAndSendVoice acts as the Mirror Protocol's TTS engine. It sanitizes the agent's text,
+// rotates between available ElevenLabs keys to bypass quotas, generates audio via the ElevenLabs API,
+// and sends the resulting binary as a Telegram Voice Note.
+func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error {
+	validKeys, err := ExtractElevenLabsKeys(os.Getenv("ELEVENLABS_API_KEY"))
+	if err != nil {
+		return err
+	}
+
+	apiKey := validKeys[rand.Intn(len(validKeys))]
+
+	cleanText := CleanTextForTTS(text)
 	if len(cleanText) == 0 {
 		return nil // Empty, skip TTS
 	}
