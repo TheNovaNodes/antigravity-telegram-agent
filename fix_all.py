@@ -3,146 +3,340 @@ import re
 with open("agysessionsstarter.go", "r") as f:
     text = f.read()
 
-# Fix 20: DB Error handling
-text = text.replace(
-    'db.Exec("INSERT INTO users (user_id, workspace, model, is_first_start, session_id) VALUES (?, ?, ?, ?, ?)",\\n\\t\\t\\tu.ID, u.Workspace, u.Model, u.IsFirstStart, u.SessionID)',
-    '_, err = db.Exec("INSERT INTO users (user_id, workspace, model, is_first_start, session_id) VALUES (?, ?, ?, ?, ?)",\\n\\t\\t\\tu.ID, u.Workspace, u.Model, u.IsFirstStart, u.SessionID)\\n\\t\\tif err != nil {\\n\\t\\t\\tlog.Printf("DB Error inserting user %d: %v", u.ID, err)\\n\\t\\t}'
-)
-text = text.replace(
-    'db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", u.SessionID, u.ID)',
-    '_, err = db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", u.SessionID, u.ID)\\n\\t\\tif err != nil {\\n\\t\\t\\tlog.Printf("DB Error updating session_id for user %d: %v", u.ID, err)\\n\\t\\t}'
-)
-text = text.replace(
-    'func updateUserSession(db *sql.DB, userID int64, sessionID string) {\\n\\tdb.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)\\n}',
-    'func updateUserSession(db *sql.DB, userID int64, sessionID string) {\\n\\t_, err := db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)\\n\\tif err != nil {\\n\\t\\tlog.Printf("DB Error updating session for user %d: %v", userID, err)\\n\\t}\\n}'
-)
-text = text.replace(
-    'func updateUserModel(db *sql.DB, userID int64, model string) {\\n\\tdb.Exec("UPDATE users SET model = ? WHERE user_id = ?", model, userID)\\n}',
-    'func updateUserModel(db *sql.DB, userID int64, model string) error {\\n\\t_, err := db.Exec("UPDATE users SET model = ? WHERE user_id = ?", model, userID)\\n\\tif err != nil {\\n\\t\\tlog.Printf("DB Error updating model for user %d: %v", userID, err)\\n\\t}\\n\\treturn err\\n}'
-)
-text = text.replace(
-    'updateUserModel(db, userID, newModel)',
-    'if err := updateUserModel(db, userID, newModel); err != nil {\\n\\t\\t\\t\\tbot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))\\n\\t\\t\\t\\treturn\\n\\t\\t\\t}'
-)
+# 1. Add context
+text = text.replace('"bytes"\n\t"database/sql"', '"bytes"\n\t"context"\n\t"database/sql"')
+text = text.replace("UpdateChan      chan struct{}\n}", "UpdateChan      chan struct{}\n\tctx             context.Context\n\tcancel          context.CancelFunc\n\tInitChan        chan string\n}")
 
-# Fix 18: sessionKey instead of botName in globalSessions
-text = re.sub(
-    r'(func getSession\(botName string, user User\) \*AgySession \{)',
-    r'\\1\\n\\tsessionKey := fmt.Sprintf("%s:%d", botName, user.ID)',
-    text
-)
-text = re.sub(
-    r'(botName := bot\.Self\.UserName\s*\\n\s*user := getUser\(db, userID, botName\))',
-    r'\\1\\n\\tsessionKey := fmt.Sprintf("%s:%d", botName, userID)',
-    text
-)
-text = text.replace('globalSessions[botName]', 'globalSessions[sessionKey]')
-text = text.replace('delete(globalSessions, botName)', 'delete(globalSessions, sessionKey)')
+# 2. Add replaceSession helper
+helper = """func replaceSession(botName string, user User, convID string, newModel string, newWorkspace string) *AgySession {
+	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
 
-# Fix 19: getAgentsDir
-helper = """
-func getAgentsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/root/.agents"
+	if old, ok := globalSessions[sessionKey]; ok {
+		if old.cancel != nil {
+			old.cancel()
+		}
+		if old.Cmd != nil && old.Cmd.Process != nil {
+			old.Cmd.Process.Kill()
+		}
+		delete(globalSessions, sessionKey)
 	}
-	return filepath.Join(home, ".agents")
+
+	session := &AgySession{
+		BotName:      botName,
+		Model:        newModel,
+		Workspace:    newWorkspace,
+		Conversation: convID,
+		UpdateChan:   make(chan struct{}, 1),
+		InitChan:     make(chan string, 1),
+	}
+
+	session.start()
+	globalSessions[sessionKey] = session
+	return session
 }
 
-func getSession"""
-text = text.replace("func getSession", helper)
-text = text.replace('Workspace:    fmt.Sprintf("/root/.agents/%s", botName),', 'Workspace:    filepath.Join(getAgentsDir(), botName),')
-text = text.replace('"--add-dir", "/root/.agents/common",', '"--add-dir", filepath.Join(getAgentsDir(), "common"),')
-text = text.replace('"--add-dir", "/root/.agents/" + s.BotName,', '"--add-dir", filepath.Join(getAgentsDir(), s.BotName),')
-text = text.replace('agentDir := fmt.Sprintf("/root/.agents/%s", s.BotName)', 'agentDir := filepath.Join(getAgentsDir(), s.BotName)')
-text = text.replace('downloadDir := fmt.Sprintf("/root/.agents/%s/scratch/downloads", botName)', 'downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")')
-text = text.replace("workspace TEXT DEFAULT '/root/.agents',", "workspace TEXT DEFAULT '',")
+// getSession retrieves an active session for the user or creates a new isolated agent process.
+"""
+text = text.replace("// getSession retrieves an active session for the user or creates a new isolated agent process.\n", helper)
 
-# Fix 14: UpdateChan
+text = text.replace("""	session = &AgySession{
+		BotName:      botName,
+		Model:        user.Model,
+		Workspace:    user.Workspace,
+		Conversation: user.SessionID,
+		UpdateChan:   make(chan struct{}, 1),
+	}""", """	session = &AgySession{
+		BotName:      botName,
+		Model:        user.Model,
+		Workspace:    user.Workspace,
+		Conversation: user.SessionID,
+		UpdateChan:   make(chan struct{}, 1),
+		InitChan:     make(chan string, 1),
+	}""")
+
+# 3. start() context leak and Wait fix
 text = re.sub(
-    r'(LastEdit\s+time\.Time\\n)\}',
-    r'\\1\\tUpdateChan      chan struct{}\\n}',
+    r"func \(s \*AgySession\) start\(\) \{",
+    r"func (s *AgySession) start() {\n\tif s.cancel != nil {\n\t\ts.cancel()\n\t}\n\ts.ctx, s.cancel = context.WithCancel(context.Background())\n",
     text
 )
 text = re.sub(
-    r'(Conversation:\s*user\.SessionID,)\\n\s*\}',
-    r'\\1\\n\\t\\tUpdateChan:   make(chan struct{}, 1),\\n\\t}',
+    r"case <-ticker\.C:\n\t\t\t\}",
+    r"case <-ticker.C:\n\t\t\tcase <-s.ctx.Done():\n\t\t\t\treturn\n\t\t\t}",
     text
 )
-text = re.sub(
-    r'(Conversation:\s*convID,)\\n\s*\}',
-    r'\\1\\n\\t\\t\\t\\tUpdateChan:   make(chan struct{}, 1),\\n\\t\\t\\t}',
-    text
-)
-delta_handling = """				if delta, ok := su["text_delta"].(string); ok && delta != "" {
-					s.mu.Lock()
-					s.TextBuffer += delta
-					s.mu.Unlock()
-					select {
-					case s.UpdateChan <- struct{}{}:
-					default:
+old_wait = """	go func() {
+		s.Cmd.Wait()
+		s.mu.Lock()
+		s.Cmd = nil
+		s.mu.Unlock()
+	}()"""
+new_wait = """	go func(cmd *exec.Cmd) {
+		cmd.Wait()
+		s.mu.Lock()
+		if s.Cmd == cmd {
+			s.Cmd = nil
+		}
+		s.mu.Unlock()
+	}(s.Cmd)"""
+text = text.replace(old_wait, new_wait)
+text = text.replace("""func (s *AgySession) Restart() {
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		s.Cmd.Process.Kill()
+	}
+	s.start()
+}""", """func (s *AgySession) Restart() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		s.Cmd.Process.Kill()
+	}
+	s.start()
+}""")
+
+# 4. readStdoutLoop races
+err_old = """					if s.ActiveMessageID == 0 {
+						msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
+						s.BotAPI.Send(msg)
+					} else {
+						sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, "❌ Error from agent: "+errMsg)
 					}
-				}"""
-text = re.sub(
-    r'if delta, ok := su\["text_delta"\].\(string\); ok && delta != "" \{\s*s\.TextBuffer \+= delta\s*\}',
-    delta_handling,
-    text
-)
-error_handling = """				if status, _ := res["status"].(string); status == "ERROR" {
-					errMsg, _ := res["error"].(string)
-					select {
-					case s.UpdateChan <- struct{}{}:
-					default:
-					}"""
-text = re.sub(
-    r'if status, _ := res\["status"\].\(string\); status == "ERROR" \{\s*errMsg, _ := res\["error"\].\(string\)',
-    error_handling,
-    text
-)
-throttler = """		var lastSent string
-		var lastSentTime time.Time
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-s.UpdateChan:
-			case <-ticker.C:
-			}
-			
-			s.mu.Lock()
-			if s.Cmd == nil {
-				s.mu.Unlock()
-				break
-			}
-			currentText := s.TextBuffer
-			activeMsgID := s.ActiveMessageID
-			botAPI := s.BotAPI
-			chatID := s.ChatID
-			s.mu.Unlock()
 
-			if currentText != "" && currentText != lastSent && botAPI != nil {
-				if activeMsgID == 0 {
-					msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
-					msg.ParseMode = "Markdown"
-					if sentMsg, err := botAPI.Send(msg); err == nil {
-						s.mu.Lock()
-						s.ActiveMessageID = sentMsg.MessageID
-						activeMsgID = sentMsg.MessageID
-						s.mu.Unlock()
+					// Auto-heal: kill the broken process so it restarts on the next message
+					s.mu.Lock()
+					if s.Cmd != nil && s.Cmd.Process != nil {
+						s.Cmd.Process.Kill()
+					}
+					s.mu.Unlock()
+
+					s.ActiveMessageID = 0
+					s.TextBuffer = ""
+					continue"""
+err_new = """					s.mu.Lock()
+					activeMsgID := s.ActiveMessageID
+					s.mu.Unlock()
+					if activeMsgID == 0 {
+						msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
+						s.BotAPI.Send(msg)
+					} else {
+						sendChunk(s.BotAPI, s.ChatID, activeMsgID, "❌ Error from agent: "+errMsg)
+					}
+
+					s.mu.Lock()
+					if s.Cmd != nil && s.Cmd.Process != nil {
+						s.Cmd.Process.Kill()
+					}
+					s.ActiveMessageID = 0
+					s.TextBuffer = ""
+					s.mu.Unlock()
+					continue"""
+text = text.replace(err_old, err_new)
+
+resp_old = """				response := s.TextBuffer
+				if response == "" {
+					response = "No response from agent."
+				}
+				if s.ActiveMessageID == 0 {
+					chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
+					for _, chunk := range chunks {
+						msg := tgbotapi.NewMessage(s.ChatID, chunk)
+						msg.ParseMode = "HTML"
+						s.BotAPI.Send(msg)
+					}
+				} else {
+					chunks := sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, response)
+					if len(chunks) > 1 {
+						for i := 1; i < len(chunks); i++ {
+							msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
+							msg.ParseMode = "HTML"
+							s.BotAPI.Send(msg)
+						}
 					}
 				}
-				if activeMsgID != 0 && time.Since(lastSentTime) > 1000*time.Millisecond {
-					sendChunk(botAPI, chatID, activeMsgID, currentText+"\\\\n\\\\n*⏳ Typing...*")
-					lastSent = currentText
-					lastSentTime = time.Now()
+				sendArtifacts(s.BotAPI, s.ChatID, response)
+				s.ActiveMessageID = 0
+				s.TextBuffer = ""
+"""
+resp_new = """				s.mu.Lock()
+				response := s.TextBuffer
+				activeMsgID := s.ActiveMessageID
+				s.mu.Unlock()
+				
+				if response == "" {
+					response = "No response from agent."
+				}
+				if activeMsgID == 0 {
+					chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
+					for _, chunk := range chunks {
+						msg := tgbotapi.NewMessage(s.ChatID, chunk)
+						msg.ParseMode = "HTML"
+						s.BotAPI.Send(msg)
+					}
+				} else {
+					chunks := sendChunk(s.BotAPI, s.ChatID, activeMsgID, response)
+					if len(chunks) > 1 {
+						for i := 1; i < len(chunks); i++ {
+							msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
+							msg.ParseMode = "HTML"
+							s.BotAPI.Send(msg)
+						}
+					}
+				}
+				sendArtifacts(s.BotAPI, s.ChatID, response)
+				
+				s.mu.Lock()
+				s.ActiveMessageID = 0
+				s.TextBuffer = ""
+				s.mu.Unlock()
+"""
+text = text.replace(resp_old, resp_new)
+
+update_old = """		if session.ActiveMessageID == 0 {
+			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+			msg.ParseMode = "Markdown"
+			sentMsg, err := bot.Send(msg)
+			if err == nil {
+				session.ActiveMessageID = sentMsg.MessageID
+			}
+		} else {
+			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
+		}"""
+update_new = """		session.mu.Lock()
+		activeMsgID := session.ActiveMessageID
+		session.mu.Unlock()
+		if activeMsgID == 0 {
+			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+			msg.ParseMode = "Markdown"
+			sentMsg, err := bot.Send(msg)
+			if err == nil {
+				session.mu.Lock()
+				session.ActiveMessageID = sentMsg.MessageID
+				session.mu.Unlock()
+			}
+		} else {
+			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
+		}"""
+text = text.replace(update_old, update_new)
+
+# 5. Handlers TOCTOU and init race
+resume_old = """			sessionMu.Lock()
+			if old, ok := globalSessions[sessionKey]; ok {
+				if old.Cmd != nil && old.Cmd.Process != nil {
+					old.Cmd.Process.Kill()
+				}
+				delete(globalSessions, sessionKey)
+			}
+			sessionMu.Unlock()
+
+			updateUserSession(db, userID, convID)
+
+			session := &AgySession{
+				BotName:      botName,
+				Model:        user.Model,
+				Workspace:    user.Workspace,
+				Conversation: convID,
+				UpdateChan:   make(chan struct{}, 1),
+			}
+			session.start()
+			sessionMu.Lock()
+			globalSessions[sessionKey] = session
+			sessionMu.Unlock()
+
+			// Read the init event to confirm
+			if session.StdoutScanner.Scan() {
+				var initData map[string]interface{}
+				if json.Unmarshal([]byte(session.StdoutScanner.Text()), &initData) == nil {
+					session.Conversation, _ = initData["conversation_id"].(string)
+				}
+			}"""
+resume_new = """			updateUserSession(db, userID, convID)
+			session := replaceSession(botName, user, convID, user.Model, user.Workspace)
+
+			select {
+			case newID := <-session.InitChan:
+				session.Conversation = newID
+				convID = newID
+			case <-time.After(3 * time.Second):
+			}"""
+text = text.replace(resume_old, resume_new)
+
+init_old = """		event, _ := data["event"].(string)
+		if event == "init" {
+			newID, _ := data["conversation_id"].(string)
+			if newID != "" && newID != s.Conversation {
+				s.Conversation = newID
+				// Update DB
+				dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
+				if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
+					localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
+					localDB.Close()
 				}
 			}
 		}"""
-text = re.sub(
-    r'var lastSent string\s*var lastSentTime time\.Time\s*for \{\s*s\.mu\.Lock\(\)[\s\S]*?time\.Sleep\(100 \* time\.Millisecond\).*?\\n\t\t\}',
-    throttler,
-    text
-)
+init_new = """		event, _ := data["event"].(string)
+		if event == "init" {
+			newID, _ := data["conversation_id"].(string)
+			if newID != "" {
+				select {
+				case s.InitChan <- newID:
+				default:
+				}
+				if newID != s.Conversation {
+					s.Conversation = newID
+					// Update DB
+					dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
+					if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
+						localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
+						localDB.Close()
+					}
+				}
+			}
+		}"""
+text = text.replace(init_old, init_new)
+
+model_old = """			sessionMu.Lock()
+			if old, ok := globalSessions[sessionKey]; ok {
+				if old.Cmd != nil && old.Cmd.Process != nil {
+					old.Cmd.Process.Kill()
+				}
+				delete(globalSessions, sessionKey)
+			}
+			sessionMu.Unlock()"""
+model_new = """			replaceSession(botName, user, user.SessionID, newModel, user.Workspace)"""
+text = text.replace(model_old, model_new)
+
+clear_old = """		sessionMu.Lock()
+		if old, ok := globalSessions[sessionKey]; ok {
+			if old.Cmd != nil && old.Cmd.Process != nil {
+				old.Cmd.Process.Kill()
+			}
+			delete(globalSessions, sessionKey)
+		}
+		sessionMu.Unlock()
+
+		newUUID := uuid.New().String()"""
+clear_new = """		newUUID := uuid.New().String()
+		replaceSession(botName, user, newUUID, user.Model, user.Workspace)"""
+text = text.replace(clear_old, clear_new)
+
+# Workspace
+workspace_old = """		sessionMu.Lock()
+		if old, ok := globalSessions[sessionKey]; ok {
+			if old.Cmd != nil && old.Cmd.Process != nil {
+				old.Cmd.Process.Kill()
+			}
+			delete(globalSessions, sessionKey)
+		}
+		sessionMu.Unlock()"""
+workspace_new = """		replaceSession(botName, user, user.SessionID, user.Model, newWS)"""
+text = text.replace(workspace_old, workspace_new)
 
 with open("agysessionsstarter.go", "w") as f:
     f.write(text)
