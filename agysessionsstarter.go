@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,6 +60,7 @@ type AgySession struct {
 	InitChan        chan string
 	VoiceReply      bool
 }
+const defaultModel = "gemini-3.7-flash-high"
 
 // initDB initializes the SQLite database for a specific bot and creates necessary tables.
 func initDB(botName string) *sql.DB {
@@ -67,13 +69,13 @@ func initDB(botName string) *sql.DB {
 	if err != nil {
 		log.Fatalf("Failed to open db %s: %v", dbPath, err)
 	}
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
+	_, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
 		workspace TEXT DEFAULT '',
-		model TEXT DEFAULT 'gemini-3.7-flash-high',
+		model TEXT DEFAULT '%s',
 		is_first_start BOOLEAN DEFAULT 1,
 		session_id TEXT DEFAULT NULL
-	)`)
+	)`, defaultModel))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -102,7 +104,7 @@ func getUser(db *sql.DB, userID int64, botName string) User {
 		u = User{
 			ID:           userID,
 			Workspace:    filepath.Join(getAgentsDir(), botName),
-			Model:        "gemini-3.1-pro-high",
+			Model:        defaultModel,
 			IsFirstStart: true,
 			SessionID:    uuid.New().String(),
 		}
@@ -156,7 +158,8 @@ func loadAllowedAdmins() map[int64]bool {
 			continue
 		}
 		var id int64
-		if _, err := fmt.Sscanf(idStr, "%d", &id); err == nil && id != 0 {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err == nil && id != 0 {
 			allowed[id] = true
 		}
 	}
@@ -180,9 +183,8 @@ func getAgentsDir() string {
 // It ensures there are no goroutine or memory leaks from the previous context.
 func replaceSession(db *sql.DB, botName string, user User, convID string, newModel string, newWorkspace string, chatID int64) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
+	
 	sessionMu.Lock()
-	defer sessionMu.Unlock()
-
 	if old, ok := globalSessions[sessionKey]; ok {
 		if old.cancel != nil {
 			old.cancel()
@@ -192,6 +194,7 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 		}
 		delete(globalSessions, sessionKey)
 	}
+	sessionMu.Unlock()
 
 	session := &AgySession{
 		BotName:      botName,
@@ -205,20 +208,24 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 	}
 
 	session.start()
+	
+	sessionMu.Lock()
 	globalSessions[sessionKey] = session
+	sessionMu.Unlock()
+	
 	return session
 }
 
 // getSession retrieves an active session for the user or creates a new isolated agent process.
 func getSession(botName string, user User, chatID int64) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
+	
 	sessionMu.Lock()
-	defer sessionMu.Unlock()
-
 	session, exists := globalSessions[sessionKey]
 	if exists && session.Model == user.Model && session.Workspace == user.Workspace {
 		// check if process is alive
 		if session.Cmd != nil && session.Cmd.ProcessState == nil {
+			sessionMu.Unlock()
 			return session
 		}
 	}
@@ -226,6 +233,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	if exists && session.Cmd != nil && session.Cmd.Process != nil {
 		session.Cmd.Process.Kill()
 	}
+	sessionMu.Unlock()
 
 	session = &AgySession{
 		BotName:      botName,
@@ -237,7 +245,11 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	}
 
 	session.start()
+	
+	sessionMu.Lock()
 	globalSessions[sessionKey] = session
+	sessionMu.Unlock()
+	
 	return session
 }
 
@@ -285,7 +297,8 @@ func (s *AgySession) start() {
 	s.Cmd.Start()
 
 	// Streaming throttler loop
-	go func() {
+	ctx := s.ctx
+	go func(ctx context.Context) {
 		var lastSent string
 		var lastSentTime time.Time
 		ticker := time.NewTicker(100 * time.Millisecond)
@@ -294,7 +307,7 @@ func (s *AgySession) start() {
 			select {
 			case <-s.UpdateChan:
 			case <-ticker.C:
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			}
 
@@ -327,7 +340,7 @@ func (s *AgySession) start() {
 				}
 			}
 		}
-	}()
+	}(ctx)
 
 	go s.readStdoutLoop()
 	go func(cmd *exec.Cmd) {
@@ -374,13 +387,18 @@ func ExtractAllowedArtifacts(text string) []string {
 				continue
 			}
 			
-			if !strings.HasPrefix(cleanPath, allowedRootAgents) && !strings.HasPrefix(cleanPath, allowedRootBrain) {
-				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", cleanPath)
+			realPath, err := filepath.EvalSymlinks(cleanPath)
+			if err != nil {
 				continue
 			}
 			
-			if _, err := os.Stat(cleanPath); err == nil {
-				validPaths = append(validPaths, cleanPath)
+			if !strings.HasPrefix(realPath, allowedRootAgents) && !strings.HasPrefix(realPath, allowedRootBrain) {
+				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
+				continue
+			}
+			
+			if _, err := os.Stat(realPath); err == nil {
+				validPaths = append(validPaths, realPath)
 			}
 		}
 	}
@@ -441,6 +459,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			fileID = update.Message.Audio.FileID
 			ext = ".mp3"
 		}
+
+		if text == "" && caption == "" && fileID == "" {
+			bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Sticker/contact/location не поддерживается. Отправьте текст, фото, документ или голосовое."))
+			return
+		}
 	} else if update.CallbackQuery != nil {
 		chatID = update.CallbackQuery.Message.Chat.ID
 		userID = update.CallbackQuery.From.ID
@@ -489,7 +512,10 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 				return
 			}
 
-			
+			user.Model = newModel
+			newUUID := uuid.New().String()
+			replaceSession(db, botName, user, newUUID, newModel, user.Workspace, chatID)
+			updateUserSession(db, userID, newUUID)
 
 			respText = "✅ Model changed to `" + newModel + "`\n\n⚠️ *Warning:* Agent restarted. Background tasks were stopped."
 		} else if data == "cmd:status" {
@@ -941,7 +967,6 @@ ProcessInput:
 	}
 
 	session.mu.Lock()
-	defer session.mu.Unlock()
 	session.BotAPI = bot
 	session.ChatID = chatID
 
@@ -974,6 +999,9 @@ ProcessInput:
 	payloadBytes, _ := json.Marshal(payload)
 	payloadBytes = append(payloadBytes, '\n')
 	_, err := session.Stdin.Write(payloadBytes)
+	
+	session.mu.Unlock()
+	
 	if err != nil {
 		session.Restart()
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process crashed. Send your message again."))
@@ -1102,8 +1130,25 @@ func main() {
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
 func (s *AgySession) readStdoutLoop() {
-	for s.StdoutScanner.Scan() {
-		line := s.StdoutScanner.Text()
+	lines := make(chan string)
+	go func() {
+		for s.StdoutScanner.Scan() {
+			lines <- s.StdoutScanner.Text()
+		}
+		close(lines)
+	}()
+
+	for {
+		var line string
+		select {
+		case <-s.ctx.Done():
+			return
+		case l, ok := <-lines:
+			if !ok {
+				return
+			}
+			line = l
+		}
 		var data map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &data); err != nil {
 			continue
@@ -1201,6 +1246,8 @@ func (s *AgySession) readStdoutLoop() {
 						sendChunk(s.BotAPI, s.ChatID, activeMsgID, "❌ Error from agent: "+errMsg)
 					}
 
+					isRateLimit := strings.Contains(errMsg, "429") || strings.Contains(errMsg, "503") || strings.Contains(strings.ToLower(errMsg), "timeout") || strings.Contains(strings.ToLower(errMsg), "rate limit")
+					
 					s.mu.Lock()
 					if s.Cmd != nil && s.Cmd.Process != nil {
 						s.Cmd.Process.Kill()
@@ -1208,6 +1255,35 @@ func (s *AgySession) readStdoutLoop() {
 					s.ActiveMessageID = 0
 					s.TextBuffer = ""
 					s.mu.Unlock()
+					
+					if isRateLimit {
+						bot := s.BotAPI
+						chatID := s.ChatID
+						botName := s.BotName
+						userID := s.UserID
+						db := s.DB
+						convID := s.Conversation
+						go func() {
+							user := getUser(db, userID, botName)
+							replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
+							bot.Send(tgbotapi.NewMessage(chatID, "🔄 Auto-recovering from API rate limit..."))
+							
+							payload := map[string]interface{}{
+								"event": "user",
+								"message": map[string]string{
+									"content": "SYSTEM: Your previous turn failed due to an API timeout/rate-limit. Please re-evaluate your current state and repeat your last intended action.",
+								},
+							}
+							payloadBytes, _ := json.Marshal(payload)
+							payloadBytes = append(payloadBytes, '\n')
+							
+							time.Sleep(2 * time.Second)
+							newSess := getSession(botName, user, chatID)
+							if newSess != nil && newSess.Stdin != nil {
+								newSess.Stdin.Write(payloadBytes)
+							}
+						}()
+					}
 					continue
 				}
 				s.mu.Lock()
