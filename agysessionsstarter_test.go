@@ -18,12 +18,21 @@ func setupTestDB(t *testing.T) *sql.DB {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
 		workspace TEXT DEFAULT '',
-		model TEXT DEFAULT 'gemini-3.1-pro-high',
+		model TEXT DEFAULT 'gemini-3.7-flash-high',
 		is_first_start BOOLEAN DEFAULT 1,
 		session_id TEXT DEFAULT NULL
 	)`)
 	if err != nil {
-		t.Fatalf("Failed to create table: %v", err)
+		t.Fatalf("Failed to create users table: %v", err)
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS session_history (
+		user_id INTEGER,
+		session_id TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, session_id)
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create session_history table: %v", err)
 	}
 	return db
 }

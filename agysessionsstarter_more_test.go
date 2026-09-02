@@ -23,10 +23,18 @@ func TestInitDB(t *testing.T) {
 	var name string
 	err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").Scan(&name)
 	if err != nil {
-		t.Fatalf("Failed to verify table creation: %v", err)
+		t.Fatalf("Failed to verify users table creation: %v", err)
 	}
 	if name != "users" {
 		t.Errorf("Expected table 'users', got %s", name)
+	}
+
+	err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='session_history'").Scan(&name)
+	if err != nil {
+		t.Fatalf("Failed to verify session_history table creation: %v", err)
+	}
+	if name != "session_history" {
+		t.Errorf("Expected table 'session_history', got %s", name)
 	}
 }
 
@@ -89,5 +97,38 @@ func TestGetSession(t *testing.T) {
 	// Clean up cmd if it was started
 	if session.Cmd != nil && session.Cmd.Process != nil {
 		session.Cmd.Process.Kill()
+	}
+}
+
+func TestUpdateUserSession(t *testing.T) {
+	botName := "TestUpdateUserBot"
+	dbPath := "sessions_" + botName + ".db"
+	os.Remove(dbPath)
+	defer os.Remove(dbPath)
+
+	db := initDB(botName)
+	defer db.Close()
+
+	// Insert dummy user
+	_, err := db.Exec("INSERT INTO users (user_id, workspace) VALUES (1, '/tmp')")
+	if err != nil {
+		t.Fatalf("Failed to insert user: %v", err)
+	}
+
+	// Test updateUserSession
+	updateUserSession(db, 1, "test-uuid-1")
+
+	// Verify session_id in users table
+	var sid string
+	err = db.QueryRow("SELECT session_id FROM users WHERE user_id = 1").Scan(&sid)
+	if err != nil || sid != "test-uuid-1" {
+		t.Errorf("Expected session_id test-uuid-1, got %s", sid)
+	}
+
+	// Verify session_history table
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM session_history WHERE user_id = 1 AND session_id = 'test-uuid-1'").Scan(&count)
+	if err != nil || count != 1 {
+		t.Errorf("Expected 1 row in session_history, got %d", count)
 	}
 }
