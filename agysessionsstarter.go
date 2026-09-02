@@ -351,29 +351,51 @@ func (s *AgySession) Restart() {
 	s.start()
 }
 
-// sendArtifacts parses the agent's response for absolute file paths and sends them to the Telegram chat as documents.
-func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
+// ExtractAllowedArtifacts parses the agent's markdown text for local file links (file://),
+// normalizes the paths, checks them against the LFI (Local File Inclusion) whitelists
+// (the agents directory and the brain directory), and verifies the files exist on disk.
+// Returns a slice of valid, safe, and existing absolute file paths.
+func ExtractAllowedArtifacts(text string) []string {
+	var validPaths []string
 	re := regexp.MustCompile(`\(file://(.*?)\)`)
 	matches := re.FindAllStringSubmatch(text, -1)
+	
+	allowedRootAgents, _ := filepath.Abs(getAgentsDir())
+	allowedRootBrain, _ := filepath.Abs("/root/.gemini/antigravity-cli/brain")
+
 	for _, match := range matches {
 		if len(match) > 1 {
 			filePath := match[1]
 			if decoded, err := url.PathUnescape(filePath); err == nil {
 				filePath = decoded
 			}
-			cleanPath, _ := filepath.Abs(filePath)
-			allowedRootAgents, _ := filepath.Abs(getAgentsDir())
-			allowedRootBrain, _ := filepath.Abs("/root/.gemini/antigravity-cli/brain")
-			
-			if !strings.HasPrefix(cleanPath, allowedRootAgents) && !strings.HasPrefix(cleanPath, allowedRootBrain) {
-				log.Printf("sendArtifacts: blocked attempt to send file outside allowed root: %s", cleanPath)
+			cleanPath, err := filepath.Abs(filePath)
+			if err != nil {
 				continue
 			}
-			if _, err := os.Stat(cleanPath); err == nil {
-				doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
-				doc.Caption = "📦 Artifact: " + filepath.Base(filePath)
-				bot.Send(doc)
+			
+			if !strings.HasPrefix(cleanPath, allowedRootAgents) && !strings.HasPrefix(cleanPath, allowedRootBrain) {
+				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", cleanPath)
+				continue
 			}
+			
+			if _, err := os.Stat(cleanPath); err == nil {
+				validPaths = append(validPaths, cleanPath)
+			}
+		}
+	}
+	return validPaths
+}
+
+// sendArtifacts parses the agent's response using ExtractAllowedArtifacts and sends the
+// resulting valid files to the Telegram chat as document attachments.
+func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
+	paths := ExtractAllowedArtifacts(text)
+	for _, cleanPath := range paths {
+		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(cleanPath))
+		doc.Caption = "📦 Artifact: " + filepath.Base(cleanPath)
+		if bot != nil {
+			bot.Send(doc)
 		}
 	}
 }
