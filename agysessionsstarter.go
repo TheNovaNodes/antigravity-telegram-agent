@@ -1035,6 +1035,7 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 		log.Printf("Failed to init bot: %v", err)
 		return
 	}
+	bot.Client = &http.Client{Timeout: 65 * time.Second}
 
 	registerBotCommands(bot)
 	db := initDB(bot.Self.UserName)
