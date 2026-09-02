@@ -1,5 +1,8 @@
 .env
-.env
 *.db
 *.sqlite
 new_engine
+test_build
+agysessionsstarter
+*.pyc
+__pycache__/
