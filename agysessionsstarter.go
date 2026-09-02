@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,9 @@ type AgySession struct {
 	TextBuffer      string
 	LastEdit        time.Time
 	UpdateChan      chan struct{}
+	ctx             context.Context
+	cancel          context.CancelFunc
+	InitChan        chan string
 }
 
 // initDB initializes the SQLite database for a specific bot and creates necessary tables.
@@ -165,6 +169,35 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
+func replaceSession(botName string, user User, convID string, newModel string, newWorkspace string) *AgySession {
+	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+
+	if old, ok := globalSessions[sessionKey]; ok {
+		if old.cancel != nil {
+			old.cancel()
+		}
+		if old.Cmd != nil && old.Cmd.Process != nil {
+			old.Cmd.Process.Kill()
+		}
+		delete(globalSessions, sessionKey)
+	}
+
+	session := &AgySession{
+		BotName:      botName,
+		Model:        newModel,
+		Workspace:    newWorkspace,
+		Conversation: convID,
+		UpdateChan:   make(chan struct{}, 1),
+		InitChan:     make(chan string, 1),
+	}
+
+	session.start()
+	globalSessions[sessionKey] = session
+	return session
+}
+
 // getSession retrieves an active session for the user or creates a new isolated agent process.
 func getSession(botName string, user User) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d", botName, user.ID)
@@ -189,6 +222,7 @@ func getSession(botName string, user User) *AgySession {
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
 		UpdateChan:   make(chan struct{}, 1),
+		InitChan:     make(chan string, 1),
 	}
 
 	session.start()
@@ -198,6 +232,11 @@ func getSession(botName string, user User) *AgySession {
 
 // start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
 func (s *AgySession) start() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+
 	args := []string{
 		"--model", s.Model,
 		"--dangerously-skip-permissions",
@@ -240,6 +279,8 @@ func (s *AgySession) start() {
 			select {
 			case <-s.UpdateChan:
 			case <-ticker.C:
+			case <-s.ctx.Done():
+				return
 			}
 
 			s.mu.Lock()
@@ -274,16 +315,21 @@ func (s *AgySession) start() {
 	}()
 
 	go s.readStdoutLoop()
-	go func() {
-		s.Cmd.Wait()
+	go func(cmd *exec.Cmd) {
+		cmd.Wait()
 		s.mu.Lock()
-		s.Cmd = nil
+		if s.Cmd == cmd {
+			s.Cmd = nil
+		}
 		s.mu.Unlock()
-	}()
+	}(s.Cmd)
 }
 
 // Restart performs the Restart method.
 func (s *AgySession) Restart() {
+	if s.cancel != nil {
+		s.cancel()
+	}
 	if s.Cmd != nil && s.Cmd.Process != nil {
 		s.Cmd.Process.Kill()
 	}
@@ -358,7 +404,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 
 	botName := bot.Self.UserName
 	user := getUser(db, userID, botName)
-	sessionKey := fmt.Sprintf("%s:%d", botName, userID)
+	_ = fmt.Sprintf("%s:%d", botName, userID)
 
 	// Handle Callbacks
 	if update.CallbackQuery != nil {
@@ -372,35 +418,14 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			convID := strings.TrimPrefix(data, "resume:")
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 
-			sessionMu.Lock()
-			if old, ok := globalSessions[sessionKey]; ok {
-				if old.Cmd != nil && old.Cmd.Process != nil {
-					old.Cmd.Process.Kill()
-				}
-				delete(globalSessions, sessionKey)
-			}
-			sessionMu.Unlock()
-
 			updateUserSession(db, userID, convID)
+			session := replaceSession(botName, user, convID, user.Model, user.Workspace)
 
-			session := &AgySession{
-				BotName:      botName,
-				Model:        user.Model,
-				Workspace:    user.Workspace,
-				Conversation: convID,
-				UpdateChan:   make(chan struct{}, 1),
-			}
-			session.start()
-			sessionMu.Lock()
-			globalSessions[sessionKey] = session
-			sessionMu.Unlock()
-
-			// Read the init event to confirm
-			if session.StdoutScanner.Scan() {
-				var initData map[string]interface{}
-				if json.Unmarshal([]byte(session.StdoutScanner.Text()), &initData) == nil {
-					session.Conversation, _ = initData["conversation_id"].(string)
-				}
+			select {
+			case newID := <-session.InitChan:
+				session.Conversation = newID
+				convID = newID
+			case <-time.After(3 * time.Second):
 			}
 
 			respText := fmt.Sprintf("🔄 Resumed session!\n`%s`", convID[:8])
@@ -419,14 +444,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 				return
 			}
 
-			sessionMu.Lock()
-			if old, ok := globalSessions[sessionKey]; ok {
-				if old.Cmd != nil && old.Cmd.Process != nil {
-					old.Cmd.Process.Kill()
-				}
-				delete(globalSessions, sessionKey)
-			}
-			sessionMu.Unlock()
+			
 
 			respText = "✅ Model changed to `" + newModel + "`\n\n⚠️ *Warning:* Agent restarted. Background tasks were stopped."
 		} else if data == "cmd:status" {
@@ -436,16 +454,10 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 			goto ProcessInput
 		} else if data == "cmd:clear" {
-			sessionMu.Lock()
-			if old, ok := globalSessions[sessionKey]; ok {
-				if old.Cmd != nil && old.Cmd.Process != nil {
-					old.Cmd.Process.Kill()
-				}
-				delete(globalSessions, sessionKey)
-			}
-			sessionMu.Unlock()
+			
 
 			newUUID := uuid.New().String()
+			replaceSession(botName, user, newUUID, user.Model, user.Workspace)
 			updateUserSession(db, userID, newUUID)
 			respText = "🧼 Context cleared!\n`" + newUUID + "`"
 		} else if data == "cmd:usage" {
@@ -726,14 +738,7 @@ ProcessInput:
 			return
 		}
 
-		sessionMu.Lock()
-		if old, ok := globalSessions[sessionKey]; ok {
-			if old.Cmd != nil && old.Cmd.Process != nil {
-				old.Cmd.Process.Kill()
-			}
-			delete(globalSessions, sessionKey)
-		}
-		sessionMu.Unlock()
+		replaceSession(botName, user, user.SessionID, user.Model, newWS)
 
 		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
 		msg.ParseMode = "Markdown"
@@ -814,16 +819,8 @@ ProcessInput:
 		bot.Send(msg)
 		return
 	} else if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
-		sessionMu.Lock()
-		if old, ok := globalSessions[sessionKey]; ok {
-			if old.Cmd != nil && old.Cmd.Process != nil {
-				old.Cmd.Process.Kill()
-			}
-			delete(globalSessions, sessionKey)
-		}
-		sessionMu.Unlock()
-
 		newUUID := uuid.New().String()
+		replaceSession(botName, user, newUUID, user.Model, user.Workspace)
 		updateUserSession(db, userID, newUUID)
 		respText := "🧼 Context cleared!\n`" + newUUID + "`"
 		msg := tgbotapi.NewMessage(chatID, respText)
@@ -839,12 +836,17 @@ ProcessInput:
 	session.ChatID = chatID
 
 	if !downloadedFile {
-		if session.ActiveMessageID == 0 {
+		session.mu.Lock()
+		activeMsgID := session.ActiveMessageID
+		session.mu.Unlock()
+		if activeMsgID == 0 {
 			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
 			msg.ParseMode = "Markdown"
 			sentMsg, err := bot.Send(msg)
 			if err == nil {
+				session.mu.Lock()
 				session.ActiveMessageID = sentMsg.MessageID
+				session.mu.Unlock()
 			}
 		} else {
 			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
@@ -989,13 +991,19 @@ func (s *AgySession) readStdoutLoop() {
 		event, _ := data["event"].(string)
 		if event == "init" {
 			newID, _ := data["conversation_id"].(string)
-			if newID != "" && newID != s.Conversation {
-				s.Conversation = newID
-				// Update DB
-				dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
-				if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
-					localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
-					localDB.Close()
+			if newID != "" {
+				select {
+				case s.InitChan <- newID:
+				default:
+				}
+				if newID != s.Conversation {
+					s.Conversation = newID
+					// Update DB
+					dbPath := fmt.Sprintf("sessions_%s.db", s.BotName)
+					if localDB, err := sql.Open("sqlite3", dbPath); err == nil {
+						localDB.Exec("UPDATE users SET session_id = ? WHERE chat_id = ?", newID, s.ChatID)
+						localDB.Close()
+					}
 				}
 			}
 		} else if event == "step_update" {
@@ -1064,29 +1072,34 @@ func (s *AgySession) readStdoutLoop() {
 					case s.UpdateChan <- struct{}{}:
 					default:
 					}
-					if s.ActiveMessageID == 0 {
+					s.mu.Lock()
+					activeMsgID := s.ActiveMessageID
+					s.mu.Unlock()
+					if activeMsgID == 0 {
 						msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
 						s.BotAPI.Send(msg)
 					} else {
-						sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, "❌ Error from agent: "+errMsg)
+						sendChunk(s.BotAPI, s.ChatID, activeMsgID, "❌ Error from agent: "+errMsg)
 					}
 
-					// Auto-heal: kill the broken process so it restarts on the next message
 					s.mu.Lock()
 					if s.Cmd != nil && s.Cmd.Process != nil {
 						s.Cmd.Process.Kill()
 					}
-					s.mu.Unlock()
-
 					s.ActiveMessageID = 0
 					s.TextBuffer = ""
+					s.mu.Unlock()
 					continue
 				}
+				s.mu.Lock()
 				response := s.TextBuffer
+				activeMsgID := s.ActiveMessageID
+				s.mu.Unlock()
+				
 				if response == "" {
 					response = "No response from agent."
 				}
-				if s.ActiveMessageID == 0 {
+				if activeMsgID == 0 {
 					chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
 					for _, chunk := range chunks {
 						msg := tgbotapi.NewMessage(s.ChatID, chunk)
@@ -1094,7 +1107,7 @@ func (s *AgySession) readStdoutLoop() {
 						s.BotAPI.Send(msg)
 					}
 				} else {
-					chunks := sendChunk(s.BotAPI, s.ChatID, s.ActiveMessageID, response)
+					chunks := sendChunk(s.BotAPI, s.ChatID, activeMsgID, response)
 					if len(chunks) > 1 {
 						for i := 1; i < len(chunks); i++ {
 							msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
@@ -1104,8 +1117,11 @@ func (s *AgySession) readStdoutLoop() {
 					}
 				}
 				sendArtifacts(s.BotAPI, s.ChatID, response)
+				
+				s.mu.Lock()
 				s.ActiveMessageID = 0
 				s.TextBuffer = ""
+				s.mu.Unlock()
 			}
 		}
 	}
