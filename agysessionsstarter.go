@@ -755,6 +755,30 @@ ProcessInput:
 		msg.ReplyMarkup = m
 		bot.Send(msg)
 		return
+	} else if strings.HasPrefix(text, "/tts ") {
+		ttsText := strings.TrimPrefix(text, "/tts ")
+		if ttsText == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: `/tts <text>`"))
+			return
+		}
+		if os.Getenv("ELEVENLABS_API_KEY") == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ ELEVENLABS_API_KEY environment variable is not set!"))
+			return
+		}
+		
+		msg := tgbotapi.NewMessage(chatID, "🎙 *Generating voice...*")
+		msg.ParseMode = "Markdown"
+		sentMsg, _ := bot.Send(msg)
+		
+		err := GenerateAndSendVoice(bot, chatID, ttsText)
+		
+		// Delete the generating message
+		bot.Send(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
+		
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ TTS Error: "+err.Error()))
+		}
+		return
 	} else if strings.HasPrefix(text, "/workspace") {
 		parts := strings.SplitN(text, " ", 2)
 		if len(parts) < 2 {
