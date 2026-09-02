@@ -72,7 +72,7 @@ func TestGetSession(t *testing.T) {
 	sessionMu.Unlock()
 
 	// 1. Get new session
-	session := getSession(botName, user)
+	session := getSession(botName, user, 1234)
 	if session == nil {
 		t.Fatal("Expected session to be created, got nil")
 	}
@@ -81,7 +81,7 @@ func TestGetSession(t *testing.T) {
 	}
 
 	// 2. Get existing session
-	session2 := getSession(botName, user)
+	session2 := getSession(botName, user, 1234)
 	if session2 != session {
 		t.Errorf("Expected same session instance to be returned")
 	}
