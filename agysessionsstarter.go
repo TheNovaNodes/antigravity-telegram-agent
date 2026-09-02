@@ -922,17 +922,13 @@ ProcessInput:
 	session.ChatID = chatID
 
 	if !downloadedFile {
-		session.mu.Lock()
 		activeMsgID := session.ActiveMessageID
-		session.mu.Unlock()
 		if activeMsgID == 0 {
 			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
 			msg.ParseMode = "Markdown"
 			sentMsg, err := bot.Send(msg)
 			if err == nil {
-				session.mu.Lock()
 				session.ActiveMessageID = sentMsg.MessageID
-				session.mu.Unlock()
 			}
 		} else {
 			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
