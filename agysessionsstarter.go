@@ -60,7 +60,7 @@ type AgySession struct {
 	InitChan        chan string
 	VoiceReply      bool
 }
-const defaultModel = "gemini-3.7-flash-high"
+const defaultModel = "gemini-3.8-flash-high"
 
 // initDB initializes the SQLite database for a specific bot and creates necessary tables.
 func initDB(botName string) *sql.DB {
@@ -931,25 +931,35 @@ ProcessInput:
 		return
 	} else if text == "/model" || text == fmt.Sprintf("/model@%s", botName) {
 		respText := "🧠 Select a model:"
-		m := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash High", "model:gemini-3.7-flash-high")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash Med", "model:gemini-3.7-flash-medium")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.6 Flash High", "model:gemini-3.6-flash-high")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.6 Flash Low", "model:gemini-3.6-flash-low")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.5 Flash High", "model:gemini-3.5-flash-high")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.5 Flash Low", "model:gemini-3.5-flash-low")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧠 Gemini 3.1 Pro High", "model:gemini-3.1-pro-high")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧠 Gemini 3.1 Pro Low", "model:gemini-3.1-pro-low")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🟣 Claude Sonnet 4.6", "model:claude-sonnet-4-6")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🟣 Claude Opus 4.6", "model:claude-opus-4-6-thinking")),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🟢 GPT-OSS 120B", "model:gpt-oss-120b-medium"),
-			),
-		)
+		modelsMu.RLock()
+		cachedModels := make([]AgyModel, len(availableModels))
+		copy(cachedModels, availableModels)
+		modelsMu.RUnlock()
+
+		var rows [][]tgbotapi.InlineKeyboardButton
+		if len(cachedModels) == 0 {
+			// Fallback if cache is empty
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash High", "model:gemini-3.7-flash-high")))
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧠 3.1 Pro High", "model:gemini-3.1-pro-high")))
+		} else {
+			for _, m := range cachedModels {
+				label := fmt.Sprintf("%s %s", m.Emoji, m.Name)
+				callbackData := "model:" + m.ID
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, callbackData)))
+			}
+		}
+		m := tgbotapi.NewInlineKeyboardMarkup(rows...)
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		msg.ReplyMarkup = m
 		bot.Send(msg)
+		return
+	} else if text == "/refresh_models" || text == fmt.Sprintf("/refresh_models@%s", botName) {
+		fetchModels()
+		modelsMu.RLock()
+		count := len(availableModels)
+		modelsMu.RUnlock()
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Dynamically fetched %d models from agy.", count)))
 		return
 	} else if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
 		newUUID := uuid.New().String()
@@ -1093,8 +1103,72 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 	}
 }
 
+type AgyModel struct {
+	ID    string
+	Name  string
+	Emoji string
+}
+
+var (
+	availableModels []AgyModel
+	modelsMu        sync.RWMutex
+)
+
+func getEmojiForModel(id string) string {
+	id = strings.ToLower(id)
+	if strings.Contains(id, "flash") {
+		return "⚡"
+	}
+	if strings.Contains(id, "pro") {
+		return "🧠"
+	}
+	if strings.Contains(id, "claude") {
+		return "🟣"
+	}
+	if strings.Contains(id, "oss") || strings.Contains(id, "llama") {
+		return "🟢"
+	}
+	return "🤖"
+}
+
+func fetchModels() {
+	cmd := exec.Command("/root/.local/bin/agy", "models")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("Failed to fetch dynamic models: %v", err)
+		return
+	}
+
+	var parsed []AgyModel
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			id := parts[0]
+			name := strings.Join(parts[1:], " ")
+			parsed = append(parsed, AgyModel{
+				ID:    id,
+				Name:  name,
+				Emoji: getEmojiForModel(id),
+			})
+		}
+	}
+
+	if len(parsed) > 0 {
+		modelsMu.Lock()
+		availableModels = parsed
+		modelsMu.Unlock()
+		log.Printf("Dynamically loaded %d models", len(parsed))
+	}
+}
+
 // main is the entry point that spins up multiple bot instances concurrently based on the BOT_TOKENS environment variable.
 func main() {
+	fetchModels()
 	tokensEnv := os.Getenv("BOT_TOKENS")
 	if tokensEnv == "" {
 		log.Fatal("BOT_TOKENS env var required")
