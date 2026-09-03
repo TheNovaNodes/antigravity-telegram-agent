@@ -73,7 +73,11 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 
 	// George Voice ID (default for Russian accent)
 	voiceID := "JBFqnCBsd6RMkjVDRZzb"
-	url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", voiceID)
+	baseURL := os.Getenv("ELEVENLABS_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.elevenlabs.io/v1/text-to-speech"
+	}
+	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(baseURL, "/"), voiceID)
 
 	payload := map[string]interface{}{
 		"text":     cleanText,

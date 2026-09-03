@@ -1,17 +1,17 @@
 # 🛸 Antigravity Go Telegram Bot Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-70%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-81%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
-**The Ultimate, High-Performance Pure Go Core for the Antigravity Telegram Bot Ecosystem.**
+**The Ultimate, High-Performance, Deadlock-Immune Pure Go Core for the Antigravity Telegram Bot Ecosystem.**
 
 ---
 
 ## ⚡ Quick Start: 30 Seconds to Run
 
-Get the agent up and running immediately:
+Get the agent gateway up and running immediately:
 
 ```bash
 # 1. Clone & enter directory
@@ -27,63 +27,77 @@ go build -o new_engine .
 ./new_engine
 ```
 
-For more details on how to contribute or understand the internals, please see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For in-depth architectural details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-## 📖 The Genesis
+## 📖 The Genesis & Engineering Philosophy
 
-Initially, the ecosystem relied on a Python-based routing architecture. As the agents grew more autonomous, the sheer volume of stdout streaming caused the OS pipe buffers (64KB) to overrun. Combined with synchronous Telegram API `bot.Send` calls, this resulted in fatal HTTP `429 Too Many Requests` deadlocks.
+Initially, the ecosystem relied on Python-based routing scripts. As agent workflows grew autonomous, heavy stdout JSON streams caused OS pipe buffers (64KB) to overflow. Combined with synchronous Telegram API calls, this triggered cascading HTTP `429 Too Many Requests` deadlocks and zombie subprocesses.
 
-We engineered this **Pure Go Core** from scratch to solve this. It completely decouples the stdout reader loop from the Telegram API network calls, relying entirely on an asynchronous throttler loop to prevent pipe stalls.
-
-The result? A blazingly fast, deadlock-immune, unified engine capable of running an entire collective of autonomous agents on a single lightweight binary.
+We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks. It completely decouples stdout stream reading from Telegram network dispatching via an asynchronous throttler loop, isolates child process trees with dedicated process groups (`pgid`), and utilizes SQLite with Write-Ahead Logging (`WAL`) for zero-collision concurrent transactions.
 
 ---
 
-## ⚡ Core Architecture & Features
+## 🎮 Command Reference
 
-### 1. 🚀 Unified Go Engine
-A single compiled binary (`new_engine`) driven by a single `systemd` service (`bot_new_engine.service`) now manages **all 8 bots** simultaneously (`Tyler`, `Marla`, `kairos`, `toomynamea`, `Dartanyan`, `Caduceus`, `prometheus`, `NovaNodes`). No more zombie processes or resource-heavy Python workers.
-
-### 2. 🛡️ CWD Sandboxing (The "Personal Office")
-Every agent is granted its own isolated sandbox on the host OS. 
-- The SQLite database assigns `Workspace: /root/.agents/<botName>`.
-- The Go `exec.Cmd` sets the OS-level `Cmd.Dir` to this exact path.
-When an agent attempts to write a file or execute a shell command, they are strictly confined to their personal office, preventing cross-contamination between bots.
-
-### 3. 📊 Cyber-Dashboard (`/start`)
-The bot features a highly interactive Telegram UI. Typing `/start` renders a dynamic dashboard that:
-- Identifies the current Agent and Model.
-- Displays the active CWD sandbox.
-- Parses the agent's internal `transcript.jsonl` to calculate exact **Step Counts** and **Session Uptime** on the fly.
-- Offers an intuitive Inline Keyboard for quick actions (`/model`, `/usage`, `/clear`, `/resume`, `/rename`).
-
-### 4. 🧠 Seamless Model Switching
-A unified Single Source of Truth for model selection. Whether the user types `/model` or clicks the inline dashboard button, they are presented with a full arsenal of LLMs:
-- **Google Gemini:** `3.7 Flash High/Med`, `3.6 Flash High/Low`, `3.1 Pro High/Low`
-- **Anthropic Claude:** `Sonnet 4.6`, `Opus 4.6`
-- **Open-Source:** `GPT-OSS 120B`
-
-### 5. 🔄 Asynchronous Throttling
-The engine reads raw `JSONL` chunks from the underlying Antigravity CLI (`/root/.local/bin/agy`) and buffers them. An asynchronous goroutine polls the buffer every 100ms and gracefully flushes the concatenated chunks to the Telegram API, effortlessly bypassing rate limits while keeping the agent's stdout pipe flowing freely.
+| Command | Arguments | Description |
+| :--- | :--- | :--- |
+| `/start` | None | Displays live Agent Terminal dashboard (CWD, model, session uptime, steps count, quick action keyboard). |
+| `/model` | None | Opens interactive inline keyboard to switch the active LLM model. |
+| `/refresh_models`| None | Dynamically fetches the latest model list from `agy --print /models`. |
+| `/usage` | None | Queries and displays current token quota and tier usage. |
+| `/clear` | None | Resets session context, terminates background tasks, and issues a fresh conversation UUID. |
+| `/resume` | None | Presents an interactive picker of previous sessions sorted by last modification time. |
+| `/rename` | `<name>` | Renames the current session in brain storage (`.title`). |
+| `/workspace` | `<path>` | Switches working directory (sandboxed under `AGENTS_DIR` with symlink traversal checks). |
+| `/voice` | `[on\|off]`| Toggles persistent voice responses generated via ElevenLabs TTS. |
+| `/tts` | `<text>` | Synthesizes arbitrary text into speech and sends as a voice note. |
+| `/help` | None | Displays comprehensive command reference. |
+| `/grill-me` | None | Trigger specialized interactive interview slash-command in Antigravity CLI. |
+| `/teamwork-preview` | None | Trigger multi-agent collaboration preview. |
 
 ---
 
-## 📂 Project Structure
+## ⚙️ Environment Variables & Configuration
 
-- `agysessionsstarter.go`: The beating heart of the router. Manages Telegram long-polling, SQLite session states, inline callbacks, and async subprocess execution.
-- `formatters.go`: Markdown sanitizers and chunk processors to ensure Telegram doesn't reject malformed model outputs.
-- `deploy_all.sh`: The master deployment script. Kills legacy daemons, compiles the new engine, injects all 8 bot tokens, and registers the `systemd` unit.
-- `sessions_<botName>.db`: Auto-generated SQLite databases maintaining state (Workspace, Model, SessionID) per user, per bot.
+The engine supports flexible configuration through environment variables:
+
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `BOT_TOKENS` | String | `""` | Comma-separated list of Telegram Bot API tokens. |
+| `ALLOWED_ADMIN_IDS` | String | `""` | Comma-separated list of authorized Telegram User IDs. |
+| `AGENTS_DIR` | String | `/root/.agents` | Base directory containing agent workspaces and download scratchpads. |
+| `BRAIN_DIR` | String | `/root/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
+| `AGY_BINARY` | String | `/root/.gemini/antigravity-cli/bin/agy` | Absolute path to the Antigravity CLI binary. |
+| `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
+| `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |
+
+---
+
+## 🧪 Testing & CI Verification
+
+We enforce a strict **zero-data-race** policy (`go test -race`) and high test coverage:
+
+```bash
+# Run complete test suite with race detector and coverage analysis
+go test -v -race -coverprofile=coverage.out ./...
+
+# View coverage per function
+go tool cover -func=coverage.out
+
+# View HTML coverage visualization in browser
+go tool cover -html=coverage.out
+```
 
 ---
 
 ## 🚀 Deployment (Blood Rules)
 
-We adhere strictly to the **ПРАВИЛА КРОВИ (Blood Rules)**: No direct pushes to `master`. All deployments go through Pull Requests.
+We adhere strictly to the **ПРАВИЛА КРОВИ (Blood Rules)**:
+1. **NO DIRECT PUSH TO MASTER.** All changes go through feature branches and Pull Requests.
+2. **NO MANUAL PATCHES IN PROD.** All updates are verified via CI and deployed through PRs.
 
-To deploy the unified engine:
 ```bash
 # 1. Pull the latest master (after PR merge)
 git pull origin master
@@ -96,4 +110,4 @@ bash deploy_all.sh
 ```
 
 ---
-*Built with adrenaline, terminal wizardry, and strict CI discipline by the Trickster and ZavLab.* 🎭⚡
+*Built with adrenaline, terminal wizardry, and strict CI discipline by the Trickster and ZaVLab.* 🎭⚡
