@@ -44,11 +44,12 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
 | `/start` | None | Displays live Agent Terminal dashboard (CWD, model, session uptime, steps count, quick action keyboard). |
-| `/model` | None | Opens interactive inline keyboard to switch the active LLM model. |
+| `/model` | None | Opens interactive inline keyboard to switch the active LLM model with seamless Hot Model Swap (100% context retention). |
 | `/refresh_models`| None | Dynamically fetches the latest model list from `agy --print /models`. |
 | `/usage` | None | Queries and displays current token quota and tier usage. |
 | `/clear` | None | Resets session context, terminates background tasks, and issues a fresh conversation UUID. |
 | `/resume` | None | Presents an interactive picker of previous sessions sorted by last modification time. |
+| `/export` | None | Compiles and sends full conversation transcript as a clean Markdown document. |
 | `/rename` | `<name>` | Renames the current session in brain storage (`.title`). |
 | `/workspace` | `<path>` | Switches working directory (sandboxed under `AGENTS_DIR` with symlink traversal checks). |
 | `/voice` | `[on\|off]`| Toggles persistent voice responses generated via ElevenLabs TTS. |

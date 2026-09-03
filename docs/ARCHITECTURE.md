@@ -94,7 +94,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Reads `transcript.jsonl` and writes export file to scratch space. |
 | `handleClearCommand` | Session context reset and new conversation UUID generation. | Replaces session and kills prior process tree. |
 | `handleCommand` | Centralized command router. | Returns `bool` for clean pipeline flow. |
-| `handleCallbackQuery` | Routes inline button actions (`model:*`, `resume:*`, `ans:*`, `cmd:*`). | Dispatches callbacks without `goto`. |
+| `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans:*`, `cmd:*`). | Seamlessly switches models with 100% context retention; dispatches callbacks without `goto`. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. | Enforces 100 MB hard limit and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding. |
 | `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
@@ -135,7 +135,41 @@ CREATE TABLE IF NOT EXISTS session_history (
 
 ---
 
-## 5. Streaming Engine & HTML Sanitize Pipeline
+## 5. Hot Model Swap Architecture (Zero-Context-Loss Model Switching)
+
+The engine supports seamless switching of LLM models mid-conversation without loss of history or context:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Router as handleCallbackQuery (model:*)
+    participant SQLite as SQLite WAL Database
+    participant Registry as globalSessions (sessionMu)
+    participant Subproc as OS Subprocess (agy)
+    participant Brain as brain/<UUID>/ (Storage)
+
+    User->>Router: Tap Model Button (e.g. Claude 3.7 Sonnet)
+    Router->>SQLite: updateUserModel(userID, "claude-3-7-sonnet")
+    Note over Router,Registry: Retain active user.SessionID (NO random UUID generation)
+    Router->>Registry: replaceSession(..., user.SessionID, newModel, ...)
+    Registry->>Subproc: Kill old process (syscall.Kill(-pgid, SIGTERM))
+    Registry->>Subproc: Spawn new agy (--conversation <SessionID> --model <newModel>)
+    Subproc->>Brain: Read previous turns from transcript.jsonl
+    Subproc-->>Registry: Init event with preserved conversation_id
+    Router-->>User: "🧠 Model switched! ✨ Context preserved!"
+    User->>Subproc: Send Turn N prompt
+    Subproc-->>User: Stream response with full awareness of Turns 1..N-1
+```
+
+### Hot Swap Guarantees:
+1. **Zero Context Loss**: Previous messages, tool executions, and user inputs stored in `~/.gemini/antigravity-cli/brain/<UUID>/` are reloaded by `agy` on startup under the new model.
+2. **Atomic Process Handoff**: `replaceSession` closes active I/O pipes and terminates the old process group before provisioning the new model runner, avoiding CPU/memory leaks.
+3. **Database Consistency**: Only `users.model` is updated in SQLite; `users.session_id` remains immutable across swaps until the user explicitly runs `/clear`.
+
+---
+
+## 6. Streaming Engine & HTML Sanitize Pipeline
 
 Agent standard output streams JSONL objects that are parsed and formatted into Telegram HTML:
 

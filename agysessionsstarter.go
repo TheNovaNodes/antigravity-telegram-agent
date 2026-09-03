@@ -1186,11 +1186,10 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		}
 
 		user.Model = newModel
-		newUUID := uuid.New().String()
-		replaceSession(db, botName, user, newUUID, newModel, user.Workspace, chatID)
-		updateUserSession(db, userID, newUUID)
+		// Seamless Hot Model Swap: preserve user.SessionID so conversation history is retained
+		replaceSession(db, botName, user, user.SessionID, newModel, user.Workspace, chatID)
 
-		respText = "✅ Model changed to `" + newModel + "`\n\n⚠️ *Warning:* Agent restarted. Background tasks were stopped."
+		respText = "🧠 Model switched to `" + newModel + "`\n✨ *Context preserved!* Continuing existing session."
 	} else if data == "cmd:status" {
 		respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
 	} else if data == "cmd:model" {

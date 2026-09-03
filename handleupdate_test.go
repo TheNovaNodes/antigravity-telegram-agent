@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -442,4 +443,226 @@ func TestHandleCommand_Resume_Empty(t *testing.T) {
 		},
 	}
 	handleUpdate(bot, update, db)
+}
+
+func TestHandleCallbackQuery_HotModelSwap_PreservesContext(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(999)
+
+	// 1. Initial user setup
+	initialUser := getUser(db, userID, "TestMockBot")
+	initialSessionID := initialUser.SessionID
+
+	// 2. Switch model via callback
+	cbUpdate := tgbotapi.Update{
+		UpdateID: 501,
+		CallbackQuery: &tgbotapi.CallbackQuery{
+			ID:   "cb_model_swap",
+			From: &tgbotapi.User{ID: userID},
+			Message: &tgbotapi.Message{
+				MessageID: 25,
+				Chat:      &tgbotapi.Chat{ID: chatID},
+			},
+			Data: "model:gemini-3.1-pro-high",
+		},
+	}
+	handleUpdate(bot, cbUpdate, db)
+
+	// 3. Verify user in DB still has the exact same SessionID (context preserved)
+	updatedUser := getUser(db, userID, "TestMockBot")
+	if updatedUser.SessionID != initialSessionID {
+		t.Errorf("Expected SessionID to be preserved %s, but got %s", initialSessionID, updatedUser.SessionID)
+	}
+	if updatedUser.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Expected model to be gemini-3.1-pro-high, got %s", updatedUser.Model)
+	}
+
+	// 4. Verify session instance in globalSessions retains the conversation ID
+	session := getSession("TestMockBot", updatedUser, chatID)
+	if session.GetConversation() != initialSessionID {
+		t.Errorf("Expected session conversation to be %s, got %s", initialSessionID, session.GetConversation())
+	}
+	if session.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Expected session model to be gemini-3.1-pro-high, got %s", session.Model)
+	}
+
+	session.Kill()
+}
+
+func TestHotModelSwap_EndToEnd_MultiTurnPipeline(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(1001)
+
+	// Turn 1: User sends message on default model
+	update1 := tgbotapi.Update{
+		UpdateID: 601,
+		Message: &tgbotapi.Message{
+			MessageID: 101,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "Step 1: Compute matrix decomposition",
+		},
+	}
+	handleUpdate(bot, update1, db)
+
+	userTurn1 := getUser(db, userID, "TestMockBot")
+	sessionTurn1 := getSession("TestMockBot", userTurn1, chatID)
+	initialConvID := sessionTurn1.GetConversation()
+
+	if initialConvID == "" {
+		t.Fatal("Expected active conversation ID for Turn 1")
+	}
+
+	// Hot Model Swap: User selects Claude 3.7 Sonnet
+	swapUpdate := tgbotapi.Update{
+		UpdateID: 602,
+		CallbackQuery: &tgbotapi.CallbackQuery{
+			ID:   "cb_swap_sonnet",
+			From: &tgbotapi.User{ID: userID},
+			Message: &tgbotapi.Message{
+				MessageID: 102,
+				Chat:      &tgbotapi.Chat{ID: chatID},
+			},
+			Data: "model:claude-3-7-sonnet",
+		},
+	}
+	handleUpdate(bot, swapUpdate, db)
+
+	// Verify DB and session consistency
+	userSwapped := getUser(db, userID, "TestMockBot")
+	if userSwapped.Model != "claude-3-7-sonnet" {
+		t.Errorf("Expected model to be claude-3-7-sonnet, got %s", userSwapped.Model)
+	}
+	if userSwapped.SessionID != initialConvID {
+		t.Errorf("Expected SessionID to remain %s, got %s", initialConvID, userSwapped.SessionID)
+	}
+
+	sessionSwapped := getSession("TestMockBot", userSwapped, chatID)
+	if sessionSwapped.Model != "claude-3-7-sonnet" {
+		t.Errorf("Expected session model to be claude-3-7-sonnet, got %s", sessionSwapped.Model)
+	}
+	if sessionSwapped.GetConversation() != initialConvID {
+		t.Errorf("Expected session conversation to remain %s, got %s", initialConvID, sessionSwapped.GetConversation())
+	}
+
+	// Turn 2: User continues conversation on new model
+	update2 := tgbotapi.Update{
+		UpdateID: 603,
+		Message: &tgbotapi.Message{
+			MessageID: 103,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "Step 2: Continue matrix decomposition with new model",
+		},
+	}
+	handleUpdate(bot, update2, db)
+
+	sessionSwapped.Kill()
+}
+
+func TestHotModelSwap_ConcurrentSwaps_ThreadSafety(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	const concurrency = 10
+	done := make(chan bool, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			userID := int64(2000 + idx)
+			chatID := int64(3000 + idx)
+			newModel := fmt.Sprintf("model-tier-%d", idx%3)
+
+			// Setup initial user
+			u := getUser(db, userID, "TestMockBot")
+			origSessionID := u.SessionID
+
+			// Dispatch swap callback
+			cbUpdate := tgbotapi.Update{
+				UpdateID: idx,
+				CallbackQuery: &tgbotapi.CallbackQuery{
+					ID:   fmt.Sprintf("cb_%d", idx),
+					From: &tgbotapi.User{ID: userID},
+					Message: &tgbotapi.Message{
+						MessageID: 50,
+						Chat:      &tgbotapi.Chat{ID: chatID},
+					},
+					Data: "model:" + newModel,
+				},
+			}
+			handleUpdate(bot, cbUpdate, db)
+
+			// Assert preservation
+			afterUser := getUser(db, userID, "TestMockBot")
+			if afterUser.SessionID != origSessionID {
+				t.Errorf("User %d: Expected SessionID %s, got %s", userID, origSessionID, afterUser.SessionID)
+			}
+			if afterUser.Model != newModel {
+				t.Errorf("User %d: Expected model %s, got %s", userID, newModel, afterUser.Model)
+			}
+
+			done <- true
+		}(i)
+	}
+
+	for i := 0; i < concurrency; i++ {
+		<-done
+	}
+}
+
+func TestHandleCallbackQuery_Model_DBError(t *testing.T) {
+	db := setupTestDB(t)
+	// Close DB immediately to induce failure
+	db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	user := User{
+		ID:        999,
+		Workspace: "/root",
+		Model:     "gemini-3.8-flash-high",
+		SessionID: "uuid-123",
+	}
+
+	cb := &tgbotapi.CallbackQuery{
+		ID:   "cb_fail",
+		From: &tgbotapi.User{ID: user.ID},
+		Message: &tgbotapi.Message{
+			MessageID: 10,
+			Chat:      &tgbotapi.Chat{ID: 12345},
+		},
+		Data: "model:gemini-3.1-pro-high",
+	}
+
+	// Should not panic, but gracefully return DB error to chat
+	handleCallbackQuery(bot, cb, user, "TestMockBot", db)
 }

@@ -12,9 +12,10 @@ import (
 )
 
 func setupTestDB(t *testing.T) *sql.DB {
-	db, err := sql.Open("sqlite3", ":memory:")
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
-		t.Fatalf("Failed to open memory db: %v", err)
+		t.Fatalf("Failed to open test db: %v", err)
 	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
