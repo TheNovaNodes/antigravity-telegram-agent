@@ -2,7 +2,10 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func TestInitDB(t *testing.T) {
@@ -134,4 +137,55 @@ func TestStart_InvalidBinary(t *testing.T) {
 	if session.cancel != nil {
 		session.cancel()
 	}
+}
+
+func TestAgySession_Restart(t *testing.T) {
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	session := &AgySession{
+		BotName:      "TestRestartBot",
+		Model:        "test-model",
+		Workspace:    "/tmp/test_workspace",
+		Conversation: "restart-session-123",
+		UpdateChan:   make(chan struct{}, 1),
+		InitChan:     make(chan string, 1),
+	}
+	session.start()
+
+	if !session.IsAlive() {
+		t.Error("Expected session to be alive after start()")
+	}
+
+	session.Restart()
+
+	if !session.IsAlive() {
+		t.Error("Expected session to be alive after Restart()")
+	}
+
+	session.Kill()
+}
+
+func TestSendChunk_NilBot(t *testing.T) {
+	chunks := sendChunk(nil, 1234, 1, "Hello world")
+	if len(chunks) == 0 {
+		t.Error("Expected chunks to be returned")
+	}
+
+	chunksTrunc := sendChunk(nil, 1234, 1, strings.Repeat("Very long message with ⏳ indicator ", 200))
+	if len(chunksTrunc) < 2 {
+		t.Errorf("Expected multiple chunks, got %d", len(chunksTrunc))
+	}
+}
+
+func TestSendArtifacts_NilBot(t *testing.T) {
+	// Should not panic when bot is nil
+	sendArtifacts(nil, 1234, "Generated file: [output](file:///root/.agents/test/output.txt)")
+}
+
+func TestHandleUpdate_Empty(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	// Should return immediately without doing anything
+	handleUpdate(nil, tgbotapi.Update{}, db)
 }
