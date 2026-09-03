@@ -47,6 +47,7 @@ type AgySession struct {
 	Stdin           io.WriteCloser
 	StdoutScanner   *bufio.Scanner
 	mu              sync.Mutex
+	startMu         sync.Mutex
 	BotAPI          *tgbotapi.BotAPI
 	ChatID          int64
 	UserID          int64
@@ -179,7 +180,7 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
-// Kill gracefully cancels the session context and terminates the underlying process.
+// Kill gracefully cancels the session context, closes pipes, and terminates the underlying process tree.
 func (s *AgySession) Kill() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,9 +188,30 @@ func (s *AgySession) Kill() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
-		s.Cmd.Process.Kill()
+	if s.Stdin != nil {
+		s.Stdin.Close()
+		s.Stdin = nil
 	}
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		pid := s.Cmd.Process.Pid
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+			s.Cmd.Process.Kill()
+		}
+	}
+}
+
+// GetConversation safely returns the active conversation ID under mutex lock.
+func (s *AgySession) GetConversation() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Conversation
+}
+
+// SetConversation safely updates the active conversation ID under mutex lock.
+func (s *AgySession) SetConversation(convID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Conversation = convID
 }
 
 // IsAlive checks whether the underlying agent process is currently running.
@@ -210,7 +232,6 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 		old.Kill()
 		delete(globalSessions, sessionKey)
 	}
-	sessionMu.Unlock()
 
 	session := &AgySession{
 		BotName:      botName,
@@ -219,15 +240,14 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 		Conversation: convID,
 		UserID:       user.ID,
 		DB:           db,
-		UpdateChan:   make(chan struct{}, 1),
-		InitChan:     make(chan string, 1),
+		UpdateChan:   make(chan struct{}, 10),
+		InitChan:     make(chan string, 10),
 	}
 
-	session.start()
-	
-	sessionMu.Lock()
 	globalSessions[sessionKey] = session
 	sessionMu.Unlock()
+
+	session.start()
 	
 	return session
 }
@@ -238,7 +258,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
-	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.Conversation == user.SessionID {
+	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.GetConversation() == user.SessionID {
 		if session.IsAlive() {
 			sessionMu.Unlock()
 			return session
@@ -249,7 +269,6 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		session.Kill()
 		delete(globalSessions, sessionKey)
 	}
-	sessionMu.Unlock()
 
 	session = &AgySession{
 		BotName:      botName,
@@ -257,21 +276,23 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
 		UserID:       user.ID,
-		UpdateChan:   make(chan struct{}, 1),
-		InitChan:     make(chan string, 1),
+		UpdateChan:   make(chan struct{}, 10),
+		InitChan:     make(chan string, 10),
 	}
 
-	session.start()
-	
-	sessionMu.Lock()
 	globalSessions[sessionKey] = session
 	sessionMu.Unlock()
+
+	session.start()
 	
 	return session
 }
 
 // start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
 func (s *AgySession) start() {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+
 	s.mu.Lock()
 	if s.isAlive {
 		s.mu.Unlock()
@@ -311,6 +332,7 @@ func (s *AgySession) start() {
 		agyPath = filepath.Join(home, ".local/bin/agy")
 	}
 	cmd := exec.Command(agyPath, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
@@ -319,25 +341,27 @@ func (s *AgySession) start() {
 
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
-	s.mu.Lock()
-	s.Cmd = cmd
-	s.Stdin = stdin
+	var scanner *bufio.Scanner
 	if stdout != nil {
-		s.StdoutScanner = bufio.NewScanner(stdout)
+		scanner = bufio.NewScanner(stdout)
 		buf := make([]byte, 0, 64*1024)
-		s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
+		scanner.Buffer(buf, 10*1024*1024) // 10MB max token size
 	}
-	s.mu.Unlock()
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("Failed to start agy process for %s (%s): %v", s.BotName, agyPath, err)
 		s.mu.Lock()
 		s.Cmd = nil
+		s.Stdin = nil
+		s.StdoutScanner = nil
 		s.isAlive = false
 		s.mu.Unlock()
 		return
 	}
 	s.mu.Lock()
+	s.Cmd = cmd
+	s.Stdin = stdin
+	s.StdoutScanner = scanner
 	s.isAlive = true
 	s.mu.Unlock()
 
@@ -386,7 +410,7 @@ func (s *AgySession) start() {
 		}
 	}(ctx)
 
-	go s.readStdoutLoop()
+	go s.readStdoutLoop(scanner, ctx)
 	go func(c *exec.Cmd) {
 		c.Wait()
 		s.mu.Lock()
@@ -466,6 +490,11 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 // handleUpdate is the primary router for incoming Telegram messages and inline callbacks.
 func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED in handleUpdate] %v", r)
+		}
+	}()
 	if update.Message == nil && update.CallbackQuery == nil {
 		return
 	}
@@ -1058,13 +1087,19 @@ ProcessInput:
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	payloadBytes = append(payloadBytes, '\n')
-	_, err := session.Stdin.Write(payloadBytes)
+	
+	var err error
+	if session.Stdin != nil {
+		_, err = session.Stdin.Write(payloadBytes)
+	} else {
+		err = fmt.Errorf("agent stdin pipe is not available")
+	}
 	
 	session.mu.Unlock()
 	
 	if err != nil {
 		session.Restart()
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process crashed. Send your message again."))
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process was not ready. Send your message again."))
 		return
 	}
 }
@@ -1097,6 +1132,11 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 // startBotPolling initializes a Telegram Bot instance and starts its dedicated long-polling loop.
 func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED in startBotPolling] %v", r)
+		}
+	}()
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Printf("Failed to init bot: %v", err)
@@ -1253,13 +1293,7 @@ func main() {
 	log.Println("Shutting down gracefully...")
 	sessionMu.Lock()
 	for _, s := range globalSessions {
-		if s.cancel != nil {
-			s.cancel()
-		}
-		if s.Cmd != nil && s.Cmd.Process != nil {
-			log.Printf("Killing child PID %d for user session", s.Cmd.Process.Pid)
-			s.Cmd.Process.Kill()
-		}
+		s.Kill()
 	}
 	sessionMu.Unlock()
 	
@@ -1269,11 +1303,36 @@ func main() {
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
-func (s *AgySession) readStdoutLoop() {
-	s.mu.Lock()
-	scanner := s.StdoutScanner
-	ctx := s.ctx
-	s.mu.Unlock()
+func (s *AgySession) readStdoutLoop(params ...interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED in readStdoutLoop for bot %s] %v", s.BotName, r)
+		}
+	}()
+
+	var scanner *bufio.Scanner
+	var ctx context.Context
+
+	if len(params) >= 2 {
+		if sc, ok := params[0].(*bufio.Scanner); ok {
+			scanner = sc
+		}
+		if c, ok := params[1].(context.Context); ok {
+			ctx = c
+		}
+	}
+
+	if scanner == nil || ctx == nil {
+		s.mu.Lock()
+		if scanner == nil {
+			scanner = s.StdoutScanner
+		}
+		if ctx == nil {
+			ctx = s.ctx
+		}
+		s.mu.Unlock()
+	}
+
 	if scanner == nil || ctx == nil {
 		return
 	}
@@ -1286,16 +1345,16 @@ func (s *AgySession) readStdoutLoop() {
 	}()
 
 	lines := make(chan string, 100)
-	go func() {
+	go func(sc *bufio.Scanner, c context.Context) {
 		defer close(lines)
-		for scanner.Scan() {
+		for sc.Scan() {
 			select {
-			case <-ctx.Done():
+			case <-c.Done():
 				return
-			case lines <- scanner.Text():
+			case lines <- sc.Text():
 			}
 		}
-	}()
+	}(scanner, ctx)
 
 	for {
 		var line string
@@ -1323,12 +1382,12 @@ func (s *AgySession) readStdoutLoop() {
 				}
 				s.mu.Lock()
 				diff := (newID != s.Conversation)
-				if diff {
-					s.Conversation = newID
-				}
+				s.Conversation = newID
+				uID := s.UserID
+				db := s.DB
 				s.mu.Unlock()
-				if diff && s.DB != nil {
-					s.DB.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", newID, s.UserID)
+				if diff && db != nil && uID != 0 {
+					db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", newID, uID)
 				}
 			}
 		} else if event == "step_update" {
@@ -1459,18 +1518,18 @@ func (s *AgySession) readStdoutLoop() {
 				s.VoiceReply = false
 				s.ActiveMessageID = 0
 				s.TextBuffer = ""
+				botAPI := s.BotAPI
+				targetChatID := s.ChatID
 				s.mu.Unlock()
 				
-				if shouldVoice && response != "" {
-					go func(chatID int64, txt string) {
-						err := GenerateAndSendVoice(s.BotAPI, chatID, txt)
+				if shouldVoice && response != "" && botAPI != nil {
+					go func(b *tgbotapi.BotAPI, cID int64, txt string) {
+						err := GenerateAndSendVoice(b, cID, txt)
 						if err != nil {
-							msg := tgbotapi.NewMessage(chatID, "❌ TTS Error: " + err.Error())
-							if s.BotAPI != nil {
-								s.BotAPI.Send(msg)
-							}
+							msg := tgbotapi.NewMessage(cID, "❌ TTS Error: " + err.Error())
+							b.Send(msg)
 						}
-					}(s.ChatID, response)
+					}(botAPI, targetChatID, response)
 				}
 			}
 		}
