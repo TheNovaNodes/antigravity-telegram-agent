@@ -11,7 +11,7 @@ import (
 func TestInitDB(t *testing.T) {
 	botName := "TestInitBot"
 	dbPath := "sessions_" + botName + ".db"
-	
+
 	// Ensure cleanup before and after
 	os.Remove(dbPath)
 	defer os.Remove(dbPath)

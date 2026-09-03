@@ -8,31 +8,44 @@ on:
 
 jobs:
   build:
+    name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: "1"
+
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
-        go-version: '1.22'
+        go-version-file: 'go.mod'
+        cache: true
 
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
+    - name: Check code formatting (gofmt)
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "Unformatted files found:"
+          echo "$unformatted"
+          exit 1
+        fi
 
-    - name: Install dependencies
-      run: go mod download
+    - name: Verify module dependencies
+      run: |
+        go mod tidy
+        git diff --exit-code go.mod go.sum
 
-    - name: Vet
+    - name: Go Vet
       run: go vet ./...
 
-    - name: Test
-      run: go test -v -coverprofile=coverage.out ./...
+    - name: Run Tests with Race Detector
+      run: go test -v -race -coverprofile=coverage.out ./...
 
-    - name: Build
+    - name: Show Coverage Report
+      run: go tool cover -func=coverage.out
+
+    - name: Build binary
       run: go build -v ./...

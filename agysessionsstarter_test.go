@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,7 +98,6 @@ func TestUpdateChan(t *testing.T) {
 	}
 }
 
-
 // TestReplaceSession verifies that replaceSession correctly cleans up old sessions
 // and initializes new ones with the updated parameters (chatID isolation).
 func TestReplaceSession(t *testing.T) {
@@ -128,11 +127,11 @@ func TestReplaceSession(t *testing.T) {
 
 	// Verify it was added to globalSessions
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
-	
+
 	sessionMu.Lock()
 	cached, ok := globalSessions[sessionKey]
 	sessionMu.Unlock()
-	
+
 	if !ok {
 		t.Errorf("Session not found in globalSessions")
 	}
@@ -142,13 +141,13 @@ func TestReplaceSession(t *testing.T) {
 
 	// Create a new session with updated workspace (simulating /workspace command)
 	session2 := replaceSession(db, botName, user, "uuid-2", "test-model", "/tmp/new_workspace", chatID)
-	
+
 	// The old context should be cancelled
 	if session1.ctx.Err() == nil {
 		// Note: The cancel function might be async if there were delays, but replaceSession calls it synchronously.
 		t.Errorf("Old session context was not cancelled")
 	}
-	
+
 	if session2.Workspace != "/tmp/new_workspace" {
 		t.Errorf("Expected Workspace /tmp/new_workspace, got %s", session2.Workspace)
 	}

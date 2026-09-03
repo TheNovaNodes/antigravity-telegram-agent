@@ -62,11 +62,16 @@ type AgySession struct {
 	VoiceReply      bool
 	isAlive         bool
 }
+
 const defaultModel = "gemini-3.8-flash-high"
 
 // initDB initializes the SQLite database for a specific bot and creates necessary tables.
 func initDB(botName string) *sql.DB {
 	dbPath := fmt.Sprintf("sessions_%s.db", botName)
+	// Ensure secure permissions (0600) on database file to prevent unauthorized local reading
+	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
+		f.Close()
+	}
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open db %s: %v", dbPath, err)
@@ -171,13 +176,40 @@ func loadAllowedAdmins() map[int64]bool {
 var globalSessions = make(map[string]*AgySession)
 var sessionMu sync.Mutex
 
-// getAgentsDir resolves the base directory for all agent workspaces, defaulting to the user's home directory.
+// getAgentsDir resolves the base directory for all agent workspaces.
 func getAgentsDir() string {
+	if env := os.Getenv("AGENTS_DIR"); env != "" {
+		return env
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "/root/.agents"
+		home = "/root"
 	}
 	return filepath.Join(home, ".agents")
+}
+
+// getBrainDir resolves the Antigravity CLI brain storage directory.
+func getBrainDir() string {
+	if env := os.Getenv("BRAIN_DIR"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	return filepath.Join(home, ".gemini/antigravity-cli/brain")
+}
+
+// getAgyPath resolves the absolute path to the Antigravity CLI binary.
+func getAgyPath() string {
+	if env := os.Getenv("AGY_BINARY"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	return filepath.Join(home, ".local/bin/agy")
 }
 
 // Kill gracefully cancels the session context, closes pipes, and terminates the underlying process tree.
@@ -221,12 +253,12 @@ func (s *AgySession) IsAlive() bool {
 	return s.isAlive
 }
 
-// replaceSession handles the graceful termination of an existing agent session 
+// replaceSession handles the graceful termination of an existing agent session
 // and provisions a new isolated agent process with updated environment parameters.
 // It ensures there are no goroutine or memory leaks from the previous context.
 func replaceSession(db *sql.DB, botName string, user User, convID string, newModel string, newWorkspace string, chatID int64) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
-	
+
 	sessionMu.Lock()
 	if old, ok := globalSessions[sessionKey]; ok {
 		old.Kill()
@@ -248,14 +280,14 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 	sessionMu.Unlock()
 
 	session.start()
-	
+
 	return session
 }
 
 // getSession retrieves an active session for the user or creates a new isolated agent process.
 func getSession(botName string, user User, chatID int64) *AgySession {
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
-	
+
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
 	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.GetConversation() == user.SessionID {
@@ -284,7 +316,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	sessionMu.Unlock()
 
 	session.start()
-	
+
 	return session
 }
 
@@ -323,14 +355,7 @@ func (s *AgySession) start() {
 		args = append(args, "--conversation", s.Conversation)
 	}
 
-	agyPath := os.Getenv("AGY_BINARY")
-	if agyPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "/root"
-		}
-		agyPath = filepath.Join(home, ".local/bin/agy")
-	}
+	agyPath := getAgyPath()
 	cmd := exec.Command(agyPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -438,13 +463,9 @@ func ExtractAllowedArtifacts(text string) []string {
 	var validPaths []string
 	re := regexp.MustCompile(`\(file://(.*?)\)`)
 	matches := re.FindAllStringSubmatch(text, -1)
-	
+
 	allowedRootAgents, _ := filepath.Abs(getAgentsDir())
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "/root"
-	}
-	allowedRootBrain, _ := filepath.Abs(filepath.Join(home, ".gemini/antigravity-cli/brain"))
+	allowedRootBrain, _ := filepath.Abs(getBrainDir())
 
 	for _, match := range matches {
 		if len(match) > 1 {
@@ -456,17 +477,17 @@ func ExtractAllowedArtifacts(text string) []string {
 			if err != nil {
 				continue
 			}
-			
+
 			realPath, err := filepath.EvalSymlinks(cleanPath)
 			if err != nil {
 				continue
 			}
-			
+
 			if !strings.HasPrefix(realPath, allowedRootAgents) && !strings.HasPrefix(realPath, allowedRootBrain) {
 				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
 				continue
 			}
-			
+
 			if _, err := os.Stat(realPath); err == nil {
 				validPaths = append(validPaths, realPath)
 			}
@@ -600,7 +621,6 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
 			goto ProcessInput
 		} else if data == "cmd:clear" {
-			
 
 			newUUID := uuid.New().String()
 			replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
@@ -653,7 +673,7 @@ ProcessInput:
 					bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save file to disk."))
 					return
 				}
-				
+
 				const maxUploadBytes = 100 << 20 // 100 MB
 				if resp.ContentLength > maxUploadBytes {
 					out.Close()
@@ -662,11 +682,11 @@ ProcessInput:
 					bot.Send(tgbotapi.NewMessage(chatID, "❌ File too large (max 100 MB)"))
 					return
 				}
-				
+
 				n, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
 				out.Close()
 				resp.Body.Close()
-				
+
 				if n > maxUploadBytes {
 					os.Remove(safePath)
 					bot.Send(tgbotapi.NewMessage(chatID, "❌ File exceeds 100 MB limit"))
@@ -696,7 +716,7 @@ ProcessInput:
 		stepsCount := 0
 		uptimeStr := "0 m"
 
-		brainDir := "/root/.gemini/antigravity-cli/brain"
+		brainDir := getBrainDir()
 		sessionDir := filepath.Join(brainDir, user.SessionID)
 
 		titleFile := filepath.Join(sessionDir, ".title")
@@ -767,7 +787,7 @@ ProcessInput:
 		return
 	} else if text == "/resume" || text == fmt.Sprintf("/resume@%s", botName) {
 		// List recent conversations from user history
-		brainDir := "/root/.gemini/antigravity-cli/brain"
+		brainDir := getBrainDir()
 		dbRows, err := db.Query("SELECT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
 		if err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
@@ -891,16 +911,16 @@ ProcessInput:
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ ELEVENLABS_API_KEY environment variable is not set!"))
 			return
 		}
-		
+
 		msg := tgbotapi.NewMessage(chatID, "🎙 *Generating voice...*")
 		msg.ParseMode = "Markdown"
 		sentMsg, _ := bot.Send(msg)
-		
+
 		err := GenerateAndSendVoice(bot, chatID, ttsText)
-		
+
 		// Delete the generating message
 		bot.Send(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
-		
+
 		if err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ TTS Error: "+err.Error()))
 		}
@@ -925,7 +945,7 @@ ProcessInput:
 		}
 		allowedRoot, _ := filepath.Abs(getAgentsDir())
 		if !strings.HasPrefix(realPath, allowedRoot) {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Path must be under " + allowedRoot))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Path must be under "+allowedRoot))
 			return
 		}
 		newWS = realPath
@@ -956,7 +976,7 @@ ProcessInput:
 
 		session := getSession(botName, user, chatID)
 		if session.Conversation != "" {
-			sessionDir := filepath.Join("/root/.gemini/antigravity-cli/brain", session.Conversation)
+			sessionDir := filepath.Join(getBrainDir(), session.Conversation)
 			os.MkdirAll(sessionDir, 0755)
 			titleFile := filepath.Join(sessionDir, ".title")
 			err := os.WriteFile(titleFile, []byte(newName), 0644)
@@ -970,10 +990,7 @@ ProcessInput:
 		}
 		return
 	} else if text == "/usage" || text == fmt.Sprintf("/usage@%s", botName) {
-				agyPath := os.Getenv("AGY_BINARY")
-		if agyPath == "" {
-			agyPath = "/root/.local/bin/agy"
-		}
+		agyPath := getAgyPath()
 		cmd := exec.Command(agyPath, "--print", "/usage")
 		out, err := cmd.CombinedOutput()
 		var respText string
@@ -1044,7 +1061,7 @@ ProcessInput:
 	}
 
 	session := getSession(botName, user, chatID)
-	
+
 	if update.Message != nil && update.Message.Voice != nil {
 		session.mu.Lock()
 		session.VoiceReply = true
@@ -1087,16 +1104,16 @@ ProcessInput:
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	payloadBytes = append(payloadBytes, '\n')
-	
+
 	var err error
 	if session.Stdin != nil {
 		_, err = session.Stdin.Write(payloadBytes)
 	} else {
 		err = fmt.Errorf("agent stdin pipe is not available")
 	}
-	
+
 	session.mu.Unlock()
-	
+
 	if err != nil {
 		session.Restart()
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process was not ready. Send your message again."))
@@ -1225,14 +1242,7 @@ func getEmojiForModel(id string) string {
 }
 
 func fetchModels() {
-	agyPath := os.Getenv("AGY_BINARY")
-	if agyPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "/root"
-		}
-		agyPath = filepath.Join(home, ".local/bin/agy")
-	}
+	agyPath := getAgyPath()
 	cmd := exec.Command(agyPath, "models")
 	out, err := cmd.Output()
 	if err != nil {
@@ -1296,7 +1306,7 @@ func main() {
 		s.Kill()
 	}
 	sessionMu.Unlock()
-	
+
 	// Give children time to flush
 	time.Sleep(2 * time.Second)
 	log.Println("Goodbye.")
@@ -1487,7 +1497,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				response := s.TextBuffer
 				activeMsgID := s.ActiveMessageID
 				s.mu.Unlock()
-				
+
 				if response == "" {
 					response = "No response from agent."
 				}
@@ -1511,7 +1521,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					}
 					sendArtifacts(s.BotAPI, s.ChatID, response)
 				}
-				
+
 				// Mirror Protocol: Trigger TTS on final response
 				s.mu.Lock()
 				shouldVoice := s.VoiceReply
@@ -1521,12 +1531,12 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				botAPI := s.BotAPI
 				targetChatID := s.ChatID
 				s.mu.Unlock()
-				
+
 				if shouldVoice && response != "" && botAPI != nil {
 					go func(b *tgbotapi.BotAPI, cID int64, txt string) {
 						err := GenerateAndSendVoice(b, cID, txt)
 						if err != nil {
-							msg := tgbotapi.NewMessage(cID, "❌ TTS Error: " + err.Error())
+							msg := tgbotapi.NewMessage(cID, "❌ TTS Error: "+err.Error())
 							b.Send(msg)
 						}
 					}(botAPI, targetChatID, response)
