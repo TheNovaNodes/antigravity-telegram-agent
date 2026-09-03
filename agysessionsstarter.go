@@ -270,10 +270,14 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 
 // start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
 func (s *AgySession) start() {
+	s.mu.Lock()
 	if s.cancel != nil {
 		s.cancel()
 	}
-	s.ctx, s.cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	s.ctx = ctx
+	s.cancel = cancel
+	s.mu.Unlock()
 
 	args := []string{
 		"--model", s.Model,
@@ -300,23 +304,26 @@ func (s *AgySession) start() {
 		}
 		agyPath = filepath.Join(home, ".local/bin/agy")
 	}
-	s.Cmd = exec.Command(agyPath, args...)
+	cmd := exec.Command(agyPath, args...)
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
 	os.MkdirAll(agentDir, 0755)
-	s.Cmd.Dir = agentDir
+	cmd.Dir = agentDir
 
-	stdin, _ := s.Cmd.StdinPipe()
-	stdout, _ := s.Cmd.StdoutPipe()
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	s.mu.Lock()
+	s.Cmd = cmd
 	s.Stdin = stdin
 	if stdout != nil {
 		s.StdoutScanner = bufio.NewScanner(stdout)
 		buf := make([]byte, 0, 64*1024)
 		s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
 	}
+	s.mu.Unlock()
 
-	if err := s.Cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		log.Printf("Failed to start agy process for %s (%s): %v", s.BotName, agyPath, err)
 		s.mu.Lock()
 		s.Cmd = nil
@@ -325,7 +332,6 @@ func (s *AgySession) start() {
 	}
 
 	// Streaming throttler loop
-	ctx := s.ctx
 	go func(ctx context.Context) {
 		var lastSent string
 		var lastSentTime time.Time
@@ -371,16 +377,14 @@ func (s *AgySession) start() {
 	}(ctx)
 
 	go s.readStdoutLoop()
-	if s.Cmd != nil {
-		go func(cmd *exec.Cmd) {
-			cmd.Wait()
-			s.mu.Lock()
-			if s.Cmd == cmd {
-				s.Cmd = nil
-			}
-			s.mu.Unlock()
-		}(s.Cmd)
-	}
+	go func(c *exec.Cmd) {
+		c.Wait()
+		s.mu.Lock()
+		if s.Cmd == c {
+			s.Cmd = nil
+		}
+		s.mu.Unlock()
+	}(cmd)
 }
 
 // Restart performs the Restart method.
@@ -1057,6 +1061,10 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 		chunkToEdit += "\n\n<i>[Truncated while typing...]</i>"
 	}
 
+	if bot == nil {
+		return chunks
+	}
+
 	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, chunkToEdit)
 	editMsg.ParseMode = "HTML"
 	_, err := bot.Send(editMsg)
@@ -1157,7 +1165,15 @@ func getEmojiForModel(id string) string {
 }
 
 func fetchModels() {
-	cmd := exec.Command("/root/.local/bin/agy", "models")
+	agyPath := os.Getenv("AGY_BINARY")
+	if agyPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "/root"
+		}
+		agyPath = filepath.Join(home, ".local/bin/agy")
+	}
+	cmd := exec.Command(agyPath, "models")
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("Failed to fetch dynamic models: %v", err)
@@ -1234,18 +1250,21 @@ func main() {
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
 func (s *AgySession) readStdoutLoop() {
-	if s.StdoutScanner == nil {
+	s.mu.Lock()
+	scanner := s.StdoutScanner
+	s.mu.Unlock()
+	if scanner == nil {
 		return
 	}
 	lines := make(chan string, 100)
 	ctx := s.ctx
 	go func() {
 		defer close(lines)
-		for s.StdoutScanner.Scan() {
+		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
 				return
-			case lines <- s.StdoutScanner.Text():
+			case lines <- scanner.Text():
 			}
 		}
 	}()
@@ -1274,12 +1293,14 @@ func (s *AgySession) readStdoutLoop() {
 				case s.InitChan <- newID:
 				default:
 				}
-				if newID != s.Conversation {
+				s.mu.Lock()
+				diff := (newID != s.Conversation)
+				if diff {
 					s.Conversation = newID
-					// Update DB using the shared connection (Fixes #44 and #43)
-					if s.DB != nil {
-						s.DB.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", newID, s.UserID)
-					}
+				}
+				s.mu.Unlock()
+				if diff && s.DB != nil {
+					s.DB.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", newID, s.UserID)
 				}
 			}
 		} else if event == "step_update" {
@@ -1351,11 +1372,13 @@ func (s *AgySession) readStdoutLoop() {
 					s.mu.Lock()
 					activeMsgID := s.ActiveMessageID
 					s.mu.Unlock()
-					if activeMsgID == 0 {
-						msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
-						s.BotAPI.Send(msg)
-					} else {
-						sendChunk(s.BotAPI, s.ChatID, activeMsgID, "❌ Error from agent: "+errMsg)
+					if s.BotAPI != nil {
+						if activeMsgID == 0 {
+							msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
+							s.BotAPI.Send(msg)
+						} else {
+							sendChunk(s.BotAPI, s.ChatID, activeMsgID, "❌ Error from agent: "+errMsg)
+						}
 					}
 
 					isRateLimit := strings.Contains(errMsg, "429") || strings.Contains(errMsg, "503") || strings.Contains(strings.ToLower(errMsg), "timeout") || strings.Contains(strings.ToLower(errMsg), "rate limit")
@@ -1374,11 +1397,15 @@ func (s *AgySession) readStdoutLoop() {
 						botName := s.BotName
 						userID := s.UserID
 						db := s.DB
+						s.mu.Lock()
 						convID := s.Conversation
+						s.mu.Unlock()
 						go func() {
 							user := getUser(db, userID, botName)
 							replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
-							bot.Send(tgbotapi.NewMessage(chatID, "🔄 Auto-recovering from API rate limit..."))
+							if bot != nil {
+								bot.Send(tgbotapi.NewMessage(chatID, "🔄 Auto-recovering from API rate limit..."))
+							}
 							
 							payload := map[string]interface{}{
 								"event": "user",
@@ -1406,24 +1433,26 @@ func (s *AgySession) readStdoutLoop() {
 				if response == "" {
 					response = "No response from agent."
 				}
-				if activeMsgID == 0 {
-					chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
-					for _, chunk := range chunks {
-						msg := tgbotapi.NewMessage(s.ChatID, chunk)
-						msg.ParseMode = "HTML"
-						s.BotAPI.Send(msg)
-					}
-				} else {
-					chunks := sendChunk(s.BotAPI, s.ChatID, activeMsgID, response)
-					if len(chunks) > 1 {
-						for i := 1; i < len(chunks); i++ {
-							msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
+				if s.BotAPI != nil {
+					if activeMsgID == 0 {
+						chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
+						for _, chunk := range chunks {
+							msg := tgbotapi.NewMessage(s.ChatID, chunk)
 							msg.ParseMode = "HTML"
 							s.BotAPI.Send(msg)
 						}
+					} else {
+						chunks := sendChunk(s.BotAPI, s.ChatID, activeMsgID, response)
+						if len(chunks) > 1 {
+							for i := 1; i < len(chunks); i++ {
+								msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
+								msg.ParseMode = "HTML"
+								s.BotAPI.Send(msg)
+							}
+						}
 					}
+					sendArtifacts(s.BotAPI, s.ChatID, response)
 				}
-				sendArtifacts(s.BotAPI, s.ChatID, response)
 				
 				// Mirror Protocol: Trigger TTS on final response
 				s.mu.Lock()
