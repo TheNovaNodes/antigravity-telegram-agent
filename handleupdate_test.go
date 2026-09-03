@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -258,5 +261,79 @@ func TestHandleUpdate_TextMessage_Stream(t *testing.T) {
 	session := getSession("TestMockBot", user, chatID)
 	if session != nil {
 		session.Kill()
+	}
+}
+
+func TestHandleUpdate_AfterRateLimit_CleanResume(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(888)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	session.Kill()
+
+	// Simulate rate limit 429 arriving on stdout stream for this session
+	rateLimitJSONL := `{"event":"result","result":{"status":"ERROR","error":"429 Resource has been exhausted (e.g. check quota)."}}` + "\n"
+	rateLimitSession := &AgySession{
+		BotName:       "TestMockBot",
+		Model:         defaultModel,
+		Workspace:     user.Workspace,
+		Conversation:  user.SessionID,
+		UserID:        userID,
+		ChatID:        chatID,
+		BotAPI:        bot,
+		UpdateChan:    make(chan struct{}, 10),
+		InitChan:      make(chan string, 10),
+		StdoutScanner: bufio.NewScanner(strings.NewReader(rateLimitJSONL)),
+	}
+	rateLimitSession.ctx, rateLimitSession.cancel = context.WithCancel(context.Background())
+	rateLimitSession.readStdoutLoop()
+
+	// Verify ActiveMessageID is reset to 0
+	rateLimitSession.mu.Lock()
+	activeID := rateLimitSession.ActiveMessageID
+	rateLimitSession.mu.Unlock()
+	if activeID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 after rate limit, got %d", activeID)
+	}
+
+	// Now simulate user sending a new message after rate limit window passed
+	ms.mu.Lock()
+	startReqCount := len(ms.sentRequests)
+	ms.mu.Unlock()
+
+	update := tgbotapi.Update{
+		UpdateID: 300,
+		Message: &tgbotapi.Message{
+			MessageID: 50,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "Are you available now?",
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	ms.mu.Lock()
+	newReqCount := len(ms.sentRequests) - startReqCount
+	ms.mu.Unlock()
+
+	if newReqCount == 0 {
+		t.Error("Expected Telegram messages to be sent for new prompt after rate limit")
+	}
+
+	resumedSession := getSession("TestMockBot", user, chatID)
+	if resumedSession != nil {
+		resumedSession.Kill()
 	}
 }
