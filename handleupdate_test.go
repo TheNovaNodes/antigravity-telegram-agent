@@ -1,0 +1,262 @@
+package main
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+
+type mockServer struct {
+	server       *httptest.Server
+	mu           sync.Mutex
+	sentRequests []*http.Request
+	sentBodies   []string
+}
+
+func newMockServer() *mockServer {
+	ms := &mockServer{}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ms.mu.Lock()
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		ms.sentRequests = append(ms.sentRequests, r)
+		ms.sentBodies = append(ms.sentBodies, string(bodyBytes))
+		ms.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/getMe" {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"TestMockBot","username":"TestMockBot"}}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"mocked"}}`))
+	})
+	ms.server = httptest.NewServer(handler)
+	return ms
+}
+
+func (ms *mockServer) Close() {
+	ms.server.Close()
+}
+
+func createMockBot(ms *mockServer) *tgbotapi.BotAPI {
+	endpoint := ms.server.URL + "/bot%s/%s"
+	bot, err := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ms.server.Client())
+	if err != nil {
+		panic(err)
+	}
+	return bot
+}
+
+func TestHandleUpdate_Commands(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	commands := []string{
+		"/start",
+		"/help",
+		"/model",
+		"/usage",
+		"/clear",
+		"/refresh_models",
+		"/rename TestSessionTitle",
+	}
+
+	for _, cmd := range commands {
+		t.Run("Command "+cmd, func(t *testing.T) {
+			ms.mu.Lock()
+			startCount := len(ms.sentRequests)
+			ms.mu.Unlock()
+
+			update := tgbotapi.Update{
+				UpdateID: 1,
+				Message: &tgbotapi.Message{
+					MessageID: 10,
+					Chat:      &tgbotapi.Chat{ID: chatID},
+					From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+					Text:      cmd,
+				},
+			}
+
+			handleUpdate(bot, update, db)
+
+			ms.mu.Lock()
+			newCount := len(ms.sentRequests) - startCount
+			ms.mu.Unlock()
+
+			if newCount == 0 {
+				t.Errorf("Expected Telegram request to be sent for command %s", cmd)
+			}
+		})
+	}
+}
+
+func TestHandleUpdate_Workspace(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	// Test 1: Invalid workspace (not absolute)
+	updateInvalid := tgbotapi.Update{
+		UpdateID: 2,
+		Message: &tgbotapi.Message{
+			MessageID: 11,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/workspace relative/path",
+		},
+	}
+	handleUpdate(bot, updateInvalid, db)
+
+	// Test 2: Valid workspace under allowed root
+	validWS := filepath.Join(getAgentsDir(), "TestMockBot", "lab")
+	os.MkdirAll(validWS, 0755)
+	updateValid := tgbotapi.Update{
+		UpdateID: 3,
+		Message: &tgbotapi.Message{
+			MessageID: 12,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/workspace " + validWS,
+		},
+	}
+	handleUpdate(bot, updateValid, db)
+}
+
+func TestHandleUpdate_Callbacks(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	callbacks := []string{
+		"cmd:status",
+		"cmd:clear",
+		"cmd:help",
+		"cmd:usage",
+		"cmd:model",
+		"model:gemini-3.8-flash-high",
+		"ans:SelectedOptionA",
+	}
+
+	for _, cb := range callbacks {
+		t.Run("Callback "+cb, func(t *testing.T) {
+			ms.mu.Lock()
+			startCount := len(ms.sentRequests)
+			ms.mu.Unlock()
+
+			update := tgbotapi.Update{
+				UpdateID: 10,
+				CallbackQuery: &tgbotapi.CallbackQuery{
+					ID:   "cb123",
+					From: &tgbotapi.User{ID: userID},
+					Message: &tgbotapi.Message{
+						MessageID: 20,
+						Chat:      &tgbotapi.Chat{ID: chatID},
+					},
+					Data: cb,
+				},
+			}
+
+			handleUpdate(bot, update, db)
+
+			ms.mu.Lock()
+			newCount := len(ms.sentRequests) - startCount
+			ms.mu.Unlock()
+
+			if newCount == 0 {
+				t.Errorf("Expected request sent for callback %s", cb)
+			}
+		})
+	}
+}
+
+func TestHandleUpdate_UnsupportedMedia(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	// Message with no text, caption, or supported media
+	update := tgbotapi.Update{
+		UpdateID: 100,
+		Message: &tgbotapi.Message{
+			MessageID: 30,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+}
+
+func TestHandleUpdate_TextMessage_Stream(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	update := tgbotapi.Update{
+		UpdateID: 200,
+		Message: &tgbotapi.Message{
+			MessageID: 40,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "Please write a hello world program in Go.",
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	if session != nil {
+		session.Kill()
+	}
+}
