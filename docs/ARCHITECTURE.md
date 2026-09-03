@@ -91,11 +91,13 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleVoiceToggleCommand` | Persistent toggle for agent voice responses (`/voice [on\|off]`). | Atomic SQLite update to `users.voice_reply`. |
 | `handleWorkspaceCommand` | Dynamic agent working directory switching. | Path traversal validation (`filepath.EvalSymlinks`, restricted to `AGENTS_DIR`). |
 | `handleRenameCommand` | Live rename of conversation title in `brain` storage. | Writes to `.title` atomic descriptor. |
+| `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Reads `transcript.jsonl` and writes export file to scratch space. |
 | `handleClearCommand` | Session context reset and new conversation UUID generation. | Replaces session and kills prior process tree. |
 | `handleCommand` | Centralized command router. | Returns `bool` for clean pipeline flow. |
 | `handleCallbackQuery` | Routes inline button actions (`model:*`, `resume:*`, `ans:*`, `cmd:*`). | Dispatches callbacks without `goto`. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. | Enforces 100 MB hard limit and sandbox download dir. |
-| `handleMessagePayload` | Streams user prompt into agent `Stdin`. | Enforces JSONL protocol encoding. |
+| `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding. |
+| `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
 
 ---
 
