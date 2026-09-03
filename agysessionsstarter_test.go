@@ -26,6 +26,15 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("Failed to create table: %v", err)
 	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS session_history (
+		user_id INTEGER,
+		session_id TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, session_id)
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create session_history table: %v", err)
+	}
 	return db
 }
 
