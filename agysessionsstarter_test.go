@@ -21,7 +21,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		workspace TEXT DEFAULT '',
 		model TEXT DEFAULT 'gemini-3.1-pro-high',
 		is_first_start BOOLEAN DEFAULT 1,
-		session_id TEXT DEFAULT NULL
+		session_id TEXT DEFAULT NULL,
+		voice_reply BOOLEAN DEFAULT 0
 	)`)
 	if err != nil {
 		t.Fatalf("Failed to create table: %v", err)

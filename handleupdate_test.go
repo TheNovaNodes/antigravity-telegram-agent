@@ -337,3 +337,109 @@ func TestHandleUpdate_AfterRateLimit_CleanResume(t *testing.T) {
 		resumedSession.Kill()
 	}
 }
+
+func TestHandleCommand_VoiceToggle(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(888)
+
+	// Toggle ON
+	updateOn := tgbotapi.Update{
+		UpdateID: 401,
+		Message: &tgbotapi.Message{
+			MessageID: 51,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/voice on",
+		},
+	}
+	handleUpdate(bot, updateOn, db)
+
+	u := getUser(db, userID, "TestMockBot")
+	if !u.VoiceReply {
+		t.Errorf("Expected user VoiceReply to be true after /voice on")
+	}
+
+	// Toggle OFF
+	updateOff := tgbotapi.Update{
+		UpdateID: 402,
+		Message: &tgbotapi.Message{
+			MessageID: 52,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/voice off",
+		},
+	}
+	handleUpdate(bot, updateOff, db)
+
+	u = getUser(db, userID, "TestMockBot")
+	if u.VoiceReply {
+		t.Errorf("Expected user VoiceReply to be false after /voice off")
+	}
+}
+
+func TestHandleCommand_TTS_NoKey(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(888)
+
+	os.Unsetenv("ELEVENLABS_API_KEY")
+
+	updateTTS := tgbotapi.Update{
+		UpdateID: 403,
+		Message: &tgbotapi.Message{
+			MessageID: 53,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/tts Hello world",
+		},
+	}
+	handleUpdate(bot, updateTTS, db)
+
+	// Empty TTS
+	updateEmpty := tgbotapi.Update{
+		UpdateID: 404,
+		Message: &tgbotapi.Message{
+			MessageID: 54,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/tts",
+		},
+	}
+	handleUpdate(bot, updateEmpty, db)
+}
+
+func TestHandleCommand_Resume_Empty(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(888)
+
+	update := tgbotapi.Update{
+		UpdateID: 405,
+		Message: &tgbotapi.Message{
+			MessageID: 55,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Text:      "/resume",
+		},
+	}
+	handleUpdate(bot, update, db)
+}
