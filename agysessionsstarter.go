@@ -222,7 +222,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
-	if exists && session.Model == user.Model && session.Workspace == user.Workspace {
+	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.Conversation == user.SessionID {
 		// check if process is alive
 		if session.Cmd != nil && session.Cmd.ProcessState == nil {
 			sessionMu.Unlock()
@@ -230,8 +230,14 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		}
 	}
 
-	if exists && session.Cmd != nil && session.Cmd.Process != nil {
-		session.Cmd.Process.Kill()
+	if exists {
+		if session.cancel != nil {
+			session.cancel()
+		}
+		if session.Cmd != nil && session.Cmd.Process != nil {
+			session.Cmd.Process.Kill()
+		}
+		delete(globalSessions, sessionKey)
 	}
 	sessionMu.Unlock()
 
@@ -240,6 +246,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		Model:        user.Model,
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
+		UserID:       user.ID,
 		UpdateChan:   make(chan struct{}, 1),
 		InitChan:     make(chan string, 1),
 	}
@@ -277,7 +284,7 @@ func (s *AgySession) start() {
 		args = append(args, "--conversation", s.Conversation)
 	}
 
-		agyPath := os.Getenv("AGY_BINARY")
+	agyPath := os.Getenv("AGY_BINARY")
 	if agyPath == "" {
 		agyPath = "/root/.local/bin/agy"
 	}
@@ -291,10 +298,19 @@ func (s *AgySession) start() {
 	stdin, _ := s.Cmd.StdinPipe()
 	stdout, _ := s.Cmd.StdoutPipe()
 	s.Stdin = stdin
-	s.StdoutScanner = bufio.NewScanner(stdout)
-	buf := make([]byte, 0, 64*1024)
-	s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
-	s.Cmd.Start()
+	if stdout != nil {
+		s.StdoutScanner = bufio.NewScanner(stdout)
+		buf := make([]byte, 0, 64*1024)
+		s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
+	}
+
+	if err := s.Cmd.Start(); err != nil {
+		log.Printf("Failed to start agy process for %s (%s): %v", s.BotName, agyPath, err)
+		s.mu.Lock()
+		s.Cmd = nil
+		s.mu.Unlock()
+		return
+	}
 
 	// Streaming throttler loop
 	ctx := s.ctx
@@ -343,14 +359,16 @@ func (s *AgySession) start() {
 	}(ctx)
 
 	go s.readStdoutLoop()
-	go func(cmd *exec.Cmd) {
-		cmd.Wait()
-		s.mu.Lock()
-		if s.Cmd == cmd {
-			s.Cmd = nil
-		}
-		s.mu.Unlock()
-	}(s.Cmd)
+	if s.Cmd != nil {
+		go func(cmd *exec.Cmd) {
+			cmd.Wait()
+			s.mu.Lock()
+			if s.Cmd == cmd {
+				s.Cmd = nil
+			}
+			s.mu.Unlock()
+		}(s.Cmd)
+	}
 }
 
 // Restart performs the Restart method.
@@ -1209,12 +1227,20 @@ func main() {
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
 func (s *AgySession) readStdoutLoop() {
-	lines := make(chan string)
+	if s.StdoutScanner == nil {
+		return
+	}
+	lines := make(chan string, 100)
+	ctx := s.ctx
 	go func() {
+		defer close(lines)
 		for s.StdoutScanner.Scan() {
-			lines <- s.StdoutScanner.Text()
+			select {
+			case <-ctx.Done():
+				return
+			case lines <- s.StdoutScanner.Text():
+			}
 		}
-		close(lines)
 	}()
 
 	for {

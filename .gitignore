@@ -6,3 +6,6 @@ test_build
 agysessionsstarter
 *.pyc
 __pycache__/
+*.out
+*.test
+coverage.html
