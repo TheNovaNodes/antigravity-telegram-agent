@@ -59,6 +59,7 @@ type AgySession struct {
 	cancel          context.CancelFunc
 	InitChan        chan string
 	VoiceReply      bool
+	isAlive         bool
 }
 const defaultModel = "gemini-3.8-flash-high"
 
@@ -182,6 +183,7 @@ func getAgentsDir() string {
 func (s *AgySession) Kill() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.isAlive = false
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -194,7 +196,7 @@ func (s *AgySession) Kill() {
 func (s *AgySession) IsAlive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.Cmd != nil && s.Cmd.Process != nil && s.Cmd.ProcessState == nil
+	return s.isAlive
 }
 
 // replaceSession handles the graceful termination of an existing agent session 
@@ -271,6 +273,10 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 // start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
 func (s *AgySession) start() {
 	s.mu.Lock()
+	if s.isAlive {
+		s.mu.Unlock()
+		return
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -327,9 +333,13 @@ func (s *AgySession) start() {
 		log.Printf("Failed to start agy process for %s (%s): %v", s.BotName, agyPath, err)
 		s.mu.Lock()
 		s.Cmd = nil
+		s.isAlive = false
 		s.mu.Unlock()
 		return
 	}
+	s.mu.Lock()
+	s.isAlive = true
+	s.mu.Unlock()
 
 	// Streaming throttler loop
 	go func(ctx context.Context) {
@@ -380,9 +390,12 @@ func (s *AgySession) start() {
 	go func(c *exec.Cmd) {
 		c.Wait()
 		s.mu.Lock()
+		s.isAlive = false
 		if s.Cmd == c {
 			s.Cmd = nil
 		}
+		s.ActiveMessageID = 0
+		s.TextBuffer = ""
 		s.mu.Unlock()
 	}(cmd)
 }
@@ -1013,6 +1026,14 @@ ProcessInput:
 	session.BotAPI = bot
 	session.ChatID = chatID
 
+	if !session.isAlive {
+		session.ActiveMessageID = 0
+		session.TextBuffer = ""
+		session.mu.Unlock()
+		session.start()
+		session.mu.Lock()
+	}
+
 	if !downloadedFile {
 		activeMsgID := session.ActiveMessageID
 		if activeMsgID == 0 {
@@ -1027,10 +1048,6 @@ ProcessInput:
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 		}
-	}
-
-	if session.Cmd == nil || session.Cmd.Process == nil {
-		session.start()
 	}
 
 	payload := map[string]interface{}{
@@ -1069,7 +1086,10 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 	editMsg.ParseMode = "HTML"
 	_, err := bot.Send(editMsg)
 	if err != nil && err.Error() != "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message" {
-		log.Printf("Edit error: %v", err)
+		log.Printf("Edit error: %v, falling back to new message", err)
+		newMsg := tgbotapi.NewMessage(chatID, chunkToEdit)
+		newMsg.ParseMode = "HTML"
+		bot.Send(newMsg)
 	}
 	return chunks
 }
@@ -1257,6 +1277,14 @@ func (s *AgySession) readStdoutLoop() {
 	if scanner == nil || ctx == nil {
 		return
 	}
+
+	defer func() {
+		s.mu.Lock()
+		s.ActiveMessageID = 0
+		s.TextBuffer = ""
+		s.mu.Unlock()
+	}()
+
 	lines := make(chan string, 100)
 	go func() {
 		defer close(lines)
@@ -1372,57 +1400,28 @@ func (s *AgySession) readStdoutLoop() {
 					s.mu.Lock()
 					activeMsgID := s.ActiveMessageID
 					s.mu.Unlock()
+
+					isRateLimit := strings.Contains(errMsg, "429") || strings.Contains(errMsg, "503") || strings.Contains(strings.ToLower(errMsg), "timeout") || strings.Contains(strings.ToLower(errMsg), "rate limit")
+
+					displayErr := "❌ Error from agent: " + errMsg
+					if isRateLimit {
+						displayErr = "⚠️ Превышен лимит запросов к модели (Rate limit / 429). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
+					}
+
 					if s.BotAPI != nil {
 						if activeMsgID == 0 {
-							msg := tgbotapi.NewMessage(s.ChatID, "❌ Error from agent: "+errMsg)
+							msg := tgbotapi.NewMessage(s.ChatID, displayErr)
 							s.BotAPI.Send(msg)
 						} else {
-							sendChunk(s.BotAPI, s.ChatID, activeMsgID, "❌ Error from agent: "+errMsg)
+							sendChunk(s.BotAPI, s.ChatID, activeMsgID, displayErr)
 						}
 					}
 
-					isRateLimit := strings.Contains(errMsg, "429") || strings.Contains(errMsg, "503") || strings.Contains(strings.ToLower(errMsg), "timeout") || strings.Contains(strings.ToLower(errMsg), "rate limit")
-					
+					s.Kill()
 					s.mu.Lock()
-					if s.Cmd != nil && s.Cmd.Process != nil {
-						s.Cmd.Process.Kill()
-					}
 					s.ActiveMessageID = 0
 					s.TextBuffer = ""
 					s.mu.Unlock()
-					
-					if isRateLimit {
-						bot := s.BotAPI
-						chatID := s.ChatID
-						botName := s.BotName
-						userID := s.UserID
-						db := s.DB
-						s.mu.Lock()
-						convID := s.Conversation
-						s.mu.Unlock()
-						go func() {
-							user := getUser(db, userID, botName)
-							replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
-							if bot != nil {
-								bot.Send(tgbotapi.NewMessage(chatID, "🔄 Auto-recovering from API rate limit..."))
-							}
-							
-							payload := map[string]interface{}{
-								"event": "user",
-								"message": map[string]string{
-									"content": "SYSTEM: Your previous turn failed due to an API timeout/rate-limit. Please re-evaluate your current state and repeat your last intended action.",
-								},
-							}
-							payloadBytes, _ := json.Marshal(payload)
-							payloadBytes = append(payloadBytes, '\n')
-							
-							time.Sleep(2 * time.Second)
-							newSess := getSession(botName, user, chatID)
-							if newSess != nil && newSess.Stdin != nil {
-								newSess.Stdin.Write(payloadBytes)
-							}
-						}()
-					}
 					continue
 				}
 				s.mu.Lock()
