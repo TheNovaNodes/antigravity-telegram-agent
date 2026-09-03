@@ -2,6 +2,7 @@
 *.db
 *.sqlite
 new_engine
+engine
 test_build
 agysessionsstarter
 *.pyc

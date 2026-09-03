@@ -178,6 +178,25 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
+// Kill gracefully cancels the session context and terminates the underlying process.
+func (s *AgySession) Kill() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		s.Cmd.Process.Kill()
+	}
+}
+
+// IsAlive checks whether the underlying agent process is currently running.
+func (s *AgySession) IsAlive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Cmd != nil && s.Cmd.Process != nil && s.Cmd.ProcessState == nil
+}
+
 // replaceSession handles the graceful termination of an existing agent session 
 // and provisions a new isolated agent process with updated environment parameters.
 // It ensures there are no goroutine or memory leaks from the previous context.
@@ -186,12 +205,7 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 	
 	sessionMu.Lock()
 	if old, ok := globalSessions[sessionKey]; ok {
-		if old.cancel != nil {
-			old.cancel()
-		}
-		if old.Cmd != nil && old.Cmd.Process != nil {
-			old.Cmd.Process.Kill()
-		}
+		old.Kill()
 		delete(globalSessions, sessionKey)
 	}
 	sessionMu.Unlock()
@@ -223,20 +237,14 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
 	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.Conversation == user.SessionID {
-		// check if process is alive
-		if session.Cmd != nil && session.Cmd.ProcessState == nil {
+		if session.IsAlive() {
 			sessionMu.Unlock()
 			return session
 		}
 	}
 
 	if exists {
-		if session.cancel != nil {
-			session.cancel()
-		}
-		if session.Cmd != nil && session.Cmd.Process != nil {
-			session.Cmd.Process.Kill()
-		}
+		session.Kill()
 		delete(globalSessions, sessionKey)
 	}
 	sessionMu.Unlock()
@@ -286,7 +294,11 @@ func (s *AgySession) start() {
 
 	agyPath := os.Getenv("AGY_BINARY")
 	if agyPath == "" {
-		agyPath = "/root/.local/bin/agy"
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "/root"
+		}
+		agyPath = filepath.Join(home, ".local/bin/agy")
 	}
 	s.Cmd = exec.Command(agyPath, args...)
 
@@ -373,12 +385,7 @@ func (s *AgySession) start() {
 
 // Restart performs the Restart method.
 func (s *AgySession) Restart() {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
-		s.Cmd.Process.Kill()
-	}
+	s.Kill()
 	s.start()
 }
 

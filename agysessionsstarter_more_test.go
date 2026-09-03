@@ -57,6 +57,9 @@ func TestLoadAllowedAdmins(t *testing.T) {
 }
 
 func TestGetSession(t *testing.T) {
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
 	botName := "TestBotSession"
 	user := User{
 		ID:           999,
@@ -103,10 +106,10 @@ func TestGetSession(t *testing.T) {
 		t.Errorf("Expected old session context to be cancelled after replacement")
 	}
 
-	// Clean up cmd if it was started
-	if session3.Cmd != nil && session3.Cmd.Process != nil {
-		session3.Cmd.Process.Kill()
-	}
+	// Clean up sessions
+	session.Kill()
+	session2.Kill()
+	session3.Kill()
 }
 
 func TestReadStdoutLoop_NilScanner(t *testing.T) {

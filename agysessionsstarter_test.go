@@ -93,6 +93,9 @@ func TestUpdateChan(t *testing.T) {
 // TestReplaceSession verifies that replaceSession correctly cleans up old sessions
 // and initializes new ones with the updated parameters (chatID isolation).
 func TestReplaceSession(t *testing.T) {
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
 	db := setupTestDB(t)
 	defer db.Close()
 
@@ -140,4 +143,6 @@ func TestReplaceSession(t *testing.T) {
 	if session2.Workspace != "/tmp/new_workspace" {
 		t.Errorf("Expected Workspace /tmp/new_workspace, got %s", session2.Workspace)
 	}
+
+	session2.Kill()
 }
