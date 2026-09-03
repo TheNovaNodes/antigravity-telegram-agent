@@ -74,23 +74,23 @@ func TestCleanTextForTTS(t *testing.T) {
 			expected: "Hello World",
 		},
 		{
-			name: "Inline Code",
-			input: "This is `code` inline.",
+			name:     "Inline Code",
+			input:    "This is `code` inline.",
 			expected: "This is  inline.",
 		},
 		{
-			name: "Code Block",
-			input: "Check this out:\n```bash\necho 'hello'\n```\nCool right?",
+			name:     "Code Block",
+			input:    "Check this out:\n```bash\necho 'hello'\n```\nCool right?",
 			expected: "Check this out:\n\nCool right?",
 		},
 		{
-			name: "Multiple Code Blocks and Inline",
-			input: "Here is `some` code:\n```go\nfmt.Println(\"test\")\n```\nAnd `more` inline.",
+			name:     "Multiple Code Blocks and Inline",
+			input:    "Here is `some` code:\n```go\nfmt.Println(\"test\")\n```\nAnd `more` inline.",
 			expected: "Here is  code:\n\nAnd  inline.",
 		},
 		{
-			name: "Empty After Strip",
-			input: "```bash\nonly code\n```",
+			name:     "Empty After Strip",
+			input:    "```bash\nonly code\n```",
 			expected: "",
 		},
 	}

@@ -123,7 +123,7 @@ func TestSplitHTMLChunks(t *testing.T) {
 	if len(chunks2) != 2 {
 		t.Errorf("Expected 2 chunks for mixed HTML, got %d", len(chunks2))
 	}
-	
+
 	// Chunk 1 should auto-close <b>
 	if !strings.HasSuffix(chunks2[0], "</b>") {
 		t.Errorf("Chunk 1 did not close tag: %s", chunks2[0])

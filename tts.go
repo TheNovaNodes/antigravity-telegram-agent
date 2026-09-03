@@ -76,10 +76,10 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 	url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", voiceID)
 
 	payload := map[string]interface{}{
-		"text": cleanText,
+		"text":     cleanText,
 		"model_id": "eleven_multilingual_v2",
 		"voice_settings": map[string]interface{}{
-			"stability": 0.5,
+			"stability":        0.5,
 			"similarity_boost": 0.7,
 		},
 	}

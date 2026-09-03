@@ -16,9 +16,9 @@ var allowedTags = map[string]bool{
 	"u": true, "ins": true,
 	"s": true, "strike": true, "del": true,
 	"span": true, "tg-spoiler": true,
-	"a": true,
+	"a":        true,
 	"tg-emoji": true,
-	"code": true, "pre": true,
+	"code":     true, "pre": true,
 	"blockquote": true,
 }
 
@@ -135,7 +135,7 @@ func MarkdownToTelegramHTML(text string) string {
 		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
 		return createPlaceholder(formatted)
 	})
-	
+
 	reThinking := regexp.MustCompile(`(?is)<thinking>(.*?)(?:</thinking>|$)`)
 	text = reThinking.ReplaceAllStringFunc(text, func(m string) string {
 		subs := reThinking.FindStringSubmatch(m)
@@ -220,7 +220,7 @@ func MarkdownToTelegramHTML(text string) string {
 			outLines = append(outLines, "───────────────")
 			continue
 		}
-		
+
 		if strings.HasPrefix(stripped, "&gt; ") || strings.HasPrefix(stripped, "&gt;") {
 			qLine := ""
 			if strings.HasPrefix(stripped, "&gt; ") {
@@ -228,7 +228,7 @@ func MarkdownToTelegramHTML(text string) string {
 			} else {
 				qLine = stripped[4:]
 			}
-			
+
 			if strings.HasPrefix(qLine, "[!NOTE]") || strings.HasPrefix(qLine, "[!IMPORTANT]") || strings.HasPrefix(qLine, "[!TIP]") {
 				isExpandableQuote = true
 			}
@@ -261,38 +261,38 @@ func MarkdownToTelegramHTML(text string) string {
 
 	flushQuote()
 	flushTable()
-	
+
 	text = strings.Join(outLines, "\n")
 
 	// Inline formatting
 	// Images
 	reImg := regexp.MustCompile(`!\[(.*?)\]\((https?://[^\s\)]+)\)`)
 	text = reImg.ReplaceAllString(text, `<a href="$2">🖼 $1</a>`)
-	
+
 	// Links
 	reLink := regexp.MustCompile(`\[(.*?)\]\((https?://[^\s\)]+)\)`)
 	text = reLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
-	
+
 	// Spoilers
 	reSpoiler := regexp.MustCompile(`\|\|(.*?)\|\|`)
 	text = reSpoiler.ReplaceAllString(text, `<tg-spoiler>$1</tg-spoiler>`)
-	
+
 	// Strikethrough
 	reStrike := regexp.MustCompile(`~~(.*?)~~`)
 	text = reStrike.ReplaceAllString(text, `<s>$1</s>`)
-	
+
 	// Bold Italic
 	reBoldItalic := regexp.MustCompile(`\*\*\*(.*?)\*\*\*`)
 	text = reBoldItalic.ReplaceAllString(text, `<b><i>$1</i></b>`)
-	
+
 	// Bold
 	reBold := regexp.MustCompile(`\*\*(.*?)\*\*`)
 	text = reBold.ReplaceAllString(text, `<b>$1</b>`)
-	
+
 	// Italic (asterisk)
 	reItalicAst := regexp.MustCompile(`\*([^\s*](?:[^*]*[^\s*])?)\*`)
 	text = reItalicAst.ReplaceAllString(text, `<i>$1</i>`)
-	
+
 	// Italic (underscore)
 	reItalicUnd := regexp.MustCompile(`_([^\s_](?:[^_]*[^\s_])?)_`)
 	text = reItalicUnd.ReplaceAllString(text, `<i>$1</i>`)
