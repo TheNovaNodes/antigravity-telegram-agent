@@ -288,6 +288,26 @@ func (s *AgySession) SetConversation(convID string) {
 	s.Conversation = convID
 }
 
+// sendTypingAction sends a ChatTyping or ChatRecordVoice action to Telegram if the session is actively generating a response.
+func (s *AgySession) sendTypingAction() {
+	s.mu.Lock()
+	botAPI := s.BotAPI
+	chatID := s.ChatID
+	activeMsgID := s.ActiveMessageID
+	isVoice := s.VoiceReply
+	s.mu.Unlock()
+
+	if botAPI == nil || chatID == 0 || activeMsgID == 0 {
+		return
+	}
+
+	action := tgbotapi.ChatTyping
+	if isVoice {
+		action = tgbotapi.ChatRecordVoice
+	}
+	botAPI.Send(tgbotapi.NewChatAction(chatID, action))
+}
+
 // IsAlive checks whether the underlying agent process is currently running.
 func (s *AgySession) IsAlive() bool {
 	s.mu.Lock()
@@ -309,13 +329,15 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 
 	session := &AgySession{
 		BotName:      botName,
+		ChatID:       chatID,
+		UserID:       user.ID,
+		DB:           db,
 		Model:        newModel,
 		Workspace:    newWorkspace,
 		Conversation: convID,
-		UserID:       user.ID,
-		DB:           db,
-		UpdateChan:   make(chan struct{}, 10),
-		InitChan:     make(chan string, 10),
+		InitChan:     make(chan string, 1),
+		UpdateChan:   make(chan struct{}, 100),
+		VoiceReply:   user.VoiceReply,
 	}
 
 	globalSessions[sessionKey] = session
@@ -346,12 +368,15 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 
 	session = &AgySession{
 		BotName:      botName,
+		ChatID:       chatID,
+		UserID:       user.ID,
+		DB:           nil,
 		Model:        user.Model,
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
-		UserID:       user.ID,
-		UpdateChan:   make(chan struct{}, 10),
-		InitChan:     make(chan string, 10),
+		InitChan:     make(chan string, 1),
+		UpdateChan:   make(chan struct{}, 100),
+		VoiceReply:   user.VoiceReply,
 	}
 
 	globalSessions[sessionKey] = session
@@ -473,6 +498,20 @@ func (s *AgySession) start() {
 					lastSent = currentText
 					lastSentTime = time.Now()
 				}
+			}
+		}
+	}(ctx)
+
+	// Periodic typing / record voice action loop
+	go func(ctx context.Context) {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.sendTypingAction()
 			}
 		}
 	}(ctx)
@@ -624,6 +663,9 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Rename", "cmd:rename"),
+			tgbotapi.NewInlineKeyboardButtonData("📄 Export", "cmd:export"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🆘 Help", "cmd:help"),
 		),
 	)
@@ -802,11 +844,112 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		"• /resume - Resume previous session\n" +
 		"• /rename <name> - Rename current session\n" +
 		"• /workspace <path> - Change working directory\n" +
+		"• /export - Export conversation transcript to Markdown file\n" +
 		"• /voice [on|off] - Toggle persistent voice responses\n\n" +
 		"*Send any text or file to start the Agent.*"
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
 	bot.Send(msg)
+}
+
+// handleExportCommand extracts the conversation steps from transcript.jsonl and sends a formatted Markdown file to the chat.
+func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User) {
+	brainDir := getBrainDir()
+	sessionDir := filepath.Join(brainDir, user.SessionID)
+	transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
+
+	f, err := os.Open(transcriptFile)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "📭 No conversation transcript found for the current session."))
+		return
+	}
+	defer f.Close()
+
+	sessionTitle := "(untitled session)"
+	titleFile := filepath.Join(sessionDir, ".title")
+	if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+		sessionTitle = string(bytes.TrimSpace(b))
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# 🛸 Agent Session Transcript: %s\n\n", sessionTitle))
+	sb.WriteString(fmt.Sprintf("- **Agent:** `@%s`\n", botName))
+	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", user.SessionID))
+	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", user.Model))
+	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", user.Workspace))
+	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	sb.WriteString("---\n\n")
+
+	scanner := bufio.NewScanner(f)
+	stepNum := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var step map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &step); err != nil {
+			continue
+		}
+		stepNum++
+
+		source, _ := step["source"].(string)
+		stepType, _ := step["type"].(string)
+		createdAt, _ := step["created_at"].(string)
+		content, _ := step["content"].(string)
+
+		roleHeader := "### 🤖 Assistant"
+		if source == "USER_EXPLICIT" || stepType == "USER_INPUT" {
+			roleHeader = "### 👤 User"
+			start := strings.Index(content, "<USER_REQUEST>")
+			end := strings.Index(content, "</USER_REQUEST>")
+			if start >= 0 && end > start {
+				content = strings.TrimSpace(content[start+14 : end])
+			}
+		} else if source == "SYSTEM" {
+			roleHeader = "### ⚙️ System"
+		}
+
+		timeStr := ""
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			timeStr = fmt.Sprintf(" (%s)", t.Format("2006-01-02 15:04:05 UTC"))
+		}
+
+		sb.WriteString(fmt.Sprintf("%s%s\n\n", roleHeader, timeStr))
+		if strings.TrimSpace(content) != "" {
+			sb.WriteString(strings.TrimSpace(content) + "\n\n")
+		}
+
+		if tcs, ok := step["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
+			sb.WriteString("```json\n")
+			for _, tc := range tcs {
+				if tcBytes, err := json.MarshalIndent(tc, "", "  "); err == nil {
+					sb.WriteString(string(tcBytes) + "\n")
+				}
+			}
+			sb.WriteString("```\n\n")
+		}
+	}
+
+	if stepNum == 0 {
+		bot.Send(tgbotapi.NewMessage(chatID, "📭 Transcript is currently empty."))
+		return
+	}
+
+	exportDir := filepath.Join(getAgentsDir(), botName, "scratch", "exports")
+	os.MkdirAll(exportDir, 0755)
+	safeFilename := fmt.Sprintf("session_%s.md", user.SessionID[:8])
+	exportPath := filepath.Join(exportDir, safeFilename)
+
+	if err := os.WriteFile(exportPath, []byte(sb.String()), 0644); err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to generate export file: "+err.Error()))
+		return
+	}
+
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(exportPath))
+	doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d", sessionTitle, stepNum)
+	doc.ParseMode = "Markdown"
+	bot.Send(doc)
 }
 
 // handleTTSCommand converts text to speech using ElevenLabs and sends as audio.
@@ -972,6 +1115,10 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 		handleRenameCommand(bot, chatID, text, botName, user)
 		return true
 	}
+	if text == "/export" || text == fmt.Sprintf("/export@%s", botName) {
+		handleExportCommand(bot, chatID, userID, botName, user)
+		return true
+	}
 	if text == "/usage" || text == fmt.Sprintf("/usage@%s", botName) {
 		handleUsageCommand(bot, chatID)
 		return true
@@ -1059,6 +1206,9 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		return
 	} else if data == "cmd:resume" {
 		handleResumeCommand(bot, chatID, userID, db)
+		return
+	} else if data == "cmd:export" {
+		handleExportCommand(bot, chatID, userID, botName, user)
 		return
 	} else if data == "cmd:rename" {
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: `/rename <new name>`"))
@@ -1168,6 +1318,12 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 		}
+
+		action := tgbotapi.ChatTyping
+		if session.VoiceReply {
+			action = tgbotapi.ChatRecordVoice
+		}
+		bot.Send(tgbotapi.NewChatAction(chatID, action))
 	}
 
 	payload := map[string]interface{}{
@@ -1356,6 +1512,9 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 		{Command: "resume", Description: "Resume previous conversation"},
 		{Command: "rename", Description: "Rename current session"},
 		{Command: "workspace", Description: "Change target workspace directory"},
+		{Command: "export", Description: "Export session transcript to file"},
+		{Command: "voice", Description: "Toggle persistent voice mode"},
+		{Command: "tts", Description: "Text to speech voice synthesis"},
 		{Command: "goal", Description: "Run exhaustive long-running task"},
 		{Command: "schedule", Description: "Set recurring schedule or timer"},
 		{Command: "browser", Description: "Use web browser for a task"},

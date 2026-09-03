@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
 )
 
@@ -298,4 +299,85 @@ func TestSendArtifacts_RealFile(t *testing.T) {
 	if reqs == 0 {
 		t.Error("Expected sendArtifacts to send document to Telegram")
 	}
+}
+
+func TestSendTypingAction(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	s := &AgySession{
+		BotName:         "TestBot",
+		BotAPI:          bot,
+		ChatID:          12345,
+		ActiveMessageID: 100,
+		VoiceReply:      false,
+	}
+
+	// 1. Typing action text mode
+	s.sendTypingAction()
+
+	// 2. Typing action voice mode
+	s.VoiceReply = true
+	s.sendTypingAction()
+
+	// 3. Inactive session (ActiveMessageID == 0)
+	s.ActiveMessageID = 0
+	s.sendTypingAction()
+}
+
+func TestHandleExportCommand_Scenarios(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("BRAIN_DIR", tempDir)
+	t.Setenv("AGENTS_DIR", tempDir)
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	chatID := int64(12345)
+	userID := int64(888)
+
+	user := User{
+		ID:        userID,
+		Workspace: tempDir,
+		Model:     "gemini-3.8-flash-high",
+		SessionID: "export-test-uuid",
+	}
+
+	// 1. Non-existent transcript
+	handleExportCommand(bot, chatID, userID, "TestBot", user)
+
+	// 2. Empty transcript
+	sessionDir := filepath.Join(tempDir, user.SessionID)
+	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
+	os.MkdirAll(logsDir, 0755)
+	os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(""), 0644)
+	handleExportCommand(bot, chatID, userID, "TestBot", user)
+
+	// 3. Populated transcript with title and tool calls
+	os.WriteFile(filepath.Join(sessionDir, ".title"), []byte("Project Matrix Export"), 0644)
+	fullJSONL := `{"step":1,"created_at":"2026-09-03T17:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nRefactor the bot architecture\n</USER_REQUEST>"}
+{"step":2,"created_at":"2026-09-03T17:00:05Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Starting refactoring plan...","tool_calls":[{"name":"view_file","args":{"path":"main.go"}}]}
+{"step":3,"created_at":"2026-09-03T17:00:10Z","source":"SYSTEM","type":"SYSTEM_MESSAGE","content":"System alert: tests passed"}
+`
+	os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(fullJSONL), 0644)
+
+	handleExportCommand(bot, chatID, userID, "TestBot", user)
+
+	// Test export via handleCommand & handleCallbackQuery
+	db := setupTestDB(t)
+	defer db.Close()
+	handleCommand(bot, chatID, userID, "/export", "TestBot", user, db)
+
+	cb := &tgbotapi.CallbackQuery{
+		ID:   "cb123",
+		From: &tgbotapi.User{ID: userID},
+		Message: &tgbotapi.Message{
+			MessageID: 10,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+		},
+		Data: "cmd:export",
+	}
+	handleCallbackQuery(bot, cb, user, "TestBot", db)
 }
