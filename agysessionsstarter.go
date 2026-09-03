@@ -34,6 +34,7 @@ type User struct {
 	Model        string
 	IsFirstStart bool
 	SessionID    string
+	VoiceReply   bool
 }
 
 // AgySession represents the AgySession data structure.
@@ -65,7 +66,7 @@ type AgySession struct {
 
 const defaultModel = "gemini-3.8-flash-high"
 
-// initDB initializes the SQLite database for a specific bot and creates necessary tables.
+// initDB initializes the SQLite database for a specific bot, enables WAL mode, and creates necessary tables.
 func initDB(botName string) *sql.DB {
 	dbPath := fmt.Sprintf("sessions_%s.db", botName)
 	// Ensure secure permissions (0600) on database file to prevent unauthorized local reading
@@ -76,16 +77,26 @@ func initDB(botName string) *sql.DB {
 	if err != nil {
 		log.Fatalf("Failed to open db %s: %v", dbPath, err)
 	}
+
+	// Performance & Concurrency Hardening: Enable WAL mode and 5s busy timeout
+	db.Exec("PRAGMA journal_mode=WAL;")
+	db.Exec("PRAGMA busy_timeout=5000;")
+	db.Exec("PRAGMA synchronous=NORMAL;")
+
 	_, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
 		workspace TEXT DEFAULT '',
 		model TEXT DEFAULT '%s',
 		is_first_start BOOLEAN DEFAULT 1,
-		session_id TEXT DEFAULT NULL
+		session_id TEXT DEFAULT NULL,
+		voice_reply BOOLEAN DEFAULT 0
 	)`, defaultModel))
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// Dynamic migration for existing users table
+	db.Exec("ALTER TABLE users ADD COLUMN voice_reply BOOLEAN DEFAULT 0")
 
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS session_history (
 		user_id INTEGER,
@@ -105,26 +116,39 @@ func initDB(botName string) *sql.DB {
 // settings (workspace, model, session UUID) and returns the User struct.
 func getUser(db *sql.DB, userID int64, botName string) User {
 	var u User
-	err := db.QueryRow("SELECT user_id, workspace, model, is_first_start, session_id FROM users WHERE user_id = ?", userID).Scan(
-		&u.ID, &u.Workspace, &u.Model, &u.IsFirstStart, &u.SessionID)
-	if err == sql.ErrNoRows {
+	var voiceReplyVal int
+	if db != nil {
+		err := db.QueryRow("SELECT user_id, workspace, model, is_first_start, session_id, COALESCE(voice_reply, 0) FROM users WHERE user_id = ?", userID).Scan(
+			&u.ID, &u.Workspace, &u.Model, &u.IsFirstStart, &u.SessionID, &voiceReplyVal)
+		if err == nil {
+			u.VoiceReply = (voiceReplyVal == 1)
+			return u
+		}
+		if err == sql.ErrNoRows {
+			u = User{
+				ID:           userID,
+				Workspace:    filepath.Join(getAgentsDir(), botName),
+				Model:        defaultModel,
+				IsFirstStart: true,
+				SessionID:    uuid.New().String(),
+				VoiceReply:   false,
+			}
+			_, err = db.Exec("INSERT INTO users (user_id, workspace, model, is_first_start, session_id, voice_reply) VALUES (?, ?, ?, ?, ?, 0)",
+				u.ID, u.Workspace, u.Model, u.IsFirstStart, u.SessionID)
+			if err != nil {
+				log.Printf("DB Error inserting user %d: %v", u.ID, err)
+			}
+			return u
+		}
+	}
+	if u.ID == 0 {
 		u = User{
 			ID:           userID,
 			Workspace:    filepath.Join(getAgentsDir(), botName),
 			Model:        defaultModel,
 			IsFirstStart: true,
 			SessionID:    uuid.New().String(),
-		}
-		_, err = db.Exec("INSERT INTO users (user_id, workspace, model, is_first_start, session_id) VALUES (?, ?, ?, ?, ?)",
-			u.ID, u.Workspace, u.Model, u.IsFirstStart, u.SessionID)
-		if err != nil {
-			log.Printf("DB Error inserting user %d: %v", u.ID, err)
-		}
-	} else if u.SessionID == "" {
-		u.SessionID = uuid.New().String()
-		_, err = db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", u.SessionID, u.ID)
-		if err != nil {
-			log.Printf("DB Error updating session_id for user %d: %v", u.ID, err)
+			VoiceReply:   false,
 		}
 	}
 	return u
@@ -132,6 +156,9 @@ func getUser(db *sql.DB, userID int64, botName string) User {
 
 // updateUserSession updates the active conversation session ID for a specific user.
 func updateUserSession(db *sql.DB, userID int64, sessionID string) {
+	if db == nil {
+		return
+	}
 	_, err := db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", sessionID, userID)
 	if err != nil {
 		log.Printf("DB Error updating session for user %d: %v", userID, err)
@@ -139,6 +166,21 @@ func updateUserSession(db *sql.DB, userID int64, sessionID string) {
 	_, err = db.Exec("INSERT OR IGNORE INTO session_history (user_id, session_id) VALUES (?, ?)", userID, sessionID)
 	if err != nil {
 		log.Printf("DB Error inserting session_history for user %d: %v", userID, err)
+	}
+}
+
+// updateUserVoiceReply toggles the persistent voice response mode for a user.
+func updateUserVoiceReply(db *sql.DB, userID int64, enabled bool) {
+	if db == nil {
+		return
+	}
+	val := 0
+	if enabled {
+		val = 1
+	}
+	_, err := db.Exec("UPDATE users SET voice_reply = ? WHERE user_id = ?", val, userID)
+	if err != nil {
+		log.Printf("DB Error updating voice_reply for user %d: %v", userID, err)
 	}
 }
 
@@ -509,566 +551,598 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
-// handleUpdate is the primary router for incoming Telegram messages and inline callbacks.
-func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[PANIC RECOVERED in handleUpdate] %v", r)
+// handleStartCommand renders the status dashboard with session metrics and quick action keyboard.
+func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user User) {
+	sessionTitle := "(empty)"
+	stepsCount := 0
+	uptimeStr := "0 m"
+
+	brainDir := getBrainDir()
+	sessionDir := filepath.Join(brainDir, user.SessionID)
+
+	titleFile := filepath.Join(sessionDir, ".title")
+	if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+		sessionTitle = string(bytes.TrimSpace(b))
+	}
+
+	transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
+	if f, err := os.Open(transcriptFile); err == nil {
+		scanner := bufio.NewScanner(f)
+		var firstStepTime time.Time
+		for scanner.Scan() {
+			stepsCount++
+			if stepsCount == 1 {
+				var step map[string]interface{}
+				if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
+					if createdRaw, ok := step["created_at"].(string); ok {
+						if t, err := time.Parse(time.RFC3339, createdRaw); err == nil {
+							firstStepTime = t
+						}
+					}
+				}
+			}
 		}
-	}()
-	if update.Message == nil && update.CallbackQuery == nil {
+		f.Close()
+		if !firstStepTime.IsZero() {
+			dur := time.Since(firstStepTime)
+			if dur.Hours() >= 1 {
+				uptimeStr = fmt.Sprintf("%d h %d m", int(dur.Hours()), int(dur.Minutes())%60)
+			} else {
+				uptimeStr = fmt.Sprintf("%d m", int(dur.Minutes()))
+			}
+		}
+		if sessionTitle == "(empty)" && stepsCount > 0 {
+			sessionTitle = "Session active"
+		}
+	}
+
+	voiceStatus := "🔇 Disabled"
+	if user.VoiceReply {
+		voiceStatus = "🎙 Enabled"
+	}
+
+	respText := fmt.Sprintf(`🛰 *Agent Terminal*
+🤖 *Agent:* `+"`@%s`"+`
+🟢 *Status:* Awaiting task
+
+📂 *CWD:* `+"`%s`"+`
+🧠 *Model:* `+"`%s`"+`
+🎙 *Voice Reply:* %s
+
+📋 *Session:* %s
+⏱ *Uptime:* %s
+👣 *Steps:* %d`, botName, user.Workspace, user.Model, voiceStatus, sessionTitle, uptimeStr, stepsCount)
+
+	m := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🧠 Model", "cmd:model"),
+			tgbotapi.NewInlineKeyboardButtonData("📊 Usage", "cmd:usage"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🧼 Clear", "cmd:clear"),
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Sessions", "cmd:resume"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Rename", "cmd:rename"),
+			tgbotapi.NewInlineKeyboardButtonData("🆘 Help", "cmd:help"),
+		),
+	)
+	msg := tgbotapi.NewMessage(chatID, respText)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = m
+	bot.Send(msg)
+}
+
+// handleResumeCommand displays an inline list of recent user sessions for resumption.
+func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB) {
+	if db == nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "📭 No session history available."))
+		return
+	}
+	brainDir := getBrainDir()
+	dbRows, err := db.Query("SELECT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
+		return
+	}
+	defer dbRows.Close()
+
+	type convInfo struct {
+		ID      string
+		ModTime time.Time
+		Title   string
+	}
+	var convs []convInfo
+	var validSessionIDs []string
+
+	for dbRows.Next() {
+		var sid string
+		if err := dbRows.Scan(&sid); err == nil {
+			validSessionIDs = append(validSessionIDs, sid)
+		}
+	}
+
+	for _, sid := range validSessionIDs {
+		transcript := filepath.Join(brainDir, sid, ".system_generated", "logs", "transcript.jsonl")
+		stat, err := os.Stat(transcript)
+		if err != nil {
+			continue
+		}
+		f, err := os.Open(transcript)
+		if err != nil {
+			continue
+		}
+		title := ""
+		titleFile := filepath.Join(brainDir, sid, ".title")
+		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			title = string(bytes.TrimSpace(b))
+			if len(title) > 45 {
+				title = title[:42] + "..."
+			}
+		} else {
+			scanner := bufio.NewScanner(f)
+			if scanner.Scan() {
+				var step map[string]interface{}
+				if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
+					content, _ := step["content"].(string)
+					start := strings.Index(content, "<USER_REQUEST>")
+					end := strings.Index(content, "</USER_REQUEST>")
+					if start >= 0 && end > start {
+						inner := strings.TrimSpace(content[start+14 : end])
+						for strings.Contains(inner, "<") {
+							tagStart := strings.Index(inner, "<")
+							tagEnd := strings.Index(inner, ">")
+							if tagEnd > tagStart {
+								inner = inner[:tagStart] + inner[tagEnd+1:]
+							} else {
+								break
+							}
+						}
+						inner = strings.TrimSpace(inner)
+						lines := strings.SplitN(inner, "\n", 2)
+						title = strings.TrimSpace(lines[0])
+						if len(title) > 45 {
+							title = title[:42] + "..."
+						}
+					}
+				}
+			}
+		}
+		f.Close()
+		if title == "" {
+			title = "(empty)"
+		}
+		convs = append(convs, convInfo{ID: sid, ModTime: stat.ModTime(), Title: title})
+	}
+
+	for i := 0; i < len(convs); i++ {
+		for j := i + 1; j < len(convs); j++ {
+			if convs[j].ModTime.After(convs[i].ModTime) {
+				convs[i], convs[j] = convs[j], convs[i]
+			}
+		}
+	}
+
+	if len(convs) > 8 {
+		convs = convs[:8]
+	}
+
+	if len(convs) == 0 {
+		bot.Send(tgbotapi.NewMessage(chatID, "📭 No previous sessions found."))
 		return
 	}
 
-	var chatID int64
-	var userID int64
-	var text string
-	var caption string
-	var fileID string
-	var ext string
-
-	if update.Message != nil {
-		chatID = update.Message.Chat.ID
-		userID = update.Message.From.ID
-		text = update.Message.Text
-		// Alias telegram-safe commands to agy commands
-		if strings.HasPrefix(text, "/grill_me") {
-			text = strings.Replace(text, "/grill_me", "/grill-me", 1)
-		} else if strings.HasPrefix(text, "/teamwork_preview") {
-			text = strings.Replace(text, "/teamwork_preview", "/teamwork-preview", 1)
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, c := range convs {
+		label := fmt.Sprintf("🕐 %s — %s", c.ModTime.Format("02.01 15:04"), c.Title)
+		cbData := "resume:" + c.ID
+		if len(cbData) > 64 {
+			cbData = cbData[:64]
 		}
-		caption = update.Message.Caption
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, cbData),
+		))
+	}
+	m := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	msg := tgbotapi.NewMessage(chatID, "🔄 *Select a session to resume:*")
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = m
+	bot.Send(msg)
+}
 
-		if update.Message.Document != nil {
-			fileID = update.Message.Document.FileID
-			ext = filepath.Ext(update.Message.Document.FileName)
-			if ext == "" {
-				ext = ".bin"
-			}
-		} else if len(update.Message.Photo) > 0 {
-			fileID = update.Message.Photo[len(update.Message.Photo)-1].FileID
-			ext = ".jpg"
-		} else if update.Message.Voice != nil {
-			fileID = update.Message.Voice.FileID
-			ext = ".ogg"
-		} else if update.Message.Audio != nil {
-			fileID = update.Message.Audio.FileID
-			ext = ".mp3"
-		}
+// handleModelCommand presents dynamic model choices via inline buttons.
+func handleModelCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	respText := "🧠 Select a model:"
+	modelsMu.RLock()
+	cachedModels := make([]AgyModel, len(availableModels))
+	copy(cachedModels, availableModels)
+	modelsMu.RUnlock()
 
-		if text == "" && caption == "" && fileID == "" {
-			bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Sticker/contact/location не поддерживается. Отправьте текст, фото, документ или голосовое."))
-			return
+	var rows [][]tgbotapi.InlineKeyboardButton
+	if len(cachedModels) == 0 {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash High", "model:gemini-3.7-flash-high")))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧠 3.1 Pro High", "model:gemini-3.1-pro-high")))
+	} else {
+		for _, m := range cachedModels {
+			label := fmt.Sprintf("%s %s", m.Emoji, m.Name)
+			callbackData := "model:" + m.ID
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, callbackData)))
 		}
-	} else if update.CallbackQuery != nil {
-		chatID = update.CallbackQuery.Message.Chat.ID
-		userID = update.CallbackQuery.From.ID
-		text = update.CallbackQuery.Data
+	}
+	m := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	msg := tgbotapi.NewMessage(chatID, respText)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = m
+	bot.Send(msg)
+}
+
+// handleUsageCommand retrieves current token quota usage from the underlying Antigravity CLI.
+func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	agyPath := getAgyPath()
+	cmd := exec.Command(agyPath, "--print", "/usage")
+	out, err := cmd.CombinedOutput()
+	var respText string
+	if err != nil {
+		respText = "❌ Failed to get usage: " + err.Error()
+	} else {
+		respText = "📊 *Quota Usage:*\n```\n" + strings.TrimSpace(string(out)) + "\n```"
+	}
+	msg := tgbotapi.NewMessage(chatID, respText)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
+}
+
+// handleHelpCommand outputs the command reference.
+func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	respText := "🆘 *Command Reference:*\n\n" +
+		"• /start - Show dashboard\n" +
+		"• /model - Change LLM model\n" +
+		"• /usage - Check API quota\n" +
+		"• /clear - Clear context (reset session)\n" +
+		"• /resume - Resume previous session\n" +
+		"• /rename <name> - Rename current session\n" +
+		"• /workspace <path> - Change working directory\n" +
+		"• /voice [on|off] - Toggle persistent voice responses\n\n" +
+		"*Send any text or file to start the Agent.*"
+	msg := tgbotapi.NewMessage(chatID, respText)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
+}
+
+// handleTTSCommand converts text to speech using ElevenLabs and sends as audio.
+func handleTTSCommand(bot *tgbotapi.BotAPI, chatID int64, text string) {
+	ttsText := strings.TrimSpace(strings.TrimPrefix(text, "/tts"))
+	if ttsText == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: `/tts <text>`"))
+		return
+	}
+	if os.Getenv("ELEVENLABS_API_KEY") == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ ELEVENLABS_API_KEY environment variable is not set!"))
+		return
 	}
 
-	botName := bot.Self.UserName
-	user := getUser(db, userID, botName)
-	_ = fmt.Sprintf("%s:%d", botName, userID)
+	msg := tgbotapi.NewMessage(chatID, "🎙 *Generating voice...*")
+	msg.ParseMode = "Markdown"
+	sentMsg, _ := bot.Send(msg)
 
-	// Handle Callbacks
-	if update.CallbackQuery != nil {
-		data := update.CallbackQuery.Data
-		if strings.HasPrefix(data, "ans:") {
-			text = strings.TrimPrefix(data, "ans:")
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			goto ProcessInput
-		}
-		if strings.HasPrefix(data, "resume:") {
-			convID := strings.TrimPrefix(data, "resume:")
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+	err := GenerateAndSendVoice(bot, chatID, ttsText)
+	if sentMsg.MessageID != 0 {
+		bot.Send(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
+	}
 
-			updateUserSession(db, userID, convID)
-			session := replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ TTS Error: "+err.Error()))
+	}
+}
 
-			select {
-			case newID := <-session.InitChan:
-				session.Conversation = newID
-				convID = newID
-			case <-time.After(3 * time.Second):
-			}
+// handleVoiceToggleCommand enables or disables persistent voice replies for the user.
+func handleVoiceToggleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text string, user User, db *sql.DB) {
+	arg := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(text, "/voice")))
+	newState := !user.VoiceReply
+	if arg == "on" || arg == "1" || arg == "true" {
+		newState = true
+	} else if arg == "off" || arg == "0" || arg == "false" {
+		newState = false
+	}
 
-			respText := fmt.Sprintf("🔄 Resumed session!\n`%s`", convID[:8])
-			msg := tgbotapi.NewMessage(chatID, respText)
-			msg.ParseMode = "Markdown"
-			bot.Send(msg)
+	updateUserVoiceReply(db, userID, newState)
+	statusStr := "❌ Disabled"
+	if newState {
+		statusStr = "✅ Enabled (Bot will reply with voice messages)"
+	}
+	msg := tgbotapi.NewMessage(chatID, "🎙 *Voice Reply Mode:* "+statusStr)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
+}
+
+// handleWorkspaceCommand updates the user's agent office/workspace.
+func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, db *sql.DB) {
+	parts := strings.SplitN(text, " ", 2)
+	if len(parts) < 2 {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/workspace <absolute path>`\n📂 Current workspace: `"+user.Workspace+"`")
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+		return
+	}
+	newWS := strings.TrimSpace(parts[1])
+	cleanPath := filepath.Clean(newWS)
+	if !filepath.IsAbs(cleanPath) {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: path must be absolute (e.g. `/root/projects/app`)"))
+		return
+	}
+	realPath, evalErr := filepath.EvalSymlinks(cleanPath)
+	if evalErr != nil {
+		realPath = cleanPath
+	}
+	allowedRoot, _ := filepath.Abs(getAgentsDir())
+	if !strings.HasPrefix(realPath, allowedRoot) {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Path must be under "+allowedRoot))
+		return
+	}
+	newWS = realPath
+
+	if db != nil {
+		_, err := db.Exec("UPDATE users SET workspace = ? WHERE user_id = ?", newWS, userID)
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
 			return
 		}
-		var respText string
-		var markup *tgbotapi.InlineKeyboardMarkup
+	}
 
-		if strings.HasPrefix(data, "model:") {
-			newModel := strings.TrimPrefix(data, "model:")
-			if err := updateUserModel(db, userID, newModel); err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
-				return
-			}
+	newUUID := uuid.New().String()
+	updateUserSession(db, userID, newUUID)
+	replaceSession(db, botName, user, newUUID, user.Model, newWS, chatID)
 
-			user.Model = newModel
-			newUUID := uuid.New().String()
-			replaceSession(db, botName, user, newUUID, newModel, user.Workspace, chatID)
-			updateUserSession(db, userID, newUUID)
+	msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
+}
 
-			respText = "✅ Model changed to `" + newModel + "`\n\n⚠️ *Warning:* Agent restarted. Background tasks were stopped."
-		} else if data == "cmd:status" {
-			respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
-		} else if data == "cmd:model" {
-			text = "/model"
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			goto ProcessInput
-		} else if data == "cmd:clear" {
+// handleRenameCommand renames the current conversation in brain storage.
+func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName string, user User) {
+	parts := strings.SplitN(text, " ", 2)
+	if len(parts) < 2 {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/rename <new name>`")
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+		return
+	}
+	newName := strings.TrimSpace(parts[1])
 
-			newUUID := uuid.New().String()
-			replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
-			updateUserSession(db, userID, newUUID)
-			respText = "🧼 Context cleared!\n`" + newUUID + "`"
-		} else if data == "cmd:usage" {
-			text = "/usage"
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			goto ProcessInput
-		} else if data == "cmd:resume" {
-			text = "/resume"
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			goto ProcessInput
-		} else if data == "cmd:rename" {
-			text = "/rename"
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			goto ProcessInput
-		} else if data == "cmd:help" {
-			text = "/help"
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-			goto ProcessInput
+	session := getSession(botName, user, chatID)
+	conv := session.GetConversation()
+	if conv != "" {
+		sessionDir := filepath.Join(getBrainDir(), conv)
+		os.MkdirAll(sessionDir, 0755)
+		titleFile := filepath.Join(sessionDir, ".title")
+		err := os.WriteFile(titleFile, []byte(newName), 0644)
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save name: "+err.Error()))
+		} else {
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Session renamed to: *"+newName+"*"))
+		}
+	} else {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ No active session to rename."))
+	}
+}
+
+// handleClearCommand clears the active conversation context.
+func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
+	newUUID := uuid.New().String()
+	replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
+	updateUserSession(db, userID, newUUID)
+	respText := "🧼 Context cleared!\n`" + newUUID + "`"
+	msg := tgbotapi.NewMessage(chatID, respText)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
+}
+
+// handleRefreshModelsCommand dynamically refreshes models cache.
+func handleRefreshModelsCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	fetchModels()
+	modelsMu.RLock()
+	count := len(availableModels)
+	modelsMu.RUnlock()
+	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Dynamically fetched %d models from agy.", count)))
+}
+
+// handleCommand parses and routes slash commands. Returns true if handled.
+func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, db *sql.DB) bool {
+	if text == "/start" || text == fmt.Sprintf("/start@%s", botName) {
+		handleStartCommand(bot, chatID, botName, user)
+		return true
+	}
+	if text == "/resume" || text == fmt.Sprintf("/resume@%s", botName) {
+		handleResumeCommand(bot, chatID, userID, db)
+		return true
+	}
+	if strings.HasPrefix(text, "/tts") {
+		handleTTSCommand(bot, chatID, text)
+		return true
+	}
+	if strings.HasPrefix(text, "/voice") {
+		handleVoiceToggleCommand(bot, chatID, userID, text, user, db)
+		return true
+	}
+	if strings.HasPrefix(text, "/workspace") {
+		handleWorkspaceCommand(bot, chatID, userID, text, botName, user, db)
+		return true
+	}
+	if strings.HasPrefix(text, "/rename") {
+		handleRenameCommand(bot, chatID, text, botName, user)
+		return true
+	}
+	if text == "/usage" || text == fmt.Sprintf("/usage@%s", botName) {
+		handleUsageCommand(bot, chatID)
+		return true
+	}
+	if text == "/help" || text == fmt.Sprintf("/help@%s", botName) {
+		handleHelpCommand(bot, chatID)
+		return true
+	}
+	if text == "/model" || text == fmt.Sprintf("/model@%s", botName) {
+		handleModelCommand(bot, chatID)
+		return true
+	}
+	if text == "/refresh_models" || text == fmt.Sprintf("/refresh_models@%s", botName) {
+		handleRefreshModelsCommand(bot, chatID)
+		return true
+	}
+	if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
+		handleClearCommand(bot, chatID, userID, botName, user, db)
+		return true
+	}
+	return false
+}
+
+// handleCallbackQuery processes all inline keyboard callback events.
+func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user User, botName string, db *sql.DB) {
+	chatID := cb.Message.Chat.ID
+	userID := cb.From.ID
+	data := cb.Data
+
+	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+
+	if strings.HasPrefix(data, "ans:") {
+		ansText := strings.TrimPrefix(data, "ans:")
+		handleMessagePayload(bot, chatID, userID, ansText, botName, user, false, false, db)
+		return
+	}
+
+	if strings.HasPrefix(data, "resume:") {
+		convID := strings.TrimPrefix(data, "resume:")
+		updateUserSession(db, userID, convID)
+		session := replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
+
+		select {
+		case newID := <-session.InitChan:
+			session.Conversation = newID
+			convID = newID
+		case <-time.After(3 * time.Second):
 		}
 
+		respText := fmt.Sprintf("🔄 Resumed session!\n`%s`", convID[:8])
+		msg := tgbotapi.NewMessage(chatID, respText)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+		return
+	}
+
+	var respText string
+	var markup *tgbotapi.InlineKeyboardMarkup
+
+	if strings.HasPrefix(data, "model:") {
+		newModel := strings.TrimPrefix(data, "model:")
+		if err := updateUserModel(db, userID, newModel); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
+			return
+		}
+
+		user.Model = newModel
+		newUUID := uuid.New().String()
+		replaceSession(db, botName, user, newUUID, newModel, user.Workspace, chatID)
+		updateUserSession(db, userID, newUUID)
+
+		respText = "✅ Model changed to `" + newModel + "`\n\n⚠️ *Warning:* Agent restarted. Background tasks were stopped."
+	} else if data == "cmd:status" {
+		respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
+	} else if data == "cmd:model" {
+		handleModelCommand(bot, chatID)
+		return
+	} else if data == "cmd:clear" {
+		newUUID := uuid.New().String()
+		replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
+		updateUserSession(db, userID, newUUID)
+		respText = "🧼 Context cleared!\n`" + newUUID + "`"
+	} else if data == "cmd:usage" {
+		handleUsageCommand(bot, chatID)
+		return
+	} else if data == "cmd:resume" {
+		handleResumeCommand(bot, chatID, userID, db)
+		return
+	} else if data == "cmd:rename" {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: `/rename <new name>`"))
+		return
+	} else if data == "cmd:help" {
+		handleHelpCommand(bot, chatID)
+		return
+	}
+
+	if respText != "" {
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		if markup != nil {
 			msg.ReplyMarkup = markup
 		}
 		bot.Send(msg)
-		bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
-		return
+	}
+}
+
+// downloadTelegramMedia downloads incoming Telegram media attachment (file, photo, voice, audio).
+func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text, caption, botName string) (string, bool, error) {
+	if fileID == "" {
+		return text, false, nil
+	}
+	fileURL, err := bot.GetFileDirectURL(fileID)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
+		return "", false, err
+	}
+	downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
+	os.MkdirAll(downloadDir, 0755)
+	safePath := filepath.Join(downloadDir, uuid.New().String()+ext)
+
+	bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file..."))
+
+	resp, err := http.Get(fileURL)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
+		return "", false, err
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(safePath)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save file to disk."))
+		return "", false, err
+	}
+	defer out.Close()
+
+	const maxUploadBytes = 100 << 20 // 100 MB
+	if resp.ContentLength > maxUploadBytes {
+		os.Remove(safePath)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ File too large (max 100 MB)"))
+		return "", false, fmt.Errorf("file too large")
 	}
 
-ProcessInput:
-	downloadedFile := false
-	if fileID != "" {
-		fileURL, err := bot.GetFileDirectURL(fileID)
-		if err == nil {
-			downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
-			os.MkdirAll(downloadDir, 0755)
-			safePath := filepath.Join(downloadDir, uuid.New().String()+ext)
-
-			bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file..."))
-
-			resp, err := http.Get(fileURL)
-			if err == nil {
-				out, err := os.Create(safePath)
-				if err != nil {
-					resp.Body.Close()
-					bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save file to disk."))
-					return
-				}
-
-				const maxUploadBytes = 100 << 20 // 100 MB
-				if resp.ContentLength > maxUploadBytes {
-					out.Close()
-					resp.Body.Close()
-					os.Remove(safePath)
-					bot.Send(tgbotapi.NewMessage(chatID, "❌ File too large (max 100 MB)"))
-					return
-				}
-
-				n, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
-				out.Close()
-				resp.Body.Close()
-
-				if n > maxUploadBytes {
-					os.Remove(safePath)
-					bot.Send(tgbotapi.NewMessage(chatID, "❌ File exceeds 100 MB limit"))
-					return
-				}
-
-				baseText := text
-				if baseText == "" {
-					baseText = caption
-				}
-				text = fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
-				downloadedFile = true
-			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
-				return
-			}
-		}
+	n, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
+	if err != nil || n > maxUploadBytes {
+		os.Remove(safePath)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ File exceeds 100 MB limit"))
+		return "", false, fmt.Errorf("file exceeds limit")
 	}
 
+	baseText := text
+	if baseText == "" {
+		baseText = caption
+	}
+	formattedText := fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
+	return formattedText, true, nil
+}
+
+// handleMessagePayload handles queuing and writing user message streams into the agent's stdin pipe.
+func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, isVoice, downloadedFile bool, db *sql.DB) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
 
-	if text == "/start" || text == fmt.Sprintf("/start@%s", botName) {
-		sessionTitle := "(empty)"
-		stepsCount := 0
-		uptimeStr := "0 m"
-
-		brainDir := getBrainDir()
-		sessionDir := filepath.Join(brainDir, user.SessionID)
-
-		titleFile := filepath.Join(sessionDir, ".title")
-		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
-			sessionTitle = string(bytes.TrimSpace(b))
-		}
-
-		transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
-		if f, err := os.Open(transcriptFile); err == nil {
-			scanner := bufio.NewScanner(f)
-			var firstStepTime time.Time
-			for scanner.Scan() {
-				stepsCount++
-				if stepsCount == 1 {
-					var step map[string]interface{}
-					if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
-						if createdRaw, ok := step["created_at"].(string); ok {
-							if t, err := time.Parse(time.RFC3339, createdRaw); err == nil {
-								firstStepTime = t
-							}
-						}
-					}
-				}
-			}
-			f.Close()
-			if !firstStepTime.IsZero() {
-				dur := time.Since(firstStepTime)
-				if dur.Hours() >= 1 {
-					uptimeStr = fmt.Sprintf("%d h %d m", int(dur.Hours()), int(dur.Minutes())%60)
-				} else {
-					uptimeStr = fmt.Sprintf("%d m", int(dur.Minutes()))
-				}
-			}
-			if sessionTitle == "(empty)" && stepsCount > 0 {
-				sessionTitle = "Session active"
-			}
-		}
-
-		respText := fmt.Sprintf(`🛰 *Agent Terminal*
-🤖 *Agent:* `+"`@%s`"+`
-🟢 *Status:* Awaiting task
-
-📂 *CWD:* `+"`%s`"+`
-🧠 *Model:* `+"`%s`"+`
-
-📋 *Session:* %s
-⏱ *Uptime:* %s
-👣 *Steps:* %d`, botName, user.Workspace, user.Model, sessionTitle, uptimeStr, stepsCount)
-
-		m := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🧠 Model", "cmd:model"),
-				tgbotapi.NewInlineKeyboardButtonData("📊 Usage", "cmd:usage"),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🧼 Clear", "cmd:clear"),
-				tgbotapi.NewInlineKeyboardButtonData("🔄 Sessions", "cmd:resume"),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✏️ Rename", "cmd:rename"),
-				tgbotapi.NewInlineKeyboardButtonData("🆘 Help", "cmd:help"),
-			),
-		)
-		msg := tgbotapi.NewMessage(chatID, respText)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = m
-		bot.Send(msg)
-		return
-	} else if text == "/resume" || text == fmt.Sprintf("/resume@%s", botName) {
-		// List recent conversations from user history
-		brainDir := getBrainDir()
-		dbRows, err := db.Query("SELECT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
-		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
-			return
-		}
-		defer dbRows.Close()
-
-		type convInfo struct {
-			ID      string
-			ModTime time.Time
-			Title   string
-		}
-		var convs []convInfo
-		var validSessionIDs []string
-
-		for dbRows.Next() {
-			var sid string
-			if err := dbRows.Scan(&sid); err == nil {
-				validSessionIDs = append(validSessionIDs, sid)
-			}
-		}
-
-		for _, sid := range validSessionIDs {
-			transcript := filepath.Join(brainDir, sid, ".system_generated", "logs", "transcript.jsonl")
-			stat, err := os.Stat(transcript)
-			if err != nil {
-				continue
-			}
-			f, err := os.Open(transcript)
-			if err != nil {
-				continue
-			}
-			title := ""
-			titleFile := filepath.Join(brainDir, sid, ".title")
-			if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
-				title = string(bytes.TrimSpace(b))
-				if len(title) > 45 {
-					title = title[:42] + "..."
-				}
-			} else {
-				scanner := bufio.NewScanner(f)
-				if scanner.Scan() {
-					var step map[string]interface{}
-					if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
-						content, _ := step["content"].(string)
-						// Extract text between <USER_REQUEST> tags
-						start := strings.Index(content, "<USER_REQUEST>")
-						end := strings.Index(content, "</USER_REQUEST>")
-						if start >= 0 && end > start {
-							inner := strings.TrimSpace(content[start+14 : end])
-							// Strip nested tags
-							for strings.Contains(inner, "<") {
-								tagStart := strings.Index(inner, "<")
-								tagEnd := strings.Index(inner, ">")
-								if tagEnd > tagStart {
-									inner = inner[:tagStart] + inner[tagEnd+1:]
-								} else {
-									break
-								}
-							}
-							inner = strings.TrimSpace(inner)
-							lines := strings.SplitN(inner, "\n", 2)
-							title = strings.TrimSpace(lines[0])
-							if len(title) > 45 {
-								title = title[:42] + "..."
-							}
-						}
-					}
-				}
-			}
-			f.Close()
-			if title == "" {
-				title = "(empty)"
-			}
-			convs = append(convs, convInfo{ID: sid, ModTime: stat.ModTime(), Title: title})
-		}
-
-		// Sort by modification time descending
-		for i := 0; i < len(convs); i++ {
-			for j := i + 1; j < len(convs); j++ {
-				if convs[j].ModTime.After(convs[i].ModTime) {
-					convs[i], convs[j] = convs[j], convs[i]
-				}
-			}
-		}
-
-		// Take top 8
-		if len(convs) > 8 {
-			convs = convs[:8]
-		}
-
-		if len(convs) == 0 {
-			bot.Send(tgbotapi.NewMessage(chatID, "📭 No previous sessions found."))
-			return
-		}
-
-		var rows [][]tgbotapi.InlineKeyboardButton
-		for _, c := range convs {
-			label := fmt.Sprintf("🕐 %s — %s", c.ModTime.Format("02.01 15:04"), c.Title)
-			cbData := "resume:" + c.ID
-			if len(cbData) > 64 {
-				cbData = cbData[:64]
-			}
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(label, cbData),
-			))
-		}
-		m := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		msg := tgbotapi.NewMessage(chatID, "🔄 *Select a session to resume:*")
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = m
-		bot.Send(msg)
-		return
-	} else if strings.HasPrefix(text, "/tts ") {
-		ttsText := strings.TrimPrefix(text, "/tts ")
-		if ttsText == "" {
-			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: `/tts <text>`"))
-			return
-		}
-		if os.Getenv("ELEVENLABS_API_KEY") == "" {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ ELEVENLABS_API_KEY environment variable is not set!"))
-			return
-		}
-
-		msg := tgbotapi.NewMessage(chatID, "🎙 *Generating voice...*")
-		msg.ParseMode = "Markdown"
-		sentMsg, _ := bot.Send(msg)
-
-		err := GenerateAndSendVoice(bot, chatID, ttsText)
-
-		// Delete the generating message
-		bot.Send(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
-
-		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ TTS Error: "+err.Error()))
-		}
-		return
-	} else if strings.HasPrefix(text, "/workspace") {
-		parts := strings.SplitN(text, " ", 2)
-		if len(parts) < 2 {
-			msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/workspace <absolute path>`\n📂 Current workspace: `"+user.Workspace+"`")
-			msg.ParseMode = "Markdown"
-			bot.Send(msg)
-			return
-		}
-		newWS := strings.TrimSpace(parts[1])
-		cleanPath := filepath.Clean(newWS)
-		if !filepath.IsAbs(cleanPath) {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: path must be absolute (e.g. `/root/projects/app`)"))
-			return
-		}
-		realPath, evalErr := filepath.EvalSymlinks(cleanPath)
-		if evalErr != nil {
-			realPath = cleanPath
-		}
-		allowedRoot, _ := filepath.Abs(getAgentsDir())
-		if !strings.HasPrefix(realPath, allowedRoot) {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Path must be under "+allowedRoot))
-			return
-		}
-		newWS = realPath
-
-		_, err := db.Exec("UPDATE users SET workspace = ? WHERE user_id = ?", newWS, userID)
-		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
-			return
-		}
-
-		newUUID := uuid.New().String()
-		updateUserSession(db, userID, newUUID)
-		replaceSession(db, botName, user, newUUID, user.Model, newWS, chatID)
-
-		msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
-		return
-	} else if strings.HasPrefix(text, "/rename") {
-		parts := strings.SplitN(text, " ", 2)
-		if len(parts) < 2 {
-			msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/rename <new name>`")
-			msg.ParseMode = "Markdown"
-			bot.Send(msg)
-			return
-		}
-		newName := strings.TrimSpace(parts[1])
-
-		session := getSession(botName, user, chatID)
-		if session.Conversation != "" {
-			sessionDir := filepath.Join(getBrainDir(), session.Conversation)
-			os.MkdirAll(sessionDir, 0755)
-			titleFile := filepath.Join(sessionDir, ".title")
-			err := os.WriteFile(titleFile, []byte(newName), 0644)
-			if err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save name: "+err.Error()))
-			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "✅ Session renamed to: *"+newName+"*"))
-			}
-		} else {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ No active session to rename."))
-		}
-		return
-	} else if text == "/usage" || text == fmt.Sprintf("/usage@%s", botName) {
-		agyPath := getAgyPath()
-		cmd := exec.Command(agyPath, "--print", "/usage")
-		out, err := cmd.CombinedOutput()
-		var respText string
-		if err != nil {
-			respText = "❌ Failed to get usage: " + err.Error()
-		} else {
-			respText = "📊 *Quota Usage:*\n```\n" + strings.TrimSpace(string(out)) + "\n```"
-		}
-		msg := tgbotapi.NewMessage(chatID, respText)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
-		return
-	} else if text == "/help" || text == fmt.Sprintf("/help@%s", botName) {
-		respText := "🆘 *Command Reference:*\n\n" +
-			"• /start - Show dashboard\n" +
-			"• /model - Change LLM model\n" +
-			"• /usage - Check API quota\n" +
-			"• /clear - Clear context (reset session)\n" +
-			"• /resume - Resume previous session\n" +
-			"• /rename <name> - Rename current session\n" +
-			"• /workspace <path> - Change working directory\n\n" +
-			"*Send any text or file to start the Agent.*"
-		msg := tgbotapi.NewMessage(chatID, respText)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
-		return
-	} else if text == "/model" || text == fmt.Sprintf("/model@%s", botName) {
-		respText := "🧠 Select a model:"
-		modelsMu.RLock()
-		cachedModels := make([]AgyModel, len(availableModels))
-		copy(cachedModels, availableModels)
-		modelsMu.RUnlock()
-
-		var rows [][]tgbotapi.InlineKeyboardButton
-		if len(cachedModels) == 0 {
-			// Fallback if cache is empty
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash High", "model:gemini-3.7-flash-high")))
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧠 3.1 Pro High", "model:gemini-3.1-pro-high")))
-		} else {
-			for _, m := range cachedModels {
-				label := fmt.Sprintf("%s %s", m.Emoji, m.Name)
-				callbackData := "model:" + m.ID
-				rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, callbackData)))
-			}
-		}
-		m := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		msg := tgbotapi.NewMessage(chatID, respText)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = m
-		bot.Send(msg)
-		return
-	} else if text == "/refresh_models" || text == fmt.Sprintf("/refresh_models@%s", botName) {
-		fetchModels()
-		modelsMu.RLock()
-		count := len(availableModels)
-		modelsMu.RUnlock()
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Dynamically fetched %d models from agy.", count)))
-		return
-	} else if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
-		newUUID := uuid.New().String()
-		replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
-		updateUserSession(db, userID, newUUID)
-		respText := "🧼 Context cleared!\n`" + newUUID + "`"
-		msg := tgbotapi.NewMessage(chatID, respText)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
-		return
-	}
-
 	session := getSession(botName, user, chatID)
 
-	if update.Message != nil && update.Message.Voice != nil {
-		session.mu.Lock()
-		session.VoiceReply = true
-		session.mu.Unlock()
-	}
-
 	session.mu.Lock()
+	if isVoice || user.VoiceReply {
+		session.VoiceReply = true
+	}
 	session.BotAPI = bot
 	session.ChatID = chatID
 
@@ -1111,7 +1185,6 @@ ProcessInput:
 	} else {
 		err = fmt.Errorf("agent stdin pipe is not available")
 	}
-
 	session.mu.Unlock()
 
 	if err != nil {
@@ -1119,6 +1192,92 @@ ProcessInput:
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process was not ready. Send your message again."))
 		return
 	}
+}
+
+// handleUpdate is the primary router for incoming Telegram messages and inline callbacks.
+func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED in handleUpdate] %v", r)
+		}
+	}()
+	if update.Message == nil && update.CallbackQuery == nil {
+		return
+	}
+
+	botName := bot.Self.UserName
+
+	// 1. Process Callback Queries
+	if update.CallbackQuery != nil {
+		userID := update.CallbackQuery.From.ID
+		user := getUser(db, userID, botName)
+		handleCallbackQuery(bot, update.CallbackQuery, user, botName, db)
+		return
+	}
+
+	// 2. Process Messages
+	msg := update.Message
+	chatID := msg.Chat.ID
+	userID := msg.From.ID
+	text := msg.Text
+	caption := msg.Caption
+
+	// Alias telegram-safe commands to agy commands
+	if strings.HasPrefix(text, "/grill_me") {
+		text = strings.Replace(text, "/grill_me", "/grill-me", 1)
+	} else if strings.HasPrefix(text, "/teamwork_preview") {
+		text = strings.Replace(text, "/teamwork_preview", "/teamwork-preview", 1)
+	}
+
+	var fileID, ext string
+	isVoice := false
+	if msg.Document != nil {
+		fileID = msg.Document.FileID
+		ext = filepath.Ext(msg.Document.FileName)
+		if ext == "" {
+			ext = ".bin"
+		}
+	} else if len(msg.Photo) > 0 {
+		fileID = msg.Photo[len(msg.Photo)-1].FileID
+		ext = ".jpg"
+	} else if msg.Voice != nil {
+		fileID = msg.Voice.FileID
+		ext = ".ogg"
+		isVoice = true
+	} else if msg.Audio != nil {
+		fileID = msg.Audio.FileID
+		ext = ".mp3"
+	}
+
+	if text == "" && caption == "" && fileID == "" {
+		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Sticker/contact/location не поддерживается. Отправьте текст, фото, документ или голосовое."))
+		return
+	}
+
+	user := getUser(db, userID, botName)
+
+	downloadedFile := false
+	if fileID != "" {
+		formattedText, isFile, err := downloadTelegramMedia(bot, chatID, fileID, ext, text, caption, botName)
+		if err != nil {
+			return
+		}
+		text = formattedText
+		downloadedFile = isFile
+	}
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+
+	// 3. Process Slash Commands
+	if handleCommand(bot, chatID, userID, text, botName, user, db) {
+		return
+	}
+
+	// 4. Process Normal Text & Media Payloads
+	handleMessagePayload(bot, chatID, userID, text, botName, user, isVoice, downloadedFile, db)
 }
 
 // sendChunk safely breaks a large text into valid HTML chunks and sends them sequentially to respect Telegram limits.
