@@ -1,11 +1,33 @@
 # 🛸 Antigravity Go Telegram Bot Agent
 
-![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go)
-![SQLite](https://img.shields.io/badge/SQLite-07405E?style=for-the-badge&logo=sqlite&logoColor=white)
-![Telegram API](https://img.shields.io/badge/Telegram_API-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)
-![Systemd](https://img.shields.io/badge/Systemd-Reliable-brightgreen?style=for-the-badge)
+[![CI](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/Coverage-30%25-yellow.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
 **The Ultimate, High-Performance Pure Go Core for the Antigravity Telegram Bot Ecosystem.**
+
+---
+
+## ⚡ Quick Start: 30 Seconds to Run
+
+Get the agent up and running immediately:
+
+```bash
+# 1. Clone & enter directory
+git clone https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent.git
+cd antigravity-go-tg-bot-agent
+
+# 2. Setup your .env file
+echo 'BOT_TOKENS="your:telegram_token"' > .env
+echo 'ALLOWED_ADMIN_IDS="123456789"' >> .env
+
+# 3. Build & Run
+go build -o new_engine .
+./new_engine
+```
+
+For more details on how to contribute or understand the internals, please see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
