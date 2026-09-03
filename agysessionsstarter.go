@@ -374,7 +374,11 @@ func ExtractAllowedArtifacts(text string) []string {
 	matches := re.FindAllStringSubmatch(text, -1)
 	
 	allowedRootAgents, _ := filepath.Abs(getAgentsDir())
-	allowedRootBrain, _ := filepath.Abs("/root/.gemini/antigravity-cli/brain")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	allowedRootBrain, _ := filepath.Abs(filepath.Join(home, ".gemini/antigravity-cli/brain"))
 
 	for _, match := range matches {
 		if len(match) > 1 {

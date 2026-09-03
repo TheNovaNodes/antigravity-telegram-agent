@@ -25,7 +25,11 @@ func TestExtractAllowedArtifacts(t *testing.T) {
 	// (or wherever they actually point to on this machine) for testing.
 
 	agentsDir := getAgentsDir()
-	brainDir := "/root/.gemini/antigravity-cli/brain"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	brainDir := filepath.Join(home, ".gemini/antigravity-cli/brain")
 	
 	os.MkdirAll(agentsDir, 0755)
 	os.MkdirAll(brainDir, 0755)
