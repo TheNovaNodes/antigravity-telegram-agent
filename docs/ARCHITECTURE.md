@@ -135,7 +135,41 @@ CREATE TABLE IF NOT EXISTS session_history (
 
 ---
 
-## 5. Streaming Engine & HTML Sanitize Pipeline
+## 5. Hot Model Swap Architecture (Zero-Context-Loss Model Switching)
+
+The engine supports seamless switching of LLM models mid-conversation without loss of history or context:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Router as handleCallbackQuery (model:*)
+    participant SQLite as SQLite WAL Database
+    participant Registry as globalSessions (sessionMu)
+    participant Subproc as OS Subprocess (agy)
+    participant Brain as brain/<UUID>/ (Storage)
+
+    User->>Router: Tap Model Button (e.g. Claude 3.7 Sonnet)
+    Router->>SQLite: updateUserModel(userID, "claude-3-7-sonnet")
+    Note over Router,Registry: Retain active user.SessionID (NO random UUID generation)
+    Router->>Registry: replaceSession(..., user.SessionID, newModel, ...)
+    Registry->>Subproc: Kill old process (syscall.Kill(-pgid, SIGTERM))
+    Registry->>Subproc: Spawn new agy (--conversation <SessionID> --model <newModel>)
+    Subproc->>Brain: Read previous turns from transcript.jsonl
+    Subproc-->>Registry: Init event with preserved conversation_id
+    Router-->>User: "🧠 Model switched! ✨ Context preserved!"
+    User->>Subproc: Send Turn N prompt
+    Subproc-->>User: Stream response with full awareness of Turns 1..N-1
+```
+
+### Hot Swap Guarantees:
+1. **Zero Context Loss**: Previous messages, tool executions, and user inputs stored in `~/.gemini/antigravity-cli/brain/<UUID>/` are reloaded by `agy` on startup under the new model.
+2. **Atomic Process Handoff**: `replaceSession` closes active I/O pipes and terminates the old process group before provisioning the new model runner, avoiding CPU/memory leaks.
+3. **Database Consistency**: Only `users.model` is updated in SQLite; `users.session_id` remains immutable across swaps until the user explicitly runs `/clear`.
+
+---
+
+## 6. Streaming Engine & HTML Sanitize Pipeline
 
 Agent standard output streams JSONL objects that are parsed and formatted into Telegram HTML:
 
