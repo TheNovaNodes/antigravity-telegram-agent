@@ -443,3 +443,57 @@ func TestHandleCommand_Resume_Empty(t *testing.T) {
 	}
 	handleUpdate(bot, update, db)
 }
+
+func TestHandleCallbackQuery_HotModelSwap_PreservesContext(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(999)
+
+	// 1. Initial user setup
+	initialUser := getUser(db, userID, "TestMockBot")
+	initialSessionID := initialUser.SessionID
+
+	// 2. Switch model via callback
+	cbUpdate := tgbotapi.Update{
+		UpdateID: 501,
+		CallbackQuery: &tgbotapi.CallbackQuery{
+			ID:   "cb_model_swap",
+			From: &tgbotapi.User{ID: userID},
+			Message: &tgbotapi.Message{
+				MessageID: 25,
+				Chat:      &tgbotapi.Chat{ID: chatID},
+			},
+			Data: "model:gemini-3.1-pro-high",
+		},
+	}
+	handleUpdate(bot, cbUpdate, db)
+
+	// 3. Verify user in DB still has the exact same SessionID (context preserved)
+	updatedUser := getUser(db, userID, "TestMockBot")
+	if updatedUser.SessionID != initialSessionID {
+		t.Errorf("Expected SessionID to be preserved %s, but got %s", initialSessionID, updatedUser.SessionID)
+	}
+	if updatedUser.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Expected model to be gemini-3.1-pro-high, got %s", updatedUser.Model)
+	}
+
+	// 4. Verify session instance in globalSessions retains the conversation ID
+	session := getSession("TestMockBot", updatedUser, chatID)
+	if session.GetConversation() != initialSessionID {
+		t.Errorf("Expected session conversation to be %s, got %s", initialSessionID, session.GetConversation())
+	}
+	if session.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Expected session model to be gemini-3.1-pro-high, got %s", session.Model)
+	}
+
+	session.Kill()
+}

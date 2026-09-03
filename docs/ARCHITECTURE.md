@@ -94,7 +94,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Reads `transcript.jsonl` and writes export file to scratch space. |
 | `handleClearCommand` | Session context reset and new conversation UUID generation. | Replaces session and kills prior process tree. |
 | `handleCommand` | Centralized command router. | Returns `bool` for clean pipeline flow. |
-| `handleCallbackQuery` | Routes inline button actions (`model:*`, `resume:*`, `ans:*`, `cmd:*`). | Dispatches callbacks without `goto`. |
+| `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans:*`, `cmd:*`). | Seamlessly switches models with 100% context retention; dispatches callbacks without `goto`. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. | Enforces 100 MB hard limit and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding. |
 | `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
