@@ -1252,12 +1252,12 @@ func main() {
 func (s *AgySession) readStdoutLoop() {
 	s.mu.Lock()
 	scanner := s.StdoutScanner
+	ctx := s.ctx
 	s.mu.Unlock()
-	if scanner == nil {
+	if scanner == nil || ctx == nil {
 		return
 	}
 	lines := make(chan string, 100)
-	ctx := s.ctx
 	go func() {
 		defer close(lines)
 		for scanner.Scan() {
@@ -1272,7 +1272,7 @@ func (s *AgySession) readStdoutLoop() {
 	for {
 		var line string
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		case l, ok := <-lines:
 			if !ok {
