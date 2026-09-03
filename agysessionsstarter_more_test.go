@@ -57,6 +57,9 @@ func TestLoadAllowedAdmins(t *testing.T) {
 }
 
 func TestGetSession(t *testing.T) {
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
 	botName := "TestBotSession"
 	user := User{
 		ID:           999,
@@ -86,8 +89,49 @@ func TestGetSession(t *testing.T) {
 		t.Errorf("Expected same session instance to be returned")
 	}
 
-	// Clean up cmd if it was started
-	if session.Cmd != nil && session.Cmd.Process != nil {
-		session.Cmd.Process.Kill()
+	// 3. Get session with changed conversation ID (Issue #147)
+	userChangedSession := user
+	userChangedSession.SessionID = "test-session-456"
+	session3 := getSession(botName, userChangedSession, 1234)
+	if session3 == nil {
+		t.Fatal("Expected new session to be created for updated SessionID, got nil")
+	}
+	if session3 == session {
+		t.Errorf("Expected different session instance after SessionID changed")
+	}
+	if session3.Conversation != "test-session-456" {
+		t.Errorf("Expected conversation test-session-456, got %s", session3.Conversation)
+	}
+	if session.ctx.Err() == nil {
+		t.Errorf("Expected old session context to be cancelled after replacement")
+	}
+
+	// Clean up sessions
+	session.Kill()
+	session2.Kill()
+	session3.Kill()
+}
+
+func TestReadStdoutLoop_NilScanner(t *testing.T) {
+	session := &AgySession{}
+	// Should return immediately without panicking
+	session.readStdoutLoop()
+}
+
+func TestStart_InvalidBinary(t *testing.T) {
+	os.Setenv("AGY_BINARY", "/nonexistent/binary/agy")
+	defer os.Unsetenv("AGY_BINARY")
+
+	session := &AgySession{
+		BotName: "TestFailBot",
+		Model:   "test-model",
+	}
+	session.start()
+
+	if session.Cmd != nil {
+		t.Errorf("Expected session.Cmd to be nil after failed Start(), got %v", session.Cmd)
+	}
+	if session.cancel != nil {
+		session.cancel()
 	}
 }

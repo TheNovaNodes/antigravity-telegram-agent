@@ -178,6 +178,25 @@ func getAgentsDir() string {
 	return filepath.Join(home, ".agents")
 }
 
+// Kill gracefully cancels the session context and terminates the underlying process.
+func (s *AgySession) Kill() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		s.Cmd.Process.Kill()
+	}
+}
+
+// IsAlive checks whether the underlying agent process is currently running.
+func (s *AgySession) IsAlive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Cmd != nil && s.Cmd.Process != nil && s.Cmd.ProcessState == nil
+}
+
 // replaceSession handles the graceful termination of an existing agent session 
 // and provisions a new isolated agent process with updated environment parameters.
 // It ensures there are no goroutine or memory leaks from the previous context.
@@ -186,12 +205,7 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 	
 	sessionMu.Lock()
 	if old, ok := globalSessions[sessionKey]; ok {
-		if old.cancel != nil {
-			old.cancel()
-		}
-		if old.Cmd != nil && old.Cmd.Process != nil {
-			old.Cmd.Process.Kill()
-		}
+		old.Kill()
 		delete(globalSessions, sessionKey)
 	}
 	sessionMu.Unlock()
@@ -222,16 +236,16 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
-	if exists && session.Model == user.Model && session.Workspace == user.Workspace {
-		// check if process is alive
-		if session.Cmd != nil && session.Cmd.ProcessState == nil {
+	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.Conversation == user.SessionID {
+		if session.IsAlive() {
 			sessionMu.Unlock()
 			return session
 		}
 	}
 
-	if exists && session.Cmd != nil && session.Cmd.Process != nil {
-		session.Cmd.Process.Kill()
+	if exists {
+		session.Kill()
+		delete(globalSessions, sessionKey)
 	}
 	sessionMu.Unlock()
 
@@ -240,6 +254,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		Model:        user.Model,
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
+		UserID:       user.ID,
 		UpdateChan:   make(chan struct{}, 1),
 		InitChan:     make(chan string, 1),
 	}
@@ -277,9 +292,13 @@ func (s *AgySession) start() {
 		args = append(args, "--conversation", s.Conversation)
 	}
 
-		agyPath := os.Getenv("AGY_BINARY")
+	agyPath := os.Getenv("AGY_BINARY")
 	if agyPath == "" {
-		agyPath = "/root/.local/bin/agy"
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "/root"
+		}
+		agyPath = filepath.Join(home, ".local/bin/agy")
 	}
 	s.Cmd = exec.Command(agyPath, args...)
 
@@ -291,10 +310,19 @@ func (s *AgySession) start() {
 	stdin, _ := s.Cmd.StdinPipe()
 	stdout, _ := s.Cmd.StdoutPipe()
 	s.Stdin = stdin
-	s.StdoutScanner = bufio.NewScanner(stdout)
-	buf := make([]byte, 0, 64*1024)
-	s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
-	s.Cmd.Start()
+	if stdout != nil {
+		s.StdoutScanner = bufio.NewScanner(stdout)
+		buf := make([]byte, 0, 64*1024)
+		s.StdoutScanner.Buffer(buf, 10*1024*1024) // 10MB max token size
+	}
+
+	if err := s.Cmd.Start(); err != nil {
+		log.Printf("Failed to start agy process for %s (%s): %v", s.BotName, agyPath, err)
+		s.mu.Lock()
+		s.Cmd = nil
+		s.mu.Unlock()
+		return
+	}
 
 	// Streaming throttler loop
 	ctx := s.ctx
@@ -343,24 +371,21 @@ func (s *AgySession) start() {
 	}(ctx)
 
 	go s.readStdoutLoop()
-	go func(cmd *exec.Cmd) {
-		cmd.Wait()
-		s.mu.Lock()
-		if s.Cmd == cmd {
-			s.Cmd = nil
-		}
-		s.mu.Unlock()
-	}(s.Cmd)
+	if s.Cmd != nil {
+		go func(cmd *exec.Cmd) {
+			cmd.Wait()
+			s.mu.Lock()
+			if s.Cmd == cmd {
+				s.Cmd = nil
+			}
+			s.mu.Unlock()
+		}(s.Cmd)
+	}
 }
 
 // Restart performs the Restart method.
 func (s *AgySession) Restart() {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
-		s.Cmd.Process.Kill()
-	}
+	s.Kill()
 	s.start()
 }
 
@@ -1209,12 +1234,20 @@ func main() {
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events like text deltas and errors.
 func (s *AgySession) readStdoutLoop() {
-	lines := make(chan string)
+	if s.StdoutScanner == nil {
+		return
+	}
+	lines := make(chan string, 100)
+	ctx := s.ctx
 	go func() {
+		defer close(lines)
 		for s.StdoutScanner.Scan() {
-			lines <- s.StdoutScanner.Text()
+			select {
+			case <-ctx.Done():
+				return
+			case lines <- s.StdoutScanner.Text():
+			}
 		}
-		close(lines)
 	}()
 
 	for {

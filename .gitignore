@@ -2,7 +2,11 @@
 *.db
 *.sqlite
 new_engine
+engine
 test_build
 agysessionsstarter
 *.pyc
 __pycache__/
+*.out
+*.test
+coverage.html
