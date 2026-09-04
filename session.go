@@ -273,14 +273,26 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 }
 
 // getSession retrieves an active session for the user or creates a new isolated agent process.
-func getSession(botName string, user User, chatID int64) *AgySession {
+func getSession(botName string, user User, chatID int64, dbs ...*sql.DB) *AgySession {
+	var db *sql.DB
+	if len(dbs) > 0 {
+		db = dbs[0]
+	}
+
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
 
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
-	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.GetConversation() == user.SessionID {
-		if session.IsAlive() {
+	if exists && session.Model == user.Model && session.Workspace == user.Workspace {
+		activeConv := session.GetConversation()
+		convMatches := (activeConv == user.SessionID) || (user.SessionID == "") || (activeConv == "") ||
+			(isValidSessionID(activeConv) && !isValidSessionID(user.SessionID))
+
+		if convMatches && session.IsAlive() {
 			session.mu.Lock()
+			if session.DB == nil && db != nil {
+				session.DB = db
+			}
 			session.LastActivity = time.Now()
 			session.mu.Unlock()
 			sessionMu.Unlock()
@@ -297,7 +309,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		BotName:      botName,
 		ChatID:       chatID,
 		UserID:       user.ID,
-		DB:           nil,
+		DB:           db,
 		Model:        user.Model,
 		Workspace:    user.Workspace,
 		Conversation: user.SessionID,
@@ -698,12 +710,11 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				default:
 				}
 				s.mu.Lock()
-				diff := (newID != s.Conversation)
 				s.Conversation = newID
 				uID := s.UserID
 				db := s.DB
 				s.mu.Unlock()
-				if diff && db != nil && uID != 0 {
+				if db != nil && uID != 0 {
 					updateUserSession(db, uID, newID)
 				}
 			}

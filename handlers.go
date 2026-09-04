@@ -571,7 +571,11 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 }
 
 // handleRenameCommand renames the current conversation in brain storage.
-func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName string, user User) {
+func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName string, user User, dbs ...*sql.DB) {
+	var db *sql.DB
+	if len(dbs) > 0 {
+		db = dbs[0]
+	}
 	parts := strings.SplitN(text, " ", 2)
 	if len(parts) < 2 {
 		msg := tgbotapi.NewMessage(chatID, "⚠️ Usage: `/rename <new name>`")
@@ -590,7 +594,7 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 		return
 	}
 
-	session := getSession(botName, user, chatID)
+	session := getSession(botName, user, chatID, db)
 	conv := session.GetConversation()
 	if conv != "" && isValidSessionID(conv) {
 		sessionDir := filepath.Join(getBrainDir(), conv)
@@ -654,7 +658,7 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 		handleWorkspaceCommand(bot, chatID, userID, text, botName, user, db)
 		return true
 	case "/rename":
-		handleRenameCommand(bot, chatID, text, botName, user)
+		handleRenameCommand(bot, chatID, text, botName, user, db)
 		return true
 	case "/export":
 		handleExportCommand(bot, chatID, userID, botName, user)
@@ -857,7 +861,7 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 		return
 	}
 
-	session := getSession(botName, user, chatID)
+	session := getSession(botName, user, chatID, db)
 
 	session.mu.Lock()
 	session.VoiceReply = isVoice || user.VoiceReply
