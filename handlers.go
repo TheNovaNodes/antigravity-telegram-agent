@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,11 +14,54 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
 )
+
+var (
+	questionOptionsMu sync.RWMutex
+	questionOptions   = make(map[string]string)
+)
+
+// storeQuestionOption safely registers an agent question option and returns safe callback data (<= 64 bytes).
+func storeQuestionOption(opt string) string {
+	cbData := "ans:" + opt
+	if len([]byte(cbData)) <= 64 {
+		return cbData
+	}
+	questionOptionsMu.Lock()
+	defer questionOptionsMu.Unlock()
+	if len(questionOptions) > 1000 {
+		for k := range questionOptions {
+			delete(questionOptions, k)
+			if len(questionOptions) <= 500 {
+				break
+			}
+		}
+	}
+	id := uuid.New().String()[:8]
+	cbKey := "ans_id:" + id
+	questionOptions[cbKey] = opt
+	return cbKey
+}
+
+// getQuestionOption retrieves the full question answer text from callback data.
+func getQuestionOption(data string) (string, bool) {
+	if strings.HasPrefix(data, "ans:") {
+		return strings.TrimPrefix(data, "ans:"), true
+	}
+	if strings.HasPrefix(data, "ans_id:") {
+		questionOptionsMu.RLock()
+		defer questionOptionsMu.RUnlock()
+		if opt, ok := questionOptions[data]; ok {
+			return opt, true
+		}
+	}
+	return "", false
+}
 
 // handleStartCommand renders the status dashboard with session metrics and quick action keyboard.
 func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user User) {
@@ -249,7 +293,10 @@ func handleModelCommand(bot *tgbotapi.BotAPI, chatID int64) {
 // handleUsageCommand retrieves current token quota usage from the underlying Antigravity CLI.
 func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	agyPath := getAgyPath()
-	cmd := exec.Command(agyPath, "--print", "/usage")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, agyPath, "--print", "/usage")
 	out, err := cmd.CombinedOutput()
 	var respText string
 	if err != nil {
@@ -576,9 +623,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 
 	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 
-	if strings.HasPrefix(data, "ans:") {
-		ansText := strings.TrimPrefix(data, "ans:")
-		handleMessagePayload(bot, chatID, userID, ansText, botName, user, false, false, db)
+	if optText, ok := getQuestionOption(data); ok {
+		handleMessagePayload(bot, chatID, userID, optText, botName, user, false, false, db)
 		return
 	}
 
@@ -667,7 +713,8 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 
 	bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file..."))
 
-	resp, err := http.Get(fileURL)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(fileURL)
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
 		return "", false, err

@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -64,8 +65,6 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 		return err
 	}
 
-	apiKey := validKeys[rand.Intn(len(validKeys))]
-
 	cleanText := CleanTextForTTS(text)
 	if len(cleanText) == 0 {
 		return nil // Empty, skip TTS
@@ -89,38 +88,57 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 	}
 
 	bodyData, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyData))
-	if err != nil {
+
+	// Shuffle keys to distribute load evenly across key pool
+	shuffledKeys := make([]string, len(validKeys))
+	copy(shuffledKeys, validKeys)
+	rand.Shuffle(len(shuffledKeys), func(i, j int) {
+		shuffledKeys[i], shuffledKeys[j] = shuffledKeys[j], shuffledKeys[i]
+	})
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	var lastErr error
+
+	for _, apiKey := range shuffledKeys {
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyData))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		req.Header.Add("xi-api-key", apiKey)
+		req.Header.Add("Content-Type", "application/json")
+		req.Header.Add("Accept", "audio/mpeg")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("ElevenLabs API error (status %d): %s", resp.StatusCode, string(body))
+			continue
+		}
+
+		audioBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Send to Telegram as Voice Note
+		fileBytes := tgbotapi.FileBytes{
+			Name:  "voice.ogg",
+			Bytes: audioBytes,
+		}
+		msg := tgbotapi.NewVoice(chatID, fileBytes)
+		_, err = bot.Send(msg)
 		return err
 	}
 
-	req.Header.Add("xi-api-key", apiKey)
-	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Accept", "audio/mpeg")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("ElevenLabs API error: %s", string(body))
-	}
-
-	audioBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	// Send to Telegram as Voice Note
-	fileBytes := tgbotapi.FileBytes{
-		Name:  "voice.ogg",
-		Bytes: audioBytes,
-	}
-	msg := tgbotapi.NewVoice(chatID, fileBytes)
-	_, err = bot.Send(msg)
-	return err
+	return fmt.Errorf("all ElevenLabs API keys failed, last error: %v", lastErr)
 }

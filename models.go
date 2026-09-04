@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // AgyModel describes an LLM model discovered from Antigravity CLI.
@@ -37,10 +39,13 @@ func getEmojiForModel(id string) string {
 	return "🤖"
 }
 
-// fetchModels dynamically queries the available models from the Antigravity CLI.
+// fetchModels dynamically queries the available models from the Antigravity CLI with a strict timeout.
 func fetchModels() {
 	agyPath := getAgyPath()
-	cmd := exec.Command(agyPath, "models")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, agyPath, "models")
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("Failed to fetch dynamic models: %v", err)
