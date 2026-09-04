@@ -1,15 +1,30 @@
+# Environment & Secrets
 .env
+*.env.local
+
+# Databases & Runtime Data
+data/
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
-new_engine
+
+# Build Binaries & Artifacts
+bin/
+build/
 engine
-test_build
+new_engine
+antigravity-bot-engine
 agysessionsstarter
-*.pyc
-__pycache__/
+test_build
+
+# Test & Coverage Artifacts
 *.out
 *.test
 coverage.html
+
+# Python / Cache Artifacts
+*.pyc
+__pycache__/
+.pytest_cache/
