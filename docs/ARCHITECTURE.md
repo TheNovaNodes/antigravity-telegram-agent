@@ -89,7 +89,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleUsageCommand` | Token quota and API tier usage display. | Executes `agy --print /usage`. |
 | `handleHelpCommand` | Quick command reference and operational guide. | Pure static format. |
 | `handleTTSCommand` | Text-to-Speech synthesis for arbitrary user text. | Multi-key ElevenLabs rotation. |
-| `handleVoiceToggleCommand` | Persistent toggle for agent voice responses (`/voice [on\|off]`). | Atomic SQLite update to `users.voice_reply`. |
+| `handleVoiceToggleCommand` | Persistent toggle for agent voice responses (`/voice [on\|off]`). | Atomic SQLite update to `users.voice_reply` and active in-memory session sync. |
 | `handleWorkspaceCommand` | Dynamic agent working directory switching. | Path traversal validation (`filepath.EvalSymlinks`, restricted to `AGENTS_DIR`). |
 | `handleRenameCommand` | Live rename of conversation title in `brain` storage. | Writes to `.title` atomic descriptor. |
 | `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Reads `transcript.jsonl`, guards against empty/short `SessionID`, writes export file to scratch space. |
@@ -97,8 +97,10 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). |
 | `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*`). | Safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. | Enforces 100 MB hard limit and sandbox download dir. |
-| `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding. |
+| `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding, per-turn voice reply mode without latching, and clean prompt retry on Stdin error. |
 | `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
+| `ExtractAllowedArtifacts` | Validates and dispatches generated documents/artifacts to Telegram. | LFI whitelisting covering `AGENTS_DIR`, `BRAIN_DIR`, and `PROJECTS_DIR` (`!info.IsDir()`). |
+| `AgySession.start` | Spawns `agy` sub-process with `Setpgid`, `WaitDelay`, and streaming throttler. | Monitors `cmd.Wait()` to clean up zombie `*⏳ Thinking...*` UI states on unexpected process exit. |
 
 ---
 
