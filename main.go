@@ -111,11 +111,17 @@ func main() {
 		}
 	}
 
+	// Start background housekeeping workers (session GC and disk cleanup)
+	stopHousekeeping := make(chan struct{})
+	StartSessionGCWorker(30*time.Minute, 24*time.Hour, stopHousekeeping)
+	StartDiskCleanupWorker(2*time.Hour, 24*time.Hour, stopHousekeeping)
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	<-sigs
 
 	log.Println("Shutting down gracefully...")
+	close(stopHousekeeping)
 
 	// 1. Stop Telegram polling on all active bots
 	activeBotsMu.Lock()

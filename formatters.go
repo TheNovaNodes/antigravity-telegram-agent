@@ -29,11 +29,27 @@ func escapeHTML(text string) string {
 	return text
 }
 
+type openTagInfo struct {
+	Tag        string
+	Attributes string
+}
+
 // balanceAndSanitizeTelegramHTML ensures all tags are balanced and only allowed tags are used.
 func balanceAndSanitizeTelegramHTML(rawHTML string) string {
+	sanitized, _ := balanceAndSanitizeWithState(rawHTML, nil)
+	return sanitized
+}
+
+// balanceAndSanitizeWithState balances tags, sanitizes input, and preserves open formatting tags across chunk boundaries.
+func balanceAndSanitizeWithState(rawHTML string, initialOpenTags []openTagInfo) (string, []openTagInfo) {
 	tokenizer := html.NewTokenizer(strings.NewReader(rawHTML))
 	var out bytes.Buffer
-	var stack []string
+	for _, ot := range initialOpenTags {
+		out.WriteString("<" + ot.Tag + ot.Attributes + ">")
+	}
+
+	stack := make([]openTagInfo, len(initialOpenTags))
+	copy(stack, initialOpenTags)
 
 	for {
 		tt := tokenizer.Next()
@@ -49,8 +65,7 @@ func balanceAndSanitizeTelegramHTML(rawHTML string) string {
 		case html.StartTagToken:
 			tag := strings.ToLower(token.Data)
 			if allowedTags[tag] {
-				stack = append(stack, tag)
-				out.WriteString("<" + tag)
+				var attrBuf bytes.Buffer
 				for _, attr := range token.Attr {
 					key := strings.ToLower(attr.Key)
 					if (tag == "a" && key == "href") ||
@@ -62,13 +77,15 @@ func balanceAndSanitizeTelegramHTML(rawHTML string) string {
 
 						val := escapeHTML(attr.Val)
 						if key == "expandable" {
-							out.WriteString(` expandable`)
+							attrBuf.WriteString(` expandable`)
 						} else {
-							out.WriteString(fmt.Sprintf(` %s="%s"`, key, val))
+							attrBuf.WriteString(fmt.Sprintf(` %s="%s"`, key, val))
 						}
 					}
 				}
-				out.WriteString(">")
+				attrStr := attrBuf.String()
+				stack = append(stack, openTagInfo{Tag: tag, Attributes: attrStr})
+				out.WriteString("<" + tag + attrStr + ">")
 			} else {
 				// Escape invalid tags so they appear as text
 				out.WriteString("&lt;" + token.Data + "&gt;")
@@ -79,7 +96,7 @@ func balanceAndSanitizeTelegramHTML(rawHTML string) string {
 				// Find tag in stack
 				idx := -1
 				for i := len(stack) - 1; i >= 0; i-- {
-					if stack[i] == tag {
+					if stack[i].Tag == tag {
 						idx = i
 						break
 					}
@@ -87,7 +104,7 @@ func balanceAndSanitizeTelegramHTML(rawHTML string) string {
 				if idx != -1 {
 					// Pop and close everything down to idx
 					for i := len(stack) - 1; i >= idx; i-- {
-						out.WriteString("</" + stack[i] + ">")
+						out.WriteString("</" + stack[i].Tag + ">")
 					}
 					stack = stack[:idx]
 				}
@@ -96,20 +113,19 @@ func balanceAndSanitizeTelegramHTML(rawHTML string) string {
 			}
 		case html.SelfClosingTagToken:
 			tag := strings.ToLower(token.Data)
-			if allowedTags[tag] {
-				out.WriteString("&lt;" + token.Data + "/&gt;")
-			} else {
-				out.WriteString("&lt;" + token.Data + "/&gt;")
-			}
+			out.WriteString("&lt;" + tag + "/&gt;")
 		}
 	}
 
-	// Close remaining tags
+	unclosed := make([]openTagInfo, len(stack))
+	copy(unclosed, stack)
+
+	// Close remaining tags for this chunk to keep HTML valid
 	for i := len(stack) - 1; i >= 0; i-- {
-		out.WriteString("</" + stack[i] + ">")
+		out.WriteString("</" + stack[i].Tag + ">")
 	}
 
-	return out.String()
+	return out.String(), unclosed
 }
 
 // MarkdownToTelegramHTML converts standard Markdown into Telegram-compatible HTML.
@@ -315,22 +331,22 @@ func MarkdownToTelegramHTML(text string) string {
 }
 
 // SplitHTMLChunks breaks a long HTML string into an array of smaller chunks
-// that comply with Telegram's message length limits, ensuring HTML tags are balanced.
+// that comply with Telegram's message length limits, ensuring HTML tags are balanced
+// and cross-chunk open formatting tags are preserved.
 func SplitHTMLChunks(text string, maxChunkSize int) []string {
 	if len(text) <= maxChunkSize {
 		return []string{balanceAndSanitizeTelegramHTML(text)}
 	}
 
 	paragraphs := strings.Split(text, "\n\n")
-	var chunks []string
+	var rawChunks []string
 	var currentChunk []string
 	currentLength := 0
 
 	for _, p := range paragraphs {
 		if currentLength+len(p)+2 > maxChunkSize {
 			if len(currentChunk) > 0 {
-				chunkStr := strings.Join(currentChunk, "\n\n")
-				chunks = append(chunks, balanceAndSanitizeTelegramHTML(chunkStr))
+				rawChunks = append(rawChunks, strings.Join(currentChunk, "\n\n"))
 				currentChunk = nil
 				currentLength = 0
 			}
@@ -339,7 +355,7 @@ func SplitHTMLChunks(text string, maxChunkSize int) []string {
 			runes := []rune(p)
 			for len(runes) > maxChunkSize {
 				part := string(runes[:maxChunkSize])
-				chunks = append(chunks, balanceAndSanitizeTelegramHTML(part))
+				rawChunks = append(rawChunks, part)
 				runes = runes[maxChunkSize:]
 			}
 			p = string(runes)
@@ -355,8 +371,21 @@ func SplitHTMLChunks(text string, maxChunkSize int) []string {
 	}
 
 	if len(currentChunk) > 0 {
-		chunkStr := strings.Join(currentChunk, "\n\n")
-		chunks = append(chunks, balanceAndSanitizeTelegramHTML(chunkStr))
+		rawChunks = append(rawChunks, strings.Join(currentChunk, "\n\n"))
+	}
+
+	var chunks []string
+	var openTags []openTagInfo
+	for _, raw := range rawChunks {
+		var chunkHTML string
+		chunkHTML, openTags = balanceAndSanitizeWithState(raw, openTags)
+		if strings.TrimSpace(chunkHTML) != "" {
+			chunks = append(chunks, chunkHTML)
+		}
+	}
+
+	if len(chunks) == 0 {
+		return []string{""}
 	}
 
 	return chunks

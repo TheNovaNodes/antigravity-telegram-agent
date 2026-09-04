@@ -985,3 +985,66 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 	}
 	return chunks
 }
+
+// CleanOldFiles removes files older than maxAge in the target directory.
+func CleanOldFiles(dir string, maxAge time.Duration) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	now := time.Now()
+	cleaned := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) > maxAge {
+			path := filepath.Join(dir, entry.Name())
+			if err := os.Remove(path); err == nil {
+				cleaned++
+			}
+		}
+	}
+	return cleaned
+}
+
+// CleanMediaAndExports iterates over all agent workspaces and cleans up old temporary downloads and exports.
+func CleanMediaAndExports(maxAge time.Duration) int {
+	agentsDir := getAgentsDir()
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return 0
+	}
+	total := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		downloadsDir := filepath.Join(agentsDir, entry.Name(), "scratch", "downloads")
+		total += CleanOldFiles(downloadsDir, maxAge)
+
+		exportsDir := filepath.Join(agentsDir, entry.Name(), "scratch", "exports")
+		total += CleanOldFiles(exportsDir, maxAge)
+	}
+	return total
+}
+
+// StartDiskCleanupWorker runs a background timer to periodically clean old media downloads and exports.
+func StartDiskCleanupWorker(interval, maxAge time.Duration, stopChan <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				CleanMediaAndExports(maxAge)
+			}
+		}
+	}()
+}

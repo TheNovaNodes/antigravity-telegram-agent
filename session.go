@@ -42,6 +42,7 @@ type AgySession struct {
 	ActiveMessageID int
 	TextBuffer      string
 	LastEdit        time.Time
+	LastActivity    time.Time
 	UpdateChan      chan struct{}
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -228,6 +229,7 @@ func replaceSession(db *sql.DB, botName string, user User, convID string, newMod
 		InitChan:     make(chan string, 1),
 		UpdateChan:   make(chan struct{}, 100),
 		VoiceReply:   user.VoiceReply,
+		LastActivity: time.Now(),
 	}
 
 	globalSessions[sessionKey] = session
@@ -246,6 +248,9 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	session, exists := globalSessions[sessionKey]
 	if exists && session.Model == user.Model && session.Workspace == user.Workspace && session.GetConversation() == user.SessionID {
 		if session.IsAlive() {
+			session.mu.Lock()
+			session.LastActivity = time.Now()
+			session.mu.Unlock()
 			sessionMu.Unlock()
 			return session
 		}
@@ -267,6 +272,7 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 		InitChan:     make(chan string, 1),
 		UpdateChan:   make(chan struct{}, 100),
 		VoiceReply:   user.VoiceReply,
+		LastActivity: time.Now(),
 	}
 
 	globalSessions[sessionKey] = session
@@ -275,6 +281,55 @@ func getSession(botName string, user User, chatID int64) *AgySession {
 	session.start()
 
 	return session
+}
+
+// CleanIdleSessions scans globalSessions and terminates processes idle longer than maxIdleDuration.
+func CleanIdleSessions(maxIdleDuration time.Duration) int {
+	sessionMu.Lock()
+	now := time.Now()
+	var toEvict []*AgySession
+	var toEvictKeys []string
+
+	for k, s := range globalSessions {
+		s.mu.Lock()
+		lastAct := s.LastActivity
+		if lastAct.IsZero() {
+			lastAct = s.LastEdit
+		}
+		s.mu.Unlock()
+
+		if !lastAct.IsZero() && now.Sub(lastAct) > maxIdleDuration {
+			toEvict = append(toEvict, s)
+			toEvictKeys = append(toEvictKeys, k)
+		}
+	}
+
+	for _, k := range toEvictKeys {
+		delete(globalSessions, k)
+	}
+	sessionMu.Unlock()
+
+	for _, s := range toEvict {
+		s.Kill()
+		log.Printf("[GC] Evicted idle session for bot %s (chatID %d)", s.BotName, s.ChatID)
+	}
+	return len(toEvict)
+}
+
+// StartSessionGCWorker runs a background timer to periodically evict idle sessions.
+func StartSessionGCWorker(interval, maxIdle time.Duration, stopChan <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				CleanIdleSessions(maxIdle)
+			}
+		}
+	}()
 }
 
 // start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
