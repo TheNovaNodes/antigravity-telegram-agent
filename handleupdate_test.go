@@ -18,21 +18,28 @@ import (
 )
 
 type mockServer struct {
-	server       *httptest.Server
-	mu           sync.Mutex
-	sentRequests []*http.Request
-	sentBodies   []string
+	server        *httptest.Server
+	mu            sync.Mutex
+	sentRequests  []*http.Request
+	sentBodies    []string
+	customHandler http.HandlerFunc
 }
 
 func newMockServer() *mockServer {
 	ms := &mockServer{}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ms.mu.Lock()
+		customH := ms.customHandler
 		bodyBytes, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		ms.sentRequests = append(ms.sentRequests, r)
 		ms.sentBodies = append(ms.sentBodies, string(bodyBytes))
 		ms.mu.Unlock()
+
+		if customH != nil {
+			customH(w, r)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/getMe" {

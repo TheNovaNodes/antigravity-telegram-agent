@@ -101,6 +101,9 @@ func main() {
 	}
 
 	allowedAdmins := loadAllowedAdmins()
+	if len(allowedAdmins) == 0 {
+		log.Fatal("FATAL: ALLOWED_ADMIN_IDS is required and must contain at least one valid Telegram User ID. Refusing to start in open-access mode.")
+	}
 	var wg sync.WaitGroup
 
 	for _, t := range strings.Split(tokensEnv, ",") {

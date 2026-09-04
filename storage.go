@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
@@ -172,6 +173,20 @@ func getUser(db *sql.DB, userID int64, botName string) User {
 	return u
 }
 
+// isSessionOwnedByUser checks whether a given sessionID was initiated by userID.
+func isSessionOwnedByUser(db *sql.DB, userID int64, sessionID string) bool {
+	if db == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM session_history WHERE user_id = ? AND session_id = ?", userID, sessionID).Scan(&count)
+	if err != nil {
+		log.Printf("DB Error checking session ownership for user %d, session %s: %v", userID, sessionID, err)
+		return false
+	}
+	return count > 0
+}
+
 // updateUserSession updates the active conversation session ID for a specific user.
 func updateUserSession(db *sql.DB, userID int64, sessionID string) {
 	if db == nil {
@@ -181,9 +196,11 @@ func updateUserSession(db *sql.DB, userID int64, sessionID string) {
 	if err != nil {
 		log.Printf("DB Error updating session for user %d: %v", userID, err)
 	}
-	_, err = db.Exec("INSERT OR IGNORE INTO session_history (user_id, session_id) VALUES (?, ?)", userID, sessionID)
-	if err != nil {
-		log.Printf("DB Error inserting session_history for user %d: %v", userID, err)
+	if sessionID != "" && isValidSessionID(sessionID) {
+		_, err = db.Exec("INSERT OR IGNORE INTO session_history (user_id, session_id) VALUES (?, ?)", userID, sessionID)
+		if err != nil {
+			log.Printf("DB Error inserting session_history for user %d: %v", userID, err)
+		}
 	}
 }
 

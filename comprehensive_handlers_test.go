@@ -235,7 +235,7 @@ func TestDownloadTelegramMedia_WithRealServer(t *testing.T) {
 	defer ms.Close()
 
 	// Update handler to respond to getFile
-	ms.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ms.customHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "getFile") {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"file_id":"file123","file_path":"%s"}}`, fileServer.URL+"/test.txt")))
