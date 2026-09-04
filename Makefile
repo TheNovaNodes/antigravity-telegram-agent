@@ -1,4 +1,4 @@
-.PHONY: all build test race coverage clean run
+.PHONY: all build test race coverage fmt clean run
 
 BINARY_NAME=antigravity-bot-engine
 BIN_DIR=bin
@@ -10,6 +10,10 @@ build:
 	@mkdir -p $(BIN_DIR)
 	go build -o $(BUILD_PATH) .
 	@echo "✅ Build complete: $(BUILD_PATH)"
+
+fmt:
+	gofmt -s -w .
+	@echo "🎨 Code formatted with gofmt."
 
 test:
 	go test -v ./...
