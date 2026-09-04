@@ -108,10 +108,15 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 	sessionMu.Lock()
+	sessionsToKill := make([]*AgySession, 0, len(globalSessions))
 	for _, s := range globalSessions {
-		s.Kill()
+		sessionsToKill = append(sessionsToKill, s)
 	}
 	sessionMu.Unlock()
+
+	for _, s := range sessionsToKill {
+		s.Kill()
+	}
 
 	// Give children time to flush
 	time.Sleep(2 * time.Second)
