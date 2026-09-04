@@ -330,9 +330,92 @@ func MarkdownToTelegramHTML(text string) string {
 	return balanceAndSanitizeTelegramHTML(text)
 }
 
+// splitOversizedParagraph breaks a single oversized paragraph into chunks smaller than maxChunkSize,
+// prioritizing newlines, spaces, and ensuring it never cuts in the middle of an HTML tag or entity.
+func splitOversizedParagraph(p string, maxChunkSize int) []string {
+	runes := []rune(p)
+	if len(runes) <= maxChunkSize {
+		return []string{p}
+	}
+
+	var parts []string
+	for len(runes) > maxChunkSize {
+		cut := maxChunkSize
+
+		// Check if cutting inside an HTML tag <...>
+		inTag := false
+		tagStart := -1
+		for i := cut - 1; i >= 0; i-- {
+			if runes[i] == '>' {
+				break
+			}
+			if runes[i] == '<' {
+				inTag = true
+				tagStart = i
+				break
+			}
+		}
+
+		// Also check if cutting inside an HTML entity &...;
+		inEntity := false
+		entityStart := -1
+		if !inTag {
+			for i := cut - 1; i >= 0 && (cut-i) < 12; i-- {
+				if runes[i] == ';' || runes[i] == ' ' || runes[i] == '\n' {
+					break
+				}
+				if runes[i] == '&' {
+					inEntity = true
+					entityStart = i
+					break
+				}
+			}
+		}
+
+		if inTag && tagStart > 0 {
+			cut = tagStart
+		} else if inEntity && entityStart > 0 {
+			cut = entityStart
+		} else if !inTag && !inEntity {
+			// Try to find the nearest newline or space in the last 20% of the chunk to avoid word-severing
+			minCut := cut * 4 / 5
+			for i := cut - 1; i >= minCut; i-- {
+				if runes[i] == '\n' || runes[i] == ' ' {
+					cut = i + 1
+					break
+				}
+			}
+		}
+
+		if cut <= 0 {
+			// Fallback: find closing '>' if tag started at 0
+			closingTag := -1
+			for i := 0; i < len(runes); i++ {
+				if runes[i] == '>' {
+					closingTag = i + 1
+					break
+				}
+			}
+			if closingTag > 0 && closingTag <= len(runes) {
+				cut = closingTag
+			} else {
+				cut = maxChunkSize
+			}
+		}
+
+		parts = append(parts, string(runes[:cut]))
+		runes = runes[cut:]
+	}
+
+	if len(runes) > 0 {
+		parts = append(parts, string(runes))
+	}
+	return parts
+}
+
 // SplitHTMLChunks breaks a long HTML string into an array of smaller chunks
 // that comply with Telegram's message length limits, ensuring HTML tags are balanced
-// and cross-chunk open formatting tags are preserved.
+// and cross-chunk open formatting tags are preserved without breaking mid-tag or mid-entity.
 func SplitHTMLChunks(text string, maxChunkSize int) []string {
 	if len(text) <= maxChunkSize {
 		return []string{balanceAndSanitizeTelegramHTML(text)}
@@ -351,18 +434,17 @@ func SplitHTMLChunks(text string, maxChunkSize int) []string {
 				currentLength = 0
 			}
 
-			// If a single paragraph is too large, split it aggressively by runes to preserve UTF-8
-			runes := []rune(p)
-			for len(runes) > maxChunkSize {
-				part := string(runes[:maxChunkSize])
-				rawChunks = append(rawChunks, part)
-				runes = runes[maxChunkSize:]
-			}
-			p = string(runes)
-
-			if len(p) > 0 {
-				currentChunk = append(currentChunk, p)
-				currentLength = len(p)
+			// If a single paragraph is too large, split it safely respecting HTML tags & entities
+			parts := splitOversizedParagraph(p, maxChunkSize)
+			for i, part := range parts {
+				if i < len(parts)-1 {
+					rawChunks = append(rawChunks, part)
+				} else {
+					if len(part) > 0 {
+						currentChunk = append(currentChunk, part)
+						currentLength = len(part)
+					}
+				}
 			}
 		} else {
 			currentChunk = append(currentChunk, p)

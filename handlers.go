@@ -623,8 +623,13 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 
 	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 
-	if optText, ok := getQuestionOption(data); ok {
-		handleMessagePayload(bot, chatID, userID, optText, botName, user, false, false, db)
+	if strings.HasPrefix(data, "ans_id:") || strings.HasPrefix(data, "ans:") {
+		if optText, ok := getQuestionOption(data); ok {
+			handleMessagePayload(bot, chatID, userID, optText, botName, user, false, false, db)
+		} else {
+			msg := tgbotapi.NewMessage(chatID, "⚠️ Этот вариант ответа устарел или бот был перезагружен. Пожалуйста, отправьте ваш ответ текстом.")
+			bot.Send(msg)
+		}
 		return
 	}
 
@@ -836,8 +841,9 @@ type chatUpdateTask struct {
 }
 
 var (
-	chatQueuesMu sync.Mutex
-	chatQueues   = make(map[int64]chan chatUpdateTask)
+	chatQueuesMu        sync.Mutex
+	chatQueues          = make(map[int64]chan chatUpdateTask)
+	chatQueueIdleTimeout = 5 * time.Minute
 )
 
 // dispatchUpdate routes an incoming update into a per-chat sequential FIFO queue to prevent race conditions.
@@ -860,16 +866,31 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 		ch = make(chan chatUpdateTask, 100)
 		chatQueues[chatID] = ch
 		go func(cID int64, taskChan chan chatUpdateTask) {
-			for task := range taskChan {
-				handleUpdate(task.bot, task.update, task.db)
+			for {
+				select {
+				case task, ok := <-taskChan:
+					if !ok {
+						return
+					}
+					handleUpdate(task.bot, task.update, task.db)
+				case <-time.After(chatQueueIdleTimeout):
+					chatQueuesMu.Lock()
+					if len(taskChan) == 0 {
+						delete(chatQueues, cID)
+						chatQueuesMu.Unlock()
+						return
+					}
+					chatQueuesMu.Unlock()
+				}
 			}
 		}(chatID, ch)
 	}
-	chatQueuesMu.Unlock()
 
 	select {
 	case ch <- chatUpdateTask{bot: bot, update: update, db: db}:
+		chatQueuesMu.Unlock()
 	default:
+		chatQueuesMu.Unlock()
 		// Fallback for extreme backlog: run in separate goroutine to avoid dropping updates
 		go handleUpdate(bot, update, db)
 	}
