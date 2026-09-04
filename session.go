@@ -484,6 +484,7 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 }
 
 // getFallbackModel provides an automatic failover model when rate limits or quota exhaustion are encountered.
+// It returns an empty string when the fallback chain is exhausted, preventing infinite switching loops.
 func getFallbackModel(currentModel string) string {
 	switch currentModel {
 	case "gemini-3.8-flash-high":
@@ -493,7 +494,7 @@ func getFallbackModel(currentModel string) string {
 	case "gemini-3.1-pro-high":
 		return "gemini-3.6-flash-low"
 	case "gemini-3.6-flash-low":
-		return "gemini-3.7-flash-high"
+		return "" // Chain exhausted, terminal state
 	default:
 		return "gemini-3.7-flash-high"
 	}
@@ -665,7 +666,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					displayErr := "❌ Error from agent: " + errMsg
 					if isRateLimit {
 						fallback := getFallbackModel(s.Model)
-						if fallback != s.Model {
+						if fallback != "" && fallback != s.Model {
 							oldModel := s.Model
 							s.mu.Lock()
 							s.Model = fallback
@@ -679,7 +680,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 							displayErr = fmt.Sprintf("⚠️ Достигнут лимит для `%s` (Quota/429).\n🔄 *Авто-переключение на `%s`*.\n✨ Контекст сохранён! Отправьте сообщение повторно.", oldModel, fallback)
 						} else {
-							displayErr = "⚠️ Превышен лимит запросов к модели (Rate limit / 429). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
+							displayErr = "⚠️ Превышен лимит запросов ко всем доступным моделям (Rate limit / Quota Exhausted). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
 						}
 					}
 

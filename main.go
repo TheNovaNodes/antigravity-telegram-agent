@@ -13,6 +13,11 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+var (
+	activeBotsMu sync.Mutex
+	activeBots   []*tgbotapi.BotAPI
+)
+
 // startBotPolling initializes a Telegram Bot instance and starts its dedicated long-polling loop.
 func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -27,6 +32,10 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 		return
 	}
 	bot.Client = &http.Client{Timeout: 65 * time.Second}
+
+	activeBotsMu.Lock()
+	activeBots = append(activeBots, bot)
+	activeBotsMu.Unlock()
 
 	registerBotCommands(bot)
 	db := initDB(bot.Self.UserName)
@@ -50,7 +59,7 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 			continue
 		}
 
-		go handleUpdate(bot, update, db)
+		dispatchUpdate(bot, update, db)
 	}
 }
 
@@ -107,6 +116,15 @@ func main() {
 	<-sigs
 
 	log.Println("Shutting down gracefully...")
+
+	// 1. Stop Telegram polling on all active bots
+	activeBotsMu.Lock()
+	for _, b := range activeBots {
+		b.StopReceivingUpdates()
+	}
+	activeBotsMu.Unlock()
+
+	// 2. Kill and clean up all active agent processes
 	sessionMu.Lock()
 	sessionsToKill := make([]*AgySession, 0, len(globalSessions))
 	for _, s := range globalSessions {
@@ -118,7 +136,19 @@ func main() {
 		s.Kill()
 	}
 
-	// Give children time to flush
-	time.Sleep(2 * time.Second)
+	// 3. Await clean exit of all bot polling loops
+	doneChan := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneChan)
+	}()
+
+	select {
+	case <-doneChan:
+		log.Println("All bot polling loops terminated cleanly.")
+	case <-time.After(3 * time.Second):
+		log.Println("Shutdown timed out waiting for polling loops, proceeding with exit.")
+	}
+
 	log.Println("Goodbye.")
 }

@@ -774,14 +774,20 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 		session.mu.Lock()
 	}
 
-	if !downloadedFile {
-		activeMsgID := session.ActiveMessageID
+	activeMsgID := session.ActiveMessageID
+	voiceReply := session.VoiceReply
+	session.mu.Unlock()
+
+	if !downloadedFile && bot != nil {
 		if activeMsgID == 0 {
 			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
 			msg.ParseMode = "Markdown"
-			sentMsg, err := bot.Send(msg)
-			if err == nil {
-				session.ActiveMessageID = sentMsg.MessageID
+			if sentMsg, err := bot.Send(msg); err == nil {
+				session.mu.Lock()
+				if session.ActiveMessageID == 0 {
+					session.ActiveMessageID = sentMsg.MessageID
+				}
+				session.mu.Unlock()
 			}
 		} else {
 			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
@@ -790,7 +796,7 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 		}
 
 		action := tgbotapi.ChatTyping
-		if session.VoiceReply {
+		if voiceReply {
 			action = tgbotapi.ChatRecordVoice
 		}
 		bot.Send(tgbotapi.NewChatAction(chatID, action))
@@ -805,6 +811,7 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 	payloadBytes, _ := json.Marshal(payload)
 	payloadBytes = append(payloadBytes, '\n')
 
+	session.mu.Lock()
 	var err error
 	if session.Stdin != nil {
 		_, err = session.Stdin.Write(payloadBytes)
@@ -815,8 +822,56 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 
 	if err != nil {
 		session.Restart()
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process was not ready. Send your message again."))
+		if bot != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process was not ready. Send your message again."))
+		}
 		return
+	}
+}
+
+type chatUpdateTask struct {
+	bot    *tgbotapi.BotAPI
+	update tgbotapi.Update
+	db     *sql.DB
+}
+
+var (
+	chatQueuesMu sync.Mutex
+	chatQueues   = make(map[int64]chan chatUpdateTask)
+)
+
+// dispatchUpdate routes an incoming update into a per-chat sequential FIFO queue to prevent race conditions.
+func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
+	var chatID int64
+	if update.Message != nil && update.Message.Chat != nil {
+		chatID = update.Message.Chat.ID
+	} else if update.CallbackQuery != nil && update.CallbackQuery.Message != nil && update.CallbackQuery.Message.Chat != nil {
+		chatID = update.CallbackQuery.Message.Chat.ID
+	}
+
+	if chatID == 0 {
+		go handleUpdate(bot, update, db)
+		return
+	}
+
+	chatQueuesMu.Lock()
+	ch, exists := chatQueues[chatID]
+	if !exists {
+		ch = make(chan chatUpdateTask, 100)
+		chatQueues[chatID] = ch
+		go func(cID int64, taskChan chan chatUpdateTask) {
+			for task := range taskChan {
+				handleUpdate(task.bot, task.update, task.db)
+			}
+		}(chatID, ch)
+	}
+	chatQueuesMu.Unlock()
+
+	select {
+	case ch <- chatUpdateTask{bot: bot, update: update, db: db}:
+	default:
+		// Fallback for extreme backlog: run in separate goroutine to avoid dropping updates
+		go handleUpdate(bot, update, db)
 	}
 }
 
