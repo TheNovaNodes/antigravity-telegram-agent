@@ -841,8 +841,8 @@ type chatUpdateTask struct {
 }
 
 var (
-	chatQueuesMu        sync.Mutex
-	chatQueues          = make(map[int64]chan chatUpdateTask)
+	chatQueuesMu         sync.Mutex
+	chatQueues           = make(map[int64]chan chatUpdateTask)
 	chatQueueIdleTimeout = 5 * time.Minute
 )
 
