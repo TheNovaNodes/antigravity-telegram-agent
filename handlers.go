@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -698,12 +699,26 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 
 	if strings.HasPrefix(data, "resume:") {
 		convID := strings.TrimPrefix(data, "resume:")
+		if !isValidSessionID(convID) {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid session identifier format."))
+			return
+		}
+
+		// BOLA Protection: Verify that the conversation belongs to the requesting user
+		if user.SessionID != convID && !isSessionOwnedByUser(db, userID, convID) {
+			log.Printf("[Bot %s] 🛑 BOLA VIOLATION: User %d attempted to resume unauthorized session %s", botName, userID, convID)
+			bot.Send(tgbotapi.NewMessage(chatID, "⛔ Access Denied: You do not have permission to access this conversation session."))
+			return
+		}
+
 		updateUserSession(db, userID, convID)
 		session := replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
 
 		select {
 		case newID := <-session.InitChan:
+			session.mu.Lock()
 			session.Conversation = newID
+			session.mu.Unlock()
 			convID = newID
 		case <-time.After(3 * time.Second):
 		}
@@ -769,10 +784,23 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 	if fileID == "" {
 		return text, false, nil
 	}
-	fileURL, err := bot.GetFileDirectURL(fileID)
+	file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
 		return "", false, err
+	}
+
+	var fileURL string
+	if strings.HasPrefix(file.FilePath, "http://") || strings.HasPrefix(file.FilePath, "https://") {
+		fileURL = file.FilePath
+	} else {
+		fileURL = file.Link(bot.Token)
+	}
+
+	parsedURL, err := url.Parse(fileURL)
+	if err != nil || (parsedURL.Scheme != "https" && parsedURL.Scheme != "http") || parsedURL.Host == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid file download URL."))
+		return "", false, fmt.Errorf("invalid file URL: %s", fileURL)
 	}
 	downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
 	os.MkdirAll(downloadDir, 0755)
@@ -787,6 +815,11 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 		return "", false, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file from server."))
+		return "", false, fmt.Errorf("file download failed with HTTP status %d", resp.StatusCode)
+	}
 
 	out, err := os.Create(safePath)
 	if err != nil {
