@@ -116,7 +116,14 @@ func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB)
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
 		return
 	}
-	defer dbRows.Close()
+	var validSessionIDs []string
+	for dbRows.Next() {
+		var sid string
+		if err := dbRows.Scan(&sid); err == nil {
+			validSessionIDs = append(validSessionIDs, sid)
+		}
+	}
+	dbRows.Close()
 
 	type convInfo struct {
 		ID      string
@@ -124,14 +131,6 @@ func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB)
 		Title   string
 	}
 	var convs []convInfo
-	var validSessionIDs []string
-
-	for dbRows.Next() {
-		var sid string
-		if err := dbRows.Scan(&sid); err == nil {
-			validSessionIDs = append(validSessionIDs, sid)
-		}
-	}
 
 	for _, sid := range validSessionIDs {
 		transcript := filepath.Join(brainDir, sid, ".system_generated", "logs", "transcript.jsonl")

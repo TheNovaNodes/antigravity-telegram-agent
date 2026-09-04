@@ -50,10 +50,20 @@ func initDB(botName string) *sql.DB {
 		log.Fatalf("Failed to open db %s: %v", dbPath, err)
 	}
 
+	// SQLite Concurrency Hardening: Single connection to prevent database lock contention
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	// Performance & Concurrency Hardening: Enable WAL mode and 5s busy timeout
-	db.Exec("PRAGMA journal_mode=WAL;")
-	db.Exec("PRAGMA busy_timeout=5000;")
-	db.Exec("PRAGMA synchronous=NORMAL;")
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		log.Printf("⚠️ Warning: Failed to set PRAGMA journal_mode=WAL for %s: %v", botName, err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+		log.Printf("⚠️ Warning: Failed to set PRAGMA busy_timeout for %s: %v", botName, err)
+	}
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL;"); err != nil {
+		log.Printf("⚠️ Warning: Failed to set PRAGMA synchronous=NORMAL for %s: %v", botName, err)
+	}
 
 	_, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
@@ -67,8 +77,32 @@ func initDB(botName string) *sql.DB {
 		log.Fatal(err)
 	}
 
-	// Dynamic migration for existing users table
-	db.Exec("ALTER TABLE users ADD COLUMN voice_reply BOOLEAN DEFAULT 0")
+	// Dynamic migration for existing users table: check if voice_reply column exists
+	var hasVoiceReply bool
+	rows, err := db.Query("PRAGMA table_info(users)")
+	if err == nil {
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notnull, pk int
+			var dfltValue interface{}
+			if err := rows.Scan(&cid, &name, &colType, &notnull, &dfltValue, &pk); err == nil {
+				if name == "voice_reply" {
+					hasVoiceReply = true
+					break
+				}
+			}
+		}
+		rows.Close()
+	} else {
+		log.Printf("⚠️ Warning: Failed to inspect table_info(users): %v", err)
+	}
+
+	if !hasVoiceReply {
+		if _, err := db.Exec("ALTER TABLE users ADD COLUMN voice_reply BOOLEAN DEFAULT 0"); err != nil {
+			log.Printf("⚠️ Warning: Failed to add column voice_reply: %v", err)
+		}
+	}
 
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS session_history (
 		user_id INTEGER,
