@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,17 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
 )
+
+var validSessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+
+// isValidSessionID checks if a session ID is a safe identifier without path traversal characters.
+func isValidSessionID(sid string) bool {
+	sid = strings.TrimSpace(sid)
+	if sid == "" || len(sid) > 128 {
+		return false
+	}
+	return validSessionIDRegex.MatchString(sid)
+}
 
 // safePrefix returns up to maxRunes characters from a string without slicing out of bounds.
 func safePrefix(s string, maxRunes int) string {
@@ -93,41 +105,43 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user
 	uptimeStr := "0 m"
 
 	brainDir := getBrainDir()
-	sessionDir := filepath.Join(brainDir, user.SessionID)
+	if isValidSessionID(user.SessionID) {
+		sessionDir := filepath.Join(brainDir, user.SessionID)
 
-	titleFile := filepath.Join(sessionDir, ".title")
-	if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
-		sessionTitle = string(bytes.TrimSpace(b))
-	}
+		titleFile := filepath.Join(sessionDir, ".title")
+		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			sessionTitle = string(bytes.TrimSpace(b))
+		}
 
-	transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
-	if f, err := os.Open(transcriptFile); err == nil {
-		scanner := bufio.NewScanner(f)
-		var firstStepTime time.Time
-		for scanner.Scan() {
-			stepsCount++
-			if stepsCount == 1 {
-				var step map[string]interface{}
-				if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
-					if createdRaw, ok := step["created_at"].(string); ok {
-						if t, err := time.Parse(time.RFC3339, createdRaw); err == nil {
-							firstStepTime = t
+		transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
+		if f, err := os.Open(transcriptFile); err == nil {
+			scanner := bufio.NewScanner(f)
+			var firstStepTime time.Time
+			for scanner.Scan() {
+				stepsCount++
+				if stepsCount == 1 {
+					var step map[string]interface{}
+					if json.Unmarshal([]byte(scanner.Text()), &step) == nil {
+						if createdRaw, ok := step["created_at"].(string); ok {
+							if t, err := time.Parse(time.RFC3339, createdRaw); err == nil {
+								firstStepTime = t
+							}
 						}
 					}
 				}
 			}
-		}
-		f.Close()
-		if !firstStepTime.IsZero() {
-			dur := time.Since(firstStepTime)
-			if dur.Hours() >= 1 {
-				uptimeStr = fmt.Sprintf("%d h %d m", int(dur.Hours()), int(dur.Minutes())%60)
-			} else {
-				uptimeStr = fmt.Sprintf("%d m", int(dur.Minutes()))
+			f.Close()
+			if !firstStepTime.IsZero() {
+				dur := time.Since(firstStepTime)
+				if dur.Hours() >= 1 {
+					uptimeStr = fmt.Sprintf("%d h %d m", int(dur.Hours()), int(dur.Minutes())%60)
+				} else {
+					uptimeStr = fmt.Sprintf("%d m", int(dur.Minutes()))
+				}
 			}
-		}
-		if sessionTitle == "(empty)" && stepsCount > 0 {
-			sessionTitle = "Session active"
+			if sessionTitle == "(empty)" && stepsCount > 0 {
+				sessionTitle = "Session active"
+			}
 		}
 	}
 
@@ -350,7 +364,7 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 
 // handleExportCommand extracts the conversation steps from transcript.jsonl and sends a formatted Markdown file to the chat.
 func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User) {
-	if strings.TrimSpace(user.SessionID) == "" {
+	if !isValidSessionID(user.SessionID) {
 		bot.Send(tgbotapi.NewMessage(chatID, "📭 No active conversation session found to export."))
 		return
 	}
@@ -526,9 +540,15 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 	if evalErr != nil {
 		realPath = cleanPath
 	}
-	allowedRoot, _ := filepath.Abs(getAgentsDir())
-	if !strings.HasPrefix(realPath, allowedRoot) {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Path must be under "+allowedRoot))
+
+	projectsDir := getProjectsDir()
+	agentsDir := getAgentsDir()
+	botOffice := filepath.Join(agentsDir, botName)
+
+	// Allowed workspaces: anywhere under PROJECTS_DIR or within the bot's own office (Fail-Closed)
+	isAllowed := isPathUnderRoot(realPath, projectsDir) || isPathUnderRoot(realPath, botOffice)
+	if !isAllowed {
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Path must be under %s or %s", projectsDir, botOffice)))
 		return
 	}
 	newWS = realPath
@@ -541,9 +561,8 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 		}
 	}
 
-	newUUID := uuid.New().String()
-	updateUserSession(db, userID, newUUID)
-	replaceSession(db, botName, user, newUUID, user.Model, newWS, chatID)
+	updateUserSession(db, userID, "")
+	replaceSession(db, botName, user, "", user.Model, newWS, chatID)
 
 	msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
 	msg.ParseMode = "Markdown"
@@ -560,10 +579,19 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 		return
 	}
 	newName := strings.TrimSpace(parts[1])
+	newName = strings.ReplaceAll(newName, "\n", " ")
+	newName = strings.ReplaceAll(newName, "\r", "")
+	if r := []rune(newName); len(r) > 60 {
+		newName = string(r[:60])
+	}
+	if newName == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Name cannot be empty."))
+		return
+	}
 
 	session := getSession(botName, user, chatID)
 	conv := session.GetConversation()
-	if conv != "" {
+	if conv != "" && isValidSessionID(conv) {
 		sessionDir := filepath.Join(getBrainDir(), conv)
 		os.MkdirAll(sessionDir, 0755)
 		titleFile := filepath.Join(sessionDir, ".title")
@@ -706,10 +734,9 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		handleModelCommand(bot, chatID)
 		return
 	} else if data == "cmd:clear" {
-		newUUID := uuid.New().String()
-		replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
-		updateUserSession(db, userID, newUUID)
-		respText = "🧼 Context cleared!\n`" + newUUID + "`"
+		replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
+		updateUserSession(db, userID, "")
+		respText = "🧼 Context cleared! Starting fresh session."
 	} else if data == "cmd:usage" {
 		handleUsageCommand(bot, chatID)
 		return

@@ -112,6 +112,26 @@ func getProjectsDir() string {
 	return filepath.Join(home, "projects")
 }
 
+// isPathUnderRoot checks whether a given path is located strictly within the root directory (Fail-Closed).
+func isPathUnderRoot(path, root string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(root) == "" {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil || absPath == "" {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil || absRoot == "" {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+}
+
 // getAgyPath resolves the absolute path to the Antigravity CLI binary.
 func getAgyPath() string {
 	if env := os.Getenv("AGY_BINARY"); env != "" {
@@ -512,15 +532,15 @@ func (s *AgySession) Restart() {
 }
 
 // ExtractAllowedArtifacts parses the agent's markdown text for local file links (file://),
-// normalizes the paths, checks them against the LFI whitelists, and verifies files exist.
+// normalizes the paths, evaluates symlinks, checks them against the LFI whitelists (Fail-Closed), and verifies files exist.
 func ExtractAllowedArtifacts(text string) []string {
 	var validPaths []string
 	re := regexp.MustCompile(`\(file://(.*?)\)`)
 	matches := re.FindAllStringSubmatch(text, -1)
 
-	allowedRootAgents, _ := filepath.Abs(getAgentsDir())
-	allowedRootBrain, _ := filepath.Abs(getBrainDir())
-	allowedRootProjects, _ := filepath.Abs(getProjectsDir())
+	agentsDir := getAgentsDir()
+	brainDir := getBrainDir()
+	projectsDir := getProjectsDir()
 
 	for _, match := range matches {
 		if len(match) > 1 {
@@ -538,9 +558,12 @@ func ExtractAllowedArtifacts(text string) []string {
 				continue
 			}
 
-			if !strings.HasPrefix(realPath, allowedRootAgents) &&
-				!strings.HasPrefix(realPath, allowedRootBrain) &&
-				!strings.HasPrefix(realPath, allowedRootProjects) {
+			// Fail-Closed: Verify that realPath is strictly contained inside allowed roots
+			isAllowed := isPathUnderRoot(realPath, agentsDir) ||
+				isPathUnderRoot(realPath, brainDir) ||
+				isPathUnderRoot(realPath, projectsDir)
+
+			if !isAllowed {
 				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
 				continue
 			}
@@ -553,12 +576,13 @@ func ExtractAllowedArtifacts(text string) []string {
 	return validPaths
 }
 
-// sendArtifacts parses the agent's response and sends valid files as Telegram documents.
+// sendArtifacts parses the agent's response and sends verified files as Telegram documents.
 func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	paths := ExtractAllowedArtifacts(text)
-	for _, cleanPath := range paths {
-		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(cleanPath))
-		doc.Caption = "📦 Artifact: " + filepath.Base(cleanPath)
+	for _, realPath := range paths {
+		// Use realPath directly to eliminate symlink TOCTOU races
+		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(realPath))
+		doc.Caption = "📦 Artifact: " + filepath.Base(realPath)
 		if bot != nil {
 			bot.Send(doc)
 		}
