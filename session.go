@@ -576,16 +576,29 @@ func ExtractAllowedArtifacts(text string) []string {
 	return validPaths
 }
 
-// sendArtifacts parses the agent's response and sends verified files as Telegram documents.
+// sendArtifacts parses the agent's response, opens verified files to prevent TOCTOU, and sends them as Telegram documents.
 func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	paths := ExtractAllowedArtifacts(text)
 	for _, realPath := range paths {
-		// Use realPath directly to eliminate symlink TOCTOU races
-		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(realPath))
+		f, err := os.Open(realPath)
+		if err != nil {
+			continue
+		}
+		info, err := f.Stat()
+		if err != nil || info.IsDir() {
+			f.Close()
+			continue
+		}
+
+		doc := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
+			Name:   filepath.Base(realPath),
+			Reader: f,
+		})
 		doc.Caption = "📦 Artifact: " + filepath.Base(realPath)
 		if bot != nil {
 			bot.Send(doc)
 		}
+		f.Close()
 	}
 }
 
@@ -691,7 +704,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				db := s.DB
 				s.mu.Unlock()
 				if diff && db != nil && uID != 0 {
-					db.Exec("UPDATE users SET session_id = ? WHERE user_id = ?", newID, uID)
+					updateUserSession(db, uID, newID)
 				}
 			}
 		} else if event == "step_update" {

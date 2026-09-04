@@ -70,15 +70,15 @@ func initDB(botName string) *sql.DB {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	// Performance & Concurrency Hardening: Enable WAL mode and 5s busy timeout
+	// Performance & Concurrency Hardening: Enable WAL mode and 5s busy timeout (Fail-Fast)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		log.Printf("⚠️ Warning: Failed to set PRAGMA journal_mode=WAL for %s: %v", botName, err)
+		log.Fatalf("FATAL: Failed to set PRAGMA journal_mode=WAL for %s: %v", botName, err)
 	}
 	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
-		log.Printf("⚠️ Warning: Failed to set PRAGMA busy_timeout for %s: %v", botName, err)
+		log.Fatalf("FATAL: Failed to set PRAGMA busy_timeout for %s: %v", botName, err)
 	}
 	if _, err := db.Exec("PRAGMA synchronous=NORMAL;"); err != nil {
-		log.Printf("⚠️ Warning: Failed to set PRAGMA synchronous=NORMAL for %s: %v", botName, err)
+		log.Fatalf("FATAL: Failed to set PRAGMA synchronous=NORMAL for %s: %v", botName, err)
 	}
 
 	_, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS users (
