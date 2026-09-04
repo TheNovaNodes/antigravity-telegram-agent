@@ -62,7 +62,39 @@ func TestInitDB_HardeningAndMigration(t *testing.T) {
 	db2.Close()
 
 	dbFile := filepath.Join(tempDir, "sessions_"+botName+".db")
-	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
+	if info, err := os.Stat(dbFile); os.IsNotExist(err) {
 		t.Fatalf("Database file was not created at expected path: %s", dbFile)
+	} else if err == nil {
+		if mode := info.Mode().Perm(); mode != 0600 {
+			t.Errorf("Expected db file permissions to be 0600, got %o", mode)
+		}
+	}
+}
+
+func TestInitDB_Enforces0600PermissionsOnExistingFile(t *testing.T) {
+	tempDir := t.TempDir()
+	os.Setenv("DATA_DIR", tempDir)
+	defer os.Unsetenv("DATA_DIR")
+
+	botName := "PermTestBot"
+	dbFile := filepath.Join(tempDir, "sessions_"+botName+".db")
+
+	// Pre-create database file with permissive 0644 mode
+	if err := os.WriteFile(dbFile, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to pre-create db file: %v", err)
+	}
+
+	db := initDB(botName)
+	if db == nil {
+		t.Fatal("Expected db instance, got nil")
+	}
+	db.Close()
+
+	info, err := os.Stat(dbFile)
+	if err != nil {
+		t.Fatalf("Failed to stat db file: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0600 {
+		t.Errorf("Expected db file permissions to be 0600, got %o", mode)
 	}
 }

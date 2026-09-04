@@ -673,3 +673,33 @@ func TestHandleCallbackQuery_Model_DBError(t *testing.T) {
 	// Should not panic, but gracefully return DB error to chat
 	handleCallbackQuery(bot, cb, user, "TestMockBot", db)
 }
+
+func TestSendChunk_EmptyAndWhitespaceSafe(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	testCases := []struct {
+		name string
+		text string
+	}{
+		{"Empty string", ""},
+		{"Whitespace only", "   \n\t  "},
+		{"Lone code fence", "```\n```"},
+		{"Empty think block", "<think></think>"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks := sendChunk(bot, 12345, 10, tc.text)
+			if len(chunks) == 0 {
+				t.Fatalf("Expected at least 1 chunk, got 0")
+			}
+			for i, chunk := range chunks {
+				if strings.TrimSpace(chunk) == "" {
+					t.Errorf("Chunk %d is empty or whitespace for input %q", i, tc.text)
+				}
+			}
+		})
+	}
+}

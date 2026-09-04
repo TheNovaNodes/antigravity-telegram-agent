@@ -61,6 +61,9 @@ func initDB(botName string) *sql.DB {
 	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
 		f.Close()
 	}
+	if err := os.Chmod(dbPath, 0600); err != nil {
+		log.Printf("⚠️ Warning: Failed to enforce 0600 permissions on db %s: %v", dbPath, err)
+	}
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open db %s: %v", dbPath, err)

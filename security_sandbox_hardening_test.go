@@ -65,12 +65,31 @@ func TestIsValidSessionID(t *testing.T) {
 }
 
 func TestEnsureEnvPermissions(t *testing.T) {
-	// Check .env in current dir
+	tempDir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current wd: %v", err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Failed to chdir to temp dir: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(origWd)
+	}()
+
+	envFile := filepath.Join(tempDir, ".env")
+	if err := os.WriteFile(envFile, []byte("TEST=1\n"), 0644); err != nil {
+		t.Fatalf("Failed to create test .env: %v", err)
+	}
+
 	ensureEnvPermissions()
-	if info, err := os.Stat(".env"); err == nil {
-		if mode := info.Mode().Perm(); mode != 0600 {
-			t.Errorf("Expected .env permissions to be 0600, got %o", mode)
-		}
+
+	info, err := os.Stat(envFile)
+	if err != nil {
+		t.Fatalf("Failed to stat .env: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0600 {
+		t.Errorf("Expected .env permissions to be 0600, got %o", mode)
 	}
 }
 
