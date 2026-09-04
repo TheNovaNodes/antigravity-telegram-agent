@@ -100,6 +100,18 @@ func getBrainDir() string {
 	return filepath.Join(home, ".gemini/antigravity-cli/brain")
 }
 
+// getProjectsDir resolves the directory for project workspaces.
+func getProjectsDir() string {
+	if env := os.Getenv("PROJECTS_DIR"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	return filepath.Join(home, "projects")
+}
+
 // getAgyPath resolves the absolute path to the Antigravity CLI binary.
 func getAgyPath() string {
 	if env := os.Getenv("AGY_BINARY"); env != "" {
@@ -466,8 +478,11 @@ func (s *AgySession) start() {
 
 	go s.readStdoutLoop(scanner, ctx)
 	go func(c *exec.Cmd) {
-		c.Wait()
+		err := c.Wait()
 		s.mu.Lock()
+		activeMsgID := s.ActiveMessageID
+		botAPI := s.BotAPI
+		chatID := s.ChatID
 		if s.Cmd == c || s.Cmd == nil {
 			s.isAlive = false
 			s.Cmd = nil
@@ -478,6 +493,15 @@ func (s *AgySession) start() {
 			s.TextBuffer = ""
 		}
 		s.mu.Unlock()
+
+		// If the process exited unexpectedly while a message was active, clean up the Telegram UI spinner
+		if activeMsgID != 0 && botAPI != nil {
+			statusMsg := "⚠️ *Сессия агента была остановлена или перезапущена.* Пожалуйста, отправьте сообщение повторно."
+			if err != nil {
+				log.Printf("[Process exited for bot %s] %v", s.BotName, err)
+			}
+			sendChunk(botAPI, chatID, activeMsgID, statusMsg)
+		}
 	}(cmd)
 }
 
@@ -496,6 +520,7 @@ func ExtractAllowedArtifacts(text string) []string {
 
 	allowedRootAgents, _ := filepath.Abs(getAgentsDir())
 	allowedRootBrain, _ := filepath.Abs(getBrainDir())
+	allowedRootProjects, _ := filepath.Abs(getProjectsDir())
 
 	for _, match := range matches {
 		if len(match) > 1 {
@@ -513,12 +538,14 @@ func ExtractAllowedArtifacts(text string) []string {
 				continue
 			}
 
-			if !strings.HasPrefix(realPath, allowedRootAgents) && !strings.HasPrefix(realPath, allowedRootBrain) {
+			if !strings.HasPrefix(realPath, allowedRootAgents) &&
+				!strings.HasPrefix(realPath, allowedRootBrain) &&
+				!strings.HasPrefix(realPath, allowedRootProjects) {
 				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
 				continue
 			}
 
-			if _, err := os.Stat(realPath); err == nil {
+			if info, err := os.Stat(realPath); err == nil && !info.IsDir() {
 				validPaths = append(validPaths, realPath)
 			}
 		}

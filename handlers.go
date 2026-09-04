@@ -476,8 +476,8 @@ func handleTTSCommand(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
-// handleVoiceToggleCommand enables or disables persistent voice replies for the user.
-func handleVoiceToggleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text string, user User, db *sql.DB) {
+// handleVoiceToggleCommand enables or disables persistent voice replies for the user and syncs active sessions.
+func handleVoiceToggleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, db *sql.DB) {
 	arg := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(text, "/voice")))
 	newState := !user.VoiceReply
 	if arg == "on" || arg == "1" || arg == "true" {
@@ -487,6 +487,17 @@ func handleVoiceToggleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text s
 	}
 
 	updateUserVoiceReply(db, userID, newState)
+
+	// Sync active in-memory session if present
+	sessionMu.Lock()
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
+	if s, exists := globalSessions[sessionKey]; exists {
+		s.mu.Lock()
+		s.VoiceReply = newState
+		s.mu.Unlock()
+	}
+	sessionMu.Unlock()
+
 	statusStr := "❌ Disabled"
 	if newState {
 		statusStr = "✅ Enabled (Bot will reply with voice messages)"
@@ -608,7 +619,7 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 		handleTTSCommand(bot, chatID, text)
 		return true
 	case "/voice":
-		handleVoiceToggleCommand(bot, chatID, userID, text, user, db)
+		handleVoiceToggleCommand(bot, chatID, userID, text, botName, user, db)
 		return true
 	case "/workspace":
 		handleWorkspaceCommand(bot, chatID, userID, text, botName, user, db)
@@ -789,9 +800,7 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 	session := getSession(botName, user, chatID)
 
 	session.mu.Lock()
-	if isVoice || user.VoiceReply {
-		session.VoiceReply = true
-	}
+	session.VoiceReply = isVoice || user.VoiceReply
 	session.BotAPI = bot
 	session.ChatID = chatID
 
@@ -850,9 +859,21 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 	session.mu.Unlock()
 
 	if err != nil {
+		log.Printf("Stdin write failed for bot %s: %v, restarting session and notifying user", botName, err)
 		session.Restart()
+		session.mu.Lock()
+		activeID := session.ActiveMessageID
+		session.ActiveMessageID = 0
+		session.mu.Unlock()
 		if bot != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Agent process was not ready. Send your message again."))
+			statusMsg := "⚠️ *Процесс агента был перезапущен.* Пожалуйста, отправьте сообщение повторно."
+			if activeID != 0 {
+				sendChunk(bot, chatID, activeID, statusMsg)
+			} else {
+				msg := tgbotapi.NewMessage(chatID, statusMsg)
+				msg.ParseMode = "Markdown"
+				bot.Send(msg)
+			}
 		}
 		return
 	}
