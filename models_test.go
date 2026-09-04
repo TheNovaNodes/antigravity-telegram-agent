@@ -80,7 +80,7 @@ func TestGetFallbackModel(t *testing.T) {
 		{"gemini-3.8-flash-high", "gemini-3.7-flash-high"},
 		{"gemini-3.7-flash-high", "gemini-3.1-pro-high"},
 		{"gemini-3.1-pro-high", "gemini-3.6-flash-low"},
-		{"gemini-3.6-flash-low", "gemini-3.7-flash-high"},
+		{"gemini-3.6-flash-low", ""},
 		{"unknown-model", "gemini-3.7-flash-high"},
 	}
 
