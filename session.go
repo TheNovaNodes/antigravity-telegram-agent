@@ -111,21 +111,29 @@ func getAgyPath() string {
 }
 
 // Kill gracefully cancels the session context, closes pipes, and terminates the underlying process tree.
+// It extracts process handles under mutex lock and performs blocking I/O and OS syscalls outside the lock
+// to eliminate thread contention and prevent potential deadlocks.
 func (s *AgySession) Kill() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.isAlive = false
-	if s.cancel != nil {
-		s.cancel()
+	cancel := s.cancel
+	s.cancel = nil
+	stdin := s.Stdin
+	s.Stdin = nil
+	cmd := s.Cmd
+	s.Cmd = nil
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
-	if s.Stdin != nil {
-		s.Stdin.Close()
-		s.Stdin = nil
+	if stdin != nil {
+		stdin.Close()
 	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
-		pid := s.Cmd.Process.Pid
+	if cmd != nil && cmd.Process != nil {
+		pid := cmd.Process.Pid
 		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
-			s.Cmd.Process.Kill()
+			cmd.Process.Kill()
 		}
 	}
 }
