@@ -31,6 +31,7 @@ type AgySession struct {
 	UseContinue     bool
 	Cmd             *exec.Cmd
 	Stdin           io.WriteCloser
+	StdoutPipe      io.ReadCloser
 	StdoutScanner   *bufio.Scanner
 	mu              sync.Mutex
 	startMu         sync.Mutex
@@ -120,8 +121,12 @@ func (s *AgySession) Kill() {
 	s.cancel = nil
 	stdin := s.Stdin
 	s.Stdin = nil
+	stdout := s.StdoutPipe
+	s.StdoutPipe = nil
 	cmd := s.Cmd
 	s.Cmd = nil
+	s.ActiveMessageID = 0
+	s.TextBuffer = ""
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -130,10 +135,32 @@ func (s *AgySession) Kill() {
 	if stdin != nil {
 		stdin.Close()
 	}
+	if stdout != nil {
+		stdout.Close()
+	}
 	if cmd != nil && cmd.Process != nil {
 		pid := cmd.Process.Pid
-		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		// Two-phase graceful termination: SIGTERM then SIGKILL
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() {
+			for i := 0; i < 5; i++ {
+				time.Sleep(50 * time.Millisecond)
+				if err := syscall.Kill(-pid, 0); err != nil {
+					// Process has terminated
+					close(done)
+					return
+				}
+			}
+			// Force SIGKILL if still running
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
 			cmd.Process.Kill()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}
 	}
 }
@@ -288,6 +315,7 @@ func (s *AgySession) start() {
 	agyPath := getAgyPath()
 	cmd := exec.Command(agyPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 2 * time.Second
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
@@ -308,6 +336,7 @@ func (s *AgySession) start() {
 		s.mu.Lock()
 		s.Cmd = nil
 		s.Stdin = nil
+		s.StdoutPipe = nil
 		s.StdoutScanner = nil
 		s.isAlive = false
 		s.mu.Unlock()
@@ -316,6 +345,7 @@ func (s *AgySession) start() {
 	s.mu.Lock()
 	s.Cmd = cmd
 	s.Stdin = stdin
+	s.StdoutPipe = stdout
 	s.StdoutScanner = scanner
 	s.isAlive = true
 	s.mu.Unlock()
@@ -383,9 +413,12 @@ func (s *AgySession) start() {
 	go func(c *exec.Cmd) {
 		c.Wait()
 		s.mu.Lock()
-		if s.Cmd == c {
+		if s.Cmd == c || s.Cmd == nil {
 			s.isAlive = false
 			s.Cmd = nil
+			s.Stdin = nil
+			s.StdoutPipe = nil
+			s.StdoutScanner = nil
 			s.ActiveMessageID = 0
 			s.TextBuffer = ""
 		}
@@ -508,7 +541,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 		s.mu.Unlock()
 	}()
 
-	lines := make(chan string, 100)
+	lines := make(chan string, 1000)
 	go func(sc *bufio.Scanner, c context.Context) {
 		defer close(lines)
 		for sc.Scan() {
