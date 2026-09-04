@@ -193,7 +193,7 @@ func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB)
 		return
 	}
 	brainDir := getBrainDir()
-	dbRows, err := db.Query("SELECT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
+	dbRows, err := db.Query("SELECT DISTINCT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
 		return
@@ -609,9 +609,9 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 
 // handleClearCommand clears the active conversation context.
 func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
-	// For a fresh start, pass an empty conversation ID so agy starts cleanly without an uninitialized --conversation flag
-	replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
+	// For a fresh start, reset session in DB and pass an empty conversation ID to start cleanly
 	updateUserSession(db, userID, "")
+	replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
 	respText := "🧼 Context cleared! Starting fresh session."
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
@@ -749,8 +749,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		handleModelCommand(bot, chatID)
 		return
 	} else if data == "cmd:clear" {
-		replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
 		updateUserSession(db, userID, "")
+		replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
 		respText = "🧼 Context cleared! Starting fresh session."
 	} else if data == "cmd:usage" {
 		handleUsageCommand(bot, chatID)

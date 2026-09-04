@@ -48,13 +48,13 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 
 	for update := range updates {
 		var userID int64
-		if update.Message != nil {
+		if update.Message != nil && update.Message.From != nil {
 			userID = update.Message.From.ID
-		} else if update.CallbackQuery != nil {
+		} else if update.CallbackQuery != nil && update.CallbackQuery.From != nil {
 			userID = update.CallbackQuery.From.ID
 		}
 
-		if userID != 0 && !allowedAdmins[userID] {
+		if !allowedAdmins[userID] {
 			log.Printf("[Bot %s] 🛑 ACL BLOCK: Unauthorized access attempt from %d", bot.Self.UserName, userID)
 			continue
 		}
