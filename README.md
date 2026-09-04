@@ -22,12 +22,28 @@ cd antigravity-go-tg-bot-agent
 echo 'BOT_TOKENS="your:telegram_token"' > .env
 echo 'ALLOWED_ADMIN_IDS="123456789"' >> .env
 
-# 3. Build & Run
-go build -o new_engine .
-./new_engine
+# 3. Build & Run via Makefile
+make build
+./bin/antigravity-bot-engine
 ```
 
 For in-depth architectural details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## 🏗️ Modular Architecture Overview
+
+The core is decomposed into distinct, focused domain modules:
+
+| Source Module | Responsibility |
+| :--- | :--- |
+| [`main.go`](main.go) | Multi-bot long-polling lifecycle, signal traps, and graceful shutdown supervisor. |
+| [`handlers.go`](handlers.go) | Telegram update router, slash-command handlers, interactive callback queries, and media downloads. |
+| [`session.go`](session.go) | `AgySession` process lifecycle, mutex-decoupled non-blocking I/O, streaming throttler, and Smart Auto-Fallback. |
+| [`storage.go`](storage.go) | SQLite schema migrations (`data/sessions_<bot>.db`), WAL mode configuration, and user CRUD. |
+| [`models.go`](models.go) | Dynamic LLM discovery from `agy models` with emoji tier badges. |
+| [`tts.go`](tts.go) | Mirror Protocol TTS audio engine with multi-key ElevenLabs rotation and custom base URL support. |
+| [`formatters.go`](formatters.go) | Markdown-to-Telegram-HTML conversion with tag balancing and artifact parsing. |
 
 ---
 
@@ -76,19 +92,30 @@ The engine supports flexible configuration through environment variables:
 
 ---
 
+## 🛠️ Makefile & Development Workflow
+
+Standardized development targets:
+
+```bash
+make build       # Compile binary to bin/antigravity-bot-engine
+make run         # Build and run the engine locally
+make test        # Run unit tests
+make race        # Run unit tests with Go data race detector
+make coverage    # Generate coverage report and HTML summary
+make fmt         # Format all Go source files via gofmt
+make clean       # Remove compiled binaries and test coverage profiles
+```
+
+---
+
 ## 🧪 Testing & CI Verification
 
 We enforce a strict **zero-data-race** policy (`go test -race`) and high test coverage:
 
 ```bash
 # Run complete test suite with race detector and coverage analysis
-go test -v -race -coverprofile=coverage.out ./...
-
-# View coverage per function
-go tool cover -func=coverage.out
-
-# View HTML coverage visualization in browser
-go tool cover -html=coverage.out
+make race
+make coverage
 ```
 
 ---
@@ -103,11 +130,8 @@ We adhere strictly to the **ПРАВИЛА КРОВИ (Blood Rules)**:
 # 1. Pull the latest master (after PR merge)
 git pull origin master
 
-# 2. Build the binary
-go build -o new_engine .
-
-# 3. Execute the deployment script
-bash deploy_all.sh
+# 2. Execute standardized deployment script
+./scripts/deploy.sh
 ```
 
 ---
