@@ -375,12 +375,12 @@ func (s *AgySession) start() {
 	go func(c *exec.Cmd) {
 		c.Wait()
 		s.mu.Lock()
-		s.isAlive = false
 		if s.Cmd == c {
+			s.isAlive = false
 			s.Cmd = nil
+			s.ActiveMessageID = 0
+			s.TextBuffer = ""
 		}
-		s.ActiveMessageID = 0
-		s.TextBuffer = ""
 		s.mu.Unlock()
 	}(cmd)
 }
@@ -439,6 +439,22 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		if bot != nil {
 			bot.Send(doc)
 		}
+	}
+}
+
+// getFallbackModel provides an automatic failover model when rate limits or quota exhaustion are encountered.
+func getFallbackModel(currentModel string) string {
+	switch currentModel {
+	case "gemini-3.8-flash-high":
+		return "gemini-3.7-flash-high"
+	case "gemini-3.7-flash-high":
+		return "gemini-3.1-pro-high"
+	case "gemini-3.1-pro-high":
+		return "gemini-3.6-flash-low"
+	case "gemini-3.6-flash-low":
+		return "gemini-3.7-flash-high"
+	default:
+		return "gemini-3.7-flash-high"
 	}
 }
 
@@ -600,11 +616,33 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					activeMsgID := s.ActiveMessageID
 					s.mu.Unlock()
 
-					isRateLimit := strings.Contains(errMsg, "429") || strings.Contains(errMsg, "503") || strings.Contains(strings.ToLower(errMsg), "timeout") || strings.Contains(strings.ToLower(errMsg), "rate limit")
+					errLower := strings.ToLower(errMsg)
+					isRateLimit := strings.Contains(errMsg, "429") ||
+						strings.Contains(errMsg, "503") ||
+						strings.Contains(errLower, "timeout") ||
+						strings.Contains(errLower, "rate limit") ||
+						strings.Contains(errLower, "quota") ||
+						strings.Contains(errLower, "resource_exhausted")
 
 					displayErr := "❌ Error from agent: " + errMsg
 					if isRateLimit {
-						displayErr = "⚠️ Превышен лимит запросов к модели (Rate limit / 429). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
+						fallback := getFallbackModel(s.Model)
+						if fallback != s.Model {
+							oldModel := s.Model
+							s.mu.Lock()
+							s.Model = fallback
+							uID := s.UserID
+							db := s.DB
+							s.mu.Unlock()
+
+							if db != nil && uID != 0 {
+								updateUserModel(db, uID, fallback)
+							}
+
+							displayErr = fmt.Sprintf("⚠️ Достигнут лимит для `%s` (Quota/429).\n🔄 *Авто-переключение на `%s`*.\n✨ Контекст сохранён! Отправьте сообщение повторно.", oldModel, fallback)
+						} else {
+							displayErr = "⚠️ Превышен лимит запросов к модели (Rate limit / 429). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
+						}
 					}
 
 					if s.BotAPI != nil {
