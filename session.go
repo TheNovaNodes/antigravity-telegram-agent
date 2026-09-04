@@ -578,10 +578,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 									var rows [][]tgbotapi.InlineKeyboardButton
 									for _, optRaw := range opts {
 										optStr := fmt.Sprintf("%v", optRaw)
-										callbackData := "ans:" + optStr
-										if len(callbackData) > 64 {
-											callbackData = callbackData[:64]
-										}
+										callbackData := storeQuestionOption(optStr)
 										row := tgbotapi.NewInlineKeyboardRow(
 											tgbotapi.NewInlineKeyboardButtonData(optStr, callbackData),
 										)
