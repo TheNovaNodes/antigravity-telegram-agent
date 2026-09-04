@@ -78,6 +78,9 @@ func TestGetSession_MultiTurnContextRetention_NoProcessKill(t *testing.T) {
 	if session1 == nil {
 		t.Fatal("Expected turn 1 session to be created")
 	}
+	session1.mu.Lock()
+	session1.isAlive = true
+	session1.mu.Unlock()
 
 	// Simulate init event updating conversation
 	realConvID := "conv-multi-turn-999"
@@ -128,6 +131,9 @@ func TestGetSession_ExplicitSessionSwitch_KillsOldSession(t *testing.T) {
 	if session1 == nil {
 		t.Fatal("Expected session1 to be created")
 	}
+	session1.mu.Lock()
+	session1.isAlive = true
+	session1.mu.Unlock()
 
 	// User explicitly switches to a different session
 	userSwitched := user
