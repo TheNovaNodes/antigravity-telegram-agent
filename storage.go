@@ -36,8 +36,23 @@ func getDataDir() string {
 	return "."
 }
 
+// ensureEnvPermissions verifies that .env exists with secure permissions (0600).
+func ensureEnvPermissions() {
+	envFile := ".env"
+	if info, err := os.Stat(envFile); err == nil {
+		if mode := info.Mode().Perm(); mode != 0600 {
+			if err := os.Chmod(envFile, 0600); err != nil {
+				log.Printf("⚠️ Warning: Failed to set 0600 permissions on .env: %v", err)
+			} else {
+				log.Printf("🔒 Enforced 0600 permissions on .env (was %o)", mode)
+			}
+		}
+	}
+}
+
 // initDB initializes the SQLite database for a specific bot, enables WAL mode, and creates necessary tables.
 func initDB(botName string) *sql.DB {
+	ensureEnvPermissions()
 	dbDir := getDataDir()
 	dbPath := filepath.Join(dbDir, fmt.Sprintf("sessions_%s.db", botName))
 

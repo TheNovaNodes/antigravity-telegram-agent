@@ -206,8 +206,8 @@ func TestHandleWorkspaceCommand_ValidAndInvalid(t *testing.T) {
 	os.MkdirAll(forbiddenDir, 0755)
 	handleWorkspaceCommand(bot, chatID, userID, "/workspace "+forbiddenDir, "TestMockBot", user, db)
 
-	// 4. Valid path inside agentsDir
-	validSubLab := filepath.Join(mockAgents, "sublab_1")
+	// 4. Valid path inside bot office
+	validSubLab := filepath.Join(mockAgents, "TestMockBot", "sublab_1")
 	os.MkdirAll(validSubLab, 0755)
 	handleWorkspaceCommand(bot, chatID, userID, "/workspace "+validSubLab, "TestMockBot", user, db)
 
