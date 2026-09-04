@@ -17,9 +17,32 @@ import (
 	"sync"
 	"time"
 
+	"unicode/utf8"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
 )
+
+// safePrefix returns up to maxRunes characters from a string without slicing out of bounds.
+func safePrefix(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes])
+}
+
+// truncateUTF8Bytes truncates a string to at most maxBytes without severing multi-byte UTF-8 runes.
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if len([]byte(s)) <= maxBytes {
+		return s
+	}
+	b := []byte(s)[:maxBytes]
+	for !utf8.Valid(b) && len(b) > 0 {
+		b = b[:len(b)-1]
+	}
+	return string(b)
+}
 
 var (
 	questionOptionsMu sync.RWMutex
@@ -250,9 +273,7 @@ func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB)
 	for _, c := range convs {
 		label := fmt.Sprintf("🕐 %s — %s", c.ModTime.Format("02.01 15:04"), c.Title)
 		cbData := "resume:" + c.ID
-		if len(cbData) > 64 {
-			cbData = cbData[:64]
-		}
+		cbData = truncateUTF8Bytes(cbData, 64)
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, cbData),
 		))
@@ -329,6 +350,10 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 
 // handleExportCommand extracts the conversation steps from transcript.jsonl and sends a formatted Markdown file to the chat.
 func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User) {
+	if strings.TrimSpace(user.SessionID) == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "📭 No active conversation session found to export."))
+		return
+	}
 	brainDir := getBrainDir()
 	sessionDir := filepath.Join(brainDir, user.SessionID)
 	transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
@@ -411,7 +436,7 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 
 	exportDir := filepath.Join(getAgentsDir(), botName, "scratch", "exports")
 	os.MkdirAll(exportDir, 0755)
-	safeFilename := fmt.Sprintf("session_%s.md", user.SessionID[:8])
+	safeFilename := fmt.Sprintf("session_%s.md", safePrefix(user.SessionID, 8))
 	exportPath := filepath.Join(exportDir, safeFilename)
 
 	if err := os.WriteFile(exportPath, []byte(sb.String()), 0644); err != nil {
@@ -544,10 +569,10 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 
 // handleClearCommand clears the active conversation context.
 func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
-	newUUID := uuid.New().String()
-	replaceSession(db, botName, user, newUUID, user.Model, user.Workspace, chatID)
-	updateUserSession(db, userID, newUUID)
-	respText := "🧼 Context cleared!\n`" + newUUID + "`"
+	// For a fresh start, pass an empty conversation ID so agy starts cleanly without an uninitialized --conversation flag
+	replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
+	updateUserSession(db, userID, "")
+	respText := "🧼 Context cleared! Starting fresh session."
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
 	bot.Send(msg)
@@ -562,57 +587,56 @@ func handleRefreshModelsCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Dynamically fetched %d models from agy.", count)))
 }
 
-// handleCommand parses and routes slash commands. Returns true if handled.
+// handleCommand parses and routes slash commands with strict token matching. Returns true if handled.
 func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, db *sql.DB) bool {
-	if text == "/start" || text == fmt.Sprintf("/start@%s", botName) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := strings.ToLower(fields[0])
+	botSuffix := "@" + strings.ToLower(botName)
+	cmd = strings.TrimSuffix(cmd, botSuffix)
+
+	switch cmd {
+	case "/start":
 		handleStartCommand(bot, chatID, botName, user)
 		return true
-	}
-	if text == "/resume" || text == fmt.Sprintf("/resume@%s", botName) {
+	case "/resume":
 		handleResumeCommand(bot, chatID, userID, db)
 		return true
-	}
-	if strings.HasPrefix(text, "/tts") {
+	case "/tts":
 		handleTTSCommand(bot, chatID, text)
 		return true
-	}
-	if strings.HasPrefix(text, "/voice") {
+	case "/voice":
 		handleVoiceToggleCommand(bot, chatID, userID, text, user, db)
 		return true
-	}
-	if strings.HasPrefix(text, "/workspace") {
+	case "/workspace":
 		handleWorkspaceCommand(bot, chatID, userID, text, botName, user, db)
 		return true
-	}
-	if strings.HasPrefix(text, "/rename") {
+	case "/rename":
 		handleRenameCommand(bot, chatID, text, botName, user)
 		return true
-	}
-	if text == "/export" || text == fmt.Sprintf("/export@%s", botName) {
+	case "/export":
 		handleExportCommand(bot, chatID, userID, botName, user)
 		return true
-	}
-	if text == "/usage" || text == fmt.Sprintf("/usage@%s", botName) {
+	case "/usage":
 		handleUsageCommand(bot, chatID)
 		return true
-	}
-	if text == "/help" || text == fmt.Sprintf("/help@%s", botName) {
+	case "/help":
 		handleHelpCommand(bot, chatID)
 		return true
-	}
-	if text == "/model" || text == fmt.Sprintf("/model@%s", botName) {
+	case "/model":
 		handleModelCommand(bot, chatID)
 		return true
-	}
-	if text == "/refresh_models" || text == fmt.Sprintf("/refresh_models@%s", botName) {
+	case "/refresh_models":
 		handleRefreshModelsCommand(bot, chatID)
 		return true
-	}
-	if text == "/clear" || text == fmt.Sprintf("/clear@%s", botName) {
+	case "/clear":
 		handleClearCommand(bot, chatID, userID, botName, user, db)
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // handleCallbackQuery processes all inline keyboard callback events.
@@ -645,7 +669,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		case <-time.After(3 * time.Second):
 		}
 
-		respText := fmt.Sprintf("🔄 Resumed session!\n`%s`", convID[:8])
+		respText := fmt.Sprintf("🔄 Resumed session!\n`%s`", safePrefix(convID, 8))
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
