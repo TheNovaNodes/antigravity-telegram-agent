@@ -1,4 +1,4 @@
-.PHONY: all build test race coverage fmt clean run
+.PHONY: all build test test-fast race coverage fmt clean run
 
 BINARY_NAME=antigravity-bot-engine
 BIN_DIR=bin
@@ -16,10 +16,12 @@ fmt:
 	@echo "🎨 Code formatted with gofmt."
 
 test:
+	go test -v -race ./...
+
+test-fast:
 	go test -v ./...
 
-race:
-	go test -v -race ./...
+race: test
 
 coverage:
 	go test -v -race -coverprofile=coverage.out ./...

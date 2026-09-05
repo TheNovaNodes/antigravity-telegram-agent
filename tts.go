@@ -16,26 +16,27 @@ import (
 )
 
 // ExtractElevenLabsKeys parses a comma- or whitespace-separated string of API keys,
-// filtering out any keys that do not start with "sk_".
+// returning all non-empty tokens (supporting both sk_ and legacy/custom keys).
 func ExtractElevenLabsKeys(rawEnv string) ([]string, error) {
-	if rawEnv == "" {
+	trimmed := strings.TrimSpace(rawEnv)
+	if trimmed == "" {
 		return nil, fmt.Errorf("ELEVENLABS_API_KEY not set")
 	}
 
-	keys := strings.FieldsFunc(rawEnv, func(c rune) bool {
+	keys := strings.FieldsFunc(trimmed, func(c rune) bool {
 		return c == ',' || c == ' ' || c == '\n' || c == '\r'
 	})
 
 	var validKeys []string
 	for _, k := range keys {
-		k = strings.TrimSpace(k)
-		if strings.HasPrefix(k, "sk_") {
+		k = strings.Trim(strings.TrimSpace(k), `"'`)
+		if k != "" {
 			validKeys = append(validKeys, k)
 		}
 	}
 
 	if len(validKeys) == 0 {
-		return nil, fmt.Errorf("no valid sk_ keys found in ELEVENLABS_API_KEY")
+		return nil, fmt.Errorf("no valid keys found in ELEVENLABS_API_KEY")
 	}
 
 	return validKeys, nil

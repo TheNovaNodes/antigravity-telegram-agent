@@ -564,7 +564,7 @@ func (s *AgySession) start() error {
 		}
 	}(ctx)
 
-	go s.readStdoutLoop()
+	go s.readStdoutLoop(scanner, ctx)
 	go func(c *exec.Cmd) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -707,17 +707,35 @@ func getFallbackModel(currentModel string) string {
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events.
-func (s *AgySession) readStdoutLoop() {
+func (s *AgySession) readStdoutLoop(params ...interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[PANIC RECOVERED in readStdoutLoop for bot %s] %v", s.BotName, r)
 		}
 	}()
 
-	s.mu.Lock()
-	scanner := s.StdoutScanner
-	ctx := s.ctx
-	s.mu.Unlock()
+	var scanner *bufio.Scanner
+	var ctx context.Context
+
+	if len(params) >= 2 {
+		if sc, ok := params[0].(*bufio.Scanner); ok {
+			scanner = sc
+		}
+		if c, ok := params[1].(context.Context); ok {
+			ctx = c
+		}
+	}
+
+	if scanner == nil || ctx == nil {
+		s.mu.Lock()
+		if scanner == nil {
+			scanner = s.StdoutScanner
+		}
+		if ctx == nil {
+			ctx = s.ctx
+		}
+		s.mu.Unlock()
+	}
 
 	if scanner == nil || ctx == nil {
 		return
