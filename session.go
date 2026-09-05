@@ -668,7 +668,6 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 	defer func() {
 		s.mu.Lock()
-		s.ActiveMessageID = 0
 		s.TextBuffer = ""
 		s.mu.Unlock()
 	}()

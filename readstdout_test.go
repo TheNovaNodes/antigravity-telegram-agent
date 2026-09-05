@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -96,40 +97,116 @@ func TestReadStdoutLoop_StepUpdateAndResult(t *testing.T) {
 func TestReadStdoutLoop_AskQuestion(t *testing.T) {
 	jsonl := `{"event":"step_update","step_update":{"tool_calls":[{"name":"ask_question","argumentsJson":"{\"questions\":[{\"question\":\"Pick one:\",\"options\":[\"Option A\",\"Option B\"]}]}"}]}}` + "\n"
 
-	scanner := bufio.NewScanner(strings.NewReader(jsonl))
-
-	session := &AgySession{
+	// 1. Nil BotAPI guard check
+	scanner1 := bufio.NewScanner(strings.NewReader(jsonl))
+	session1 := &AgySession{
 		BotName:       "TestBot",
 		Model:         defaultModel,
 		Workspace:     "/tmp/workspace",
 		UpdateChan:    make(chan struct{}, 10),
 		InitChan:      make(chan string, 10),
-		StdoutScanner: scanner,
+		StdoutScanner: scanner1,
 	}
-	session.ctx, session.cancel = context.WithCancel(context.Background())
-	defer session.cancel()
+	session1.ctx, session1.cancel = context.WithCancel(context.Background())
+	defer session1.cancel()
+	session1.readStdoutLoop(scanner1, session1.ctx)
 
-	// Runs without BotAPI (nil guard check)
-	session.readStdoutLoop()
+	// 2. Full BotAPI delivery and options caching check
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	scanner2 := bufio.NewScanner(strings.NewReader(jsonl))
+	session2 := &AgySession{
+		BotName:       "TestBot",
+		Model:         defaultModel,
+		Workspace:     "/tmp/workspace",
+		ChatID:        12345,
+		BotAPI:        bot,
+		UpdateChan:    make(chan struct{}, 10),
+		InitChan:      make(chan string, 10),
+		StdoutScanner: scanner2,
+	}
+	session2.ctx, session2.cancel = context.WithCancel(context.Background())
+	defer session2.cancel()
+	session2.readStdoutLoop(scanner2, session2.ctx)
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	foundQuestion := false
+	for _, rawBody := range sentBodies {
+		decodedBody, _ := url.QueryUnescape(rawBody)
+		if strings.Contains(decodedBody, "Pick one:") {
+			foundQuestion = true
+			if !strings.Contains(decodedBody, "Option A") || !strings.Contains(decodedBody, "Option B") {
+				t.Errorf("Sent question message missing options: %s", decodedBody)
+			}
+			break
+		}
+	}
+	if !foundQuestion {
+		t.Errorf("Expected ask_question to send Telegram message, sent bodies: %v", sentBodies)
+	}
 }
 
 func TestReadStdoutLoop_ErrorResult(t *testing.T) {
-	jsonl := `{"event":"result","result":{"status":"ERROR","error":"generic error message"}}` + "\n"
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"generic fatal crash"}}` + "\n"
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
 
 	scanner := bufio.NewScanner(strings.NewReader(jsonl))
-
 	session := &AgySession{
-		BotName:       "TestBot",
-		Model:         defaultModel,
-		Workspace:     "/tmp/workspace",
-		UpdateChan:    make(chan struct{}, 10),
-		InitChan:      make(chan string, 10),
-		StdoutScanner: scanner,
+		BotName:         "TestBot",
+		Model:           defaultModel,
+		Workspace:       "/tmp/workspace",
+		ChatID:          12345,
+		ActiveMessageID: 100,
+		BotAPI:          bot,
+		isAlive:         true,
+		UpdateChan:      make(chan struct{}, 10),
+		InitChan:        make(chan string, 10),
+		StdoutScanner:   scanner,
 	}
 	session.ctx, session.cancel = context.WithCancel(context.Background())
 	defer session.cancel()
 
-	session.readStdoutLoop()
+	session.readStdoutLoop(scanner, session.ctx)
+
+	// Assert session killed on ERROR result
+	if session.IsAlive() {
+		t.Errorf("Expected session to be killed after ERROR result")
+	}
+
+	// Assert buffers cleared
+	session.mu.Lock()
+	buf := session.TextBuffer
+	activeID := session.ActiveMessageID
+	session.mu.Unlock()
+
+	if buf != "" || activeID != 0 {
+		t.Errorf("Expected cleared buffer and ActiveMessageID=0, got buf=%q activeID=%d", buf, activeID)
+	}
+
+	// Assert Telegram notification was sent
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	foundError := false
+	for _, rawBody := range sentBodies {
+		decodedBody, _ := url.QueryUnescape(rawBody)
+		if strings.Contains(decodedBody, "generic fatal crash") || strings.Contains(decodedBody, "Agent Error") {
+			foundError = true
+			break
+		}
+	}
+	if !foundError {
+		t.Errorf("Expected error message sent to Telegram, got: %v", sentBodies)
+	}
 }
 
 func TestReadStdoutLoop_RateLimitRecovery(t *testing.T) {

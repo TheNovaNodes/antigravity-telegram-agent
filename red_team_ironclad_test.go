@@ -125,6 +125,6 @@ func TestHandleClearCommand_OrderOfOperations(t *testing.T) {
 	// User session in DB should immediately be empty (cleared)
 	clearedUser := getUser(db, userID, "TestMockBot")
 	if clearedUser.SessionID != "" {
-		t.Logf("Session ID after clear: %s", clearedUser.SessionID)
+		t.Errorf("Expected user session in DB to be empty after clear, got %q", clearedUser.SessionID)
 	}
 }
