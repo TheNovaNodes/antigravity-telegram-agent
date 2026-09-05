@@ -74,6 +74,15 @@ sequenceDiagram
     Bot-->>User: Live Edit / Streaming response
 ```
 
+### 2.2 Subprocess Watchdog & State T Deadlock Immunity
+When background or verification commands (e.g. MCP stdio servers, smoke tests) attempt to read `stdin` without a connected TTY or outside foreground job control, the Linux kernel delivers `SIGTTIN` (or `SIGTTOU`), suspending the child in `State: T` (Stopped). If wrapped with commands like `timeout` without the `-k` (`--kill-after`) flag, the process fails to process `SIGTERM`, resulting in an unrecoverable agent turn deadlock.
+
+The engine incorporates a dedicated autonomous watchdog ([`subprocess_watchdog.go`](../subprocess_watchdog.go)):
+* **Pure Go `/proc` Traversal**: Iterates `/proc` and parses `/proc/[pid]/stat` directly without external `ps` overhead or shell execution.
+* **Process Tree Ancestry Resolution**: Traces parent-child hierarchy to identify descendants belonging exclusively to active agent root sessions (`AgySession`).
+* **Two-Phase Forced Termination**: When any descendant process remains suspended in `State: T` or `State: t` beyond the grace period (default 3 seconds), the watchdog issues a sequenced `SIGCONT` (awakening the process) followed by `SIGKILL` (unconditional kernel termination).
+* **Background Supervisor Worker**: `StartSubprocessWatchdogWorker` runs continuously on a 2-second ticker, fully integrated into the engine lifecycle alongside session garbage collection.
+
 ---
 
 ## 3. Modular Handler Decomposition
@@ -94,7 +103,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleRenameCommand` | Live rename of conversation title in `brain` storage. | Sanitizes title and validates conversation ID against path traversal. |
 | `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Validates session ID format (`isValidSessionID`), writes export file to scratch space. |
 | `handleClearCommand` | Session context reset for clean startup. | Cleans session state in DB and memory, launches fresh process without uninitialized conversation ID flags. |
-| `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). |
+| `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`). |
 | `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*`). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. | URL scheme & host validation (HTTP/HTTPS only), HTTP status check, 100 MB hard limit, and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding, per-turn voice reply mode without latching, and clean prompt retry on Stdin error. |
@@ -102,6 +111,8 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `ExtractAllowedArtifacts` | Validates and dispatches generated documents/artifacts to Telegram. | Fail-closed LFI sandbox (`isPathUnderRoot`) covering `AGENTS_DIR`, `BRAIN_DIR`, and `PROJECTS_DIR` (`!info.IsDir()`). |
 | `sendArtifacts` | Sends verified artifacts as Telegram documents. | Opens file descriptors directly (`os.Open`) and streams via `tgbotapi.FileReader`, eliminating path TOCTOU symlink races. |
 | `AgySession.start` | Spawns `agy` sub-process with `Setpgid`, `WaitDelay`, and streaming throttler. | Monitors `cmd.Wait()` to clean up zombie `*⏳ Thinking...*` UI states on unexpected process exit. |
+| `ReapStoppedSubprocesses` | Inspects `/proc` for stuck descendant processes of active `AgySession` roots in `State: T` / `t`. | Two-phase forced termination (`SIGCONT` + `SIGKILL`) after grace period expiry (default 3s). |
+| `StartSubprocessWatchdogWorker` | Background supervisor loop executing `ReapStoppedSubprocesses` on a periodic ticker (2s). | Clean worker shutdown via `stopHousekeeping` channel. |
 
 ---
 
@@ -195,15 +206,18 @@ flowchart LR
 
 ---
 
-## 6. Environment & Path Resolution Matrix
+## 7. Environment & Path Resolution Matrix
 
-All hardcoded filesystem paths are decoupled and configurable via environment variables:
+All hardcoded filesystem paths and credentials are decoupled and configurable via environment variables:
 
-| Environment Variable | Default Path | Purpose |
+| Environment Variable | Default Path / Value | Purpose |
 | :--- | :--- | :--- |
+| `BOT_TOKENS` | `""` | Comma-separated list of Telegram Bot API tokens. |
+| `ALLOWED_ADMIN_IDS` | `""` | Comma-separated list of authorized Telegram User IDs (Fail-Fast enforced at startup). |
 | `AGENTS_DIR` | `/root/.agents` (or `~/.agents`) | Base directory containing agent workspaces and download scratchpads. |
 | `BRAIN_DIR` | `/root/.gemini/antigravity-cli/brain` (or `~/.gemini/antigravity-cli/brain`) | Storage for agent conversation logs, titles, and step histories. |
+| `PROJECTS_DIR` | `/root/projects` | Base directory for project codebases and sandbox boundaries (`isPathUnderRoot`). |
+| `DATA_DIR` | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
 | `AGY_BINARY` | `/root/.gemini/antigravity-cli/bin/agy` (or `~/.gemini/...` or `PATH`) | Path to Antigravity CLI executable. |
-| `ADMIN_USER_IDS` | `""` | Comma-separated list of authorized Telegram User IDs. |
 | `ELEVENLABS_API_KEY` | `""` | Comma/newline separated list of ElevenLabs API keys (supports automatic rotation). |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable base URL for testing and reverse proxies. |
