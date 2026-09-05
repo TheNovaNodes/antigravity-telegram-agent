@@ -221,3 +221,17 @@ All hardcoded filesystem paths and credentials are decoupled and configurable vi
 | `AGY_BINARY` | `/root/.gemini/antigravity-cli/bin/agy` (or `~/.gemini/...` or `PATH`) | Path to Antigravity CLI executable. |
 | `ELEVENLABS_API_KEY` | `""` | Comma/newline separated list of ElevenLabs API keys (supports automatic rotation). |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable base URL for testing and reverse proxies. |
+| `ENV_FILE` | `/etc/antigravity-bot/env` | Production secrets environment file. |
+| `ALLOW_DOTENV` | `""` | Set to `1` in development to allow fallback to working directory `.env`. |
+
+---
+
+## 8. Secrets Management & In-Depth Defense
+
+The engine implements a strict, fail-closed secrets handling architecture:
+
+1. **Decoupled Secret Storage**: In production, secrets MUST NOT reside adjacent to binaries in the project working directory. Credentials default to `/etc/antigravity-bot/env` (configurable via `ENV_FILE`).
+2. **Fail-Closed Permissions**: The engine verifies that the environment file has strict `0600` permissions. If permissions cannot be restricted, the engine terminates immediately (`log.Fatalf`).
+3. **Explicit Dev Mode Gate**: Fallback to local `.env` files is only permitted when `ALLOW_DOTENV=1` is explicitly set in the execution environment.
+4. **Tooling Verification**: Run `make env-check` to assert that no exposed `.env` files exist in the repository tree before staging or deployments. Detailed provisioning recipes are documented in [`docs/SECRETS.md`](SECRETS.md).
+

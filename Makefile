@@ -1,4 +1,4 @@
-.PHONY: all build test test-fast race coverage fmt clean run
+.PHONY: all build test test-fast race coverage fmt clean run env-check
 
 BINARY_NAME=antigravity-bot-engine
 BIN_DIR=bin
@@ -32,5 +32,12 @@ clean:
 	@rm -rf $(BIN_DIR) build/ *.test coverage.out *.out
 	@echo "🧹 Cleaned build artifacts."
 
+env-check:
+	@if [ "$${ALLOW_DOTENV:-0}" != "1" ] && [ -f .env ]; then \
+		echo "❌ Security Alert: .env found in working directory in production mode! Move secrets to /etc/antigravity-bot/env or export ALLOW_DOTENV=1 for local development."; \
+		exit 1; \
+	fi
+	@echo "🔒 Environment secrets check passed."
+
 run: build
-	./$(BUILD_PATH)
+	ALLOW_DOTENV=1 ./$(BUILD_PATH)

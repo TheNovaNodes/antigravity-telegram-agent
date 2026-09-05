@@ -37,23 +37,84 @@ func getDataDir() string {
 	return "."
 }
 
-// ensureEnvPermissions verifies that .env exists with secure permissions (0600).
-func ensureEnvPermissions() {
-	envFile := ".env"
-	if info, err := os.Stat(envFile); err == nil {
-		if mode := info.Mode().Perm(); mode != 0600 {
-			if err := os.Chmod(envFile, 0600); err != nil {
-				log.Printf("⚠️ Warning: Failed to set 0600 permissions on .env: %v", err)
-			} else {
-				log.Printf("🔒 Enforced 0600 permissions on .env (was %o)", mode)
-			}
+// loadEnvFile secures and loads secrets into the process environment.
+// In production mode (ALLOW_DOTENV != "1"), it requires ENV_FILE (defaulting to /etc/antigravity-bot/env).
+// If the production env file is missing, it exits via log.Fatalf.
+// In development mode (ALLOW_DOTENV == "1"), it falls back to a local .env file.
+// All target env files are subject to a fail-closed 0600 permissions check.
+func loadEnvFile() {
+	envFile := os.Getenv("ENV_FILE")
+	if envFile == "" {
+		envFile = "/etc/antigravity-bot/env"
+	}
+
+	info, err := os.Stat(envFile)
+	if err != nil {
+		// Production mode: fail-closed if missing
+		if os.Getenv("ALLOW_DOTENV") != "1" {
+			log.Fatalf("FATAL [Security]: Production environment file %s not found. Refusing to start in insecure mode. Set ENV_FILE, provision %s, or set ALLOW_DOTENV=1 for local dev.", envFile, envFile)
+		}
+
+		// Development mode: fallback to .env in current directory
+		envFile = ".env"
+		info, err = os.Stat(envFile)
+		if err != nil {
+			// In dev mode, if neither exists, log warning and rely on already exported environment
+			log.Printf("⚠️ Dev mode (ALLOW_DOTENV=1): No env file found at ENV_FILE or .env; continuing with process environment.")
+			return
 		}
 	}
+
+	// Fail-closed permission check: enforce 0600
+	if mode := info.Mode().Perm(); mode != 0600 {
+		if err := os.Chmod(envFile, 0600); err != nil {
+			log.Fatalf("FATAL [Security]: Insecure file permissions on %s (%04o) and failed to enforce 0600: %v", envFile, mode, err)
+		}
+		log.Printf("🔒 Enforced 0600 permissions on %s (was %04o)", envFile, mode)
+	}
+
+	// Parse and populate environment variables
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		log.Fatalf("FATAL [Security]: Failed to read env file %s: %v", envFile, err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	loadedCount := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
+		if k != "" {
+			if os.Getenv(k) == "" {
+				os.Setenv(k, v)
+			}
+			loadedCount++
+		}
+	}
+	log.Printf("🔑 Loaded and verified %d environment variables from %s (mode 0600)", loadedCount, envFile)
+}
+
+// ensureEnvPermissions verifies that env permissions are enforced (0600).
+func ensureEnvPermissions() {
+	loadEnvFile()
 }
 
 // initDB initializes the SQLite database for a specific bot, enables WAL mode, and creates necessary tables.
 func initDB(botName string) *sql.DB {
-	ensureEnvPermissions()
 	dbDir := getDataDir()
 	dbPath := filepath.Join(dbDir, fmt.Sprintf("sessions_%s.db", botName))
 

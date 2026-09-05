@@ -6,9 +6,24 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${ROOT_DIR}"
 
-if [ ! -f .env ]; then
-    echo "❌ CRITICAL: .env file not found in ${ROOT_DIR}! Create it with BOT_TOKENS and ALLOWED_ADMIN_IDS."
-    exit 1
+ENV_DIR="/etc/antigravity-bot"
+PROD_ENV_FILE="${ENV_DIR}/env"
+
+mkdir -p "${ENV_DIR}"
+chmod 0700 "${ENV_DIR}"
+
+if [ ! -f "${PROD_ENV_FILE}" ]; then
+    if [ -f "${ROOT_DIR}/.env" ]; then
+        echo "📋 Provisioning ${PROD_ENV_FILE} from ${ROOT_DIR}/.env (0600)..."
+        cp "${ROOT_DIR}/.env" "${PROD_ENV_FILE}"
+        chmod 0600 "${PROD_ENV_FILE}"
+    else
+        echo "❌ CRITICAL: No environment file found at ${PROD_ENV_FILE} or ${ROOT_DIR}/.env!"
+        echo "Create ${PROD_ENV_FILE} with BOT_TOKENS and ALLOWED_ADMIN_IDS."
+        exit 1
+    fi
+else
+    chmod 0600 "${PROD_ENV_FILE}"
 fi
 
 echo "🔨 Building antigravity-bot-engine..."
@@ -28,7 +43,8 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=${ROOT_DIR}
 ExecStart=${ROOT_DIR}/bin/antigravity-bot-engine
-EnvironmentFile=${ROOT_DIR}/.env
+EnvironmentFile=${PROD_ENV_FILE}
+Environment="ENV_FILE=${PROD_ENV_FILE}"
 Environment="HOME=/root"
 Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
 Restart=always
