@@ -40,6 +40,7 @@ The core is decomposed into distinct, focused domain modules:
 | [`main.go`](main.go) | Multi-bot long-polling lifecycle, signal traps, and graceful shutdown supervisor. |
 | [`handlers.go`](handlers.go) | Telegram update router, slash-command handlers, interactive callback queries, and media downloads. |
 | [`session.go`](session.go) | `AgySession` process lifecycle, mutex-decoupled non-blocking I/O, streaming throttler, and Smart Auto-Fallback. |
+| [`subprocess_watchdog.go`](subprocess_watchdog.go) | Autonomous `/proc` scanner and reaper eliminating `SIGTTIN`/`SIGTTOU` state `T` deadlocks via two-phase `SIGCONT` + `SIGKILL`. |
 | [`storage.go`](storage.go) | SQLite schema migrations (`data/sessions_<bot>.db`), WAL mode configuration, and user CRUD. |
 | [`models.go`](models.go) | Dynamic LLM discovery from `agy models` with emoji tier badges. |
 | [`tts.go`](tts.go) | Mirror Protocol TTS audio engine with multi-key ElevenLabs rotation and custom base URL support. |
@@ -71,8 +72,8 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/voice` | `[on\|off]`| Toggles persistent voice responses generated via ElevenLabs TTS. |
 | `/tts` | `<text>` | Synthesizes arbitrary text into speech and sends as a voice note. |
 | `/help` | None | Displays comprehensive command reference. |
-| `/grill-me` | None | Trigger specialized interactive interview slash-command in Antigravity CLI. |
-| `/teamwork-preview` | None | Trigger multi-agent collaboration preview. |
+| `/grill_me` (or `/grill-me`) | None | Triggers interactive interview slash-command in Antigravity CLI (auto-aliased for Telegram command syntax). |
+| `/teamwork_preview` (or `/teamwork-preview`) | None | Triggers multi-agent collaboration preview (auto-aliased for Telegram command syntax). |
 
 ---
 
@@ -83,9 +84,11 @@ The engine supports flexible configuration through environment variables:
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `BOT_TOKENS` | String | `""` | Comma-separated list of Telegram Bot API tokens. |
-| `ALLOWED_ADMIN_IDS` | String | `""` | Comma-separated list of authorized Telegram User IDs. |
+| `ALLOWED_ADMIN_IDS` | String | `""` | Comma-separated list of authorized Telegram User IDs (Fail-Fast enforced at startup). |
 | `AGENTS_DIR` | String | `/root/.agents` | Base directory containing agent workspaces and download scratchpads. |
 | `BRAIN_DIR` | String | `/root/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
+| `PROJECTS_DIR` | String | `/root/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
+| `DATA_DIR` | String | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
 | `AGY_BINARY` | String | `/root/.gemini/antigravity-cli/bin/agy` | Absolute path to the Antigravity CLI binary. |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
 | `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |

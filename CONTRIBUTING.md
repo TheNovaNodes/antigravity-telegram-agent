@@ -37,8 +37,9 @@ go run .
 ```
 
 ## Testing
-Always run the test suite before submitting a Pull Request:
+Always run the test suite and race detector before submitting a Pull Request:
 ```bash
-go test -v -cover ./...
+make race        # Run test suite with Go data race detector
+make coverage    # Verify statements coverage (enforce >= 80%)
 ```
-If you are adding a new feature, please include corresponding unit tests to maintain or improve code coverage.
+If you are adding a new feature or bugfix, please include corresponding unit tests to maintain or improve code coverage.
