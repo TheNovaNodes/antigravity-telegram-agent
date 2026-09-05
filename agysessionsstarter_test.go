@@ -119,7 +119,10 @@ func TestReplaceSession(t *testing.T) {
 	botName := "TestBot"
 	chatID := int64(1001)
 
-	session1 := replaceSession(db, botName, user, "uuid-1", "test-model", "/tmp/workspace", chatID)
+	session1, err := replaceSession(db, botName, user, "uuid-1", "test-model", "/tmp/workspace", chatID)
+	if err != nil {
+		t.Fatalf("Failed to replaceSession 1: %v", err)
+	}
 	if session1.Conversation != "uuid-1" {
 		t.Errorf("Expected Conversation uuid-1, got %s", session1.Conversation)
 	}
@@ -142,7 +145,10 @@ func TestReplaceSession(t *testing.T) {
 	}
 
 	// Create a new session with updated workspace (simulating /workspace command)
-	session2 := replaceSession(db, botName, user, "uuid-2", "test-model", "/tmp/new_workspace", chatID)
+	session2, err := replaceSession(db, botName, user, "uuid-2", "test-model", "/tmp/new_workspace", chatID)
+	if err != nil {
+		t.Fatalf("Failed to replaceSession 2: %v", err)
+	}
 
 	// The old context should be cancelled
 	if session1.ctx.Err() == nil {

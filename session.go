@@ -135,6 +135,8 @@ func isPathUnderRoot(path, root string) bool {
 	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
 }
 
+var fallbackAgyBinary string
+
 // getAgyPath resolves the absolute path to the Antigravity CLI binary.
 func getAgyPath() string {
 	if env := os.Getenv("AGY_BINARY"); env != "" {
@@ -144,7 +146,14 @@ func getAgyPath() string {
 	if err != nil {
 		home = "/root"
 	}
-	return filepath.Join(home, ".local/bin/agy")
+	p := filepath.Join(home, ".local/bin/agy")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if fallbackAgyBinary != "" {
+		return fallbackAgyBinary
+	}
+	return p
 }
 
 // Kill gracefully cancels the session context, closes pipes, and terminates the underlying process tree.
@@ -164,6 +173,7 @@ func (s *AgySession) Kill() {
 	s.ActiveMessageID = 0
 	s.TextBuffer = ""
 	s.TextTruncated = false
+	s.StdoutScanner = nil
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -243,64 +253,54 @@ func (s *AgySession) IsAlive() bool {
 	return s.isAlive
 }
 
-// replaceSession handles the graceful termination of an existing agent session
-// and provisions a new isolated agent process with updated environment parameters.
-func replaceSession(db *sql.DB, botName string, user User, convID string, newModel string, newWorkspace string, chatID int64) *AgySession {
-	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
-
-	sessionMu.Lock()
-	if old, ok := globalSessions[sessionKey]; ok {
-		old.Kill()
-		delete(globalSessions, sessionKey)
-	}
-
-	session := &AgySession{
-		BotName:      botName,
-		ChatID:       chatID,
-		UserID:       user.ID,
-		DB:           db,
-		Model:        newModel,
-		Workspace:    newWorkspace,
-		Conversation: convID,
-		InitChan:     make(chan string, 1),
-		UpdateChan:   make(chan struct{}, 100),
-		VoiceReply:   user.VoiceReply,
-		LastActivity: time.Now(),
-	}
-
-	globalSessions[sessionKey] = session
-	sessionMu.Unlock()
-
-	session.start()
-
-	return session
+// SessionOptions encapsulates parameters for acquiring or provisioning an agent session.
+type SessionOptions struct {
+	DB           *sql.DB
+	BotName      string
+	User         User
+	ChatID       int64
+	ConvID       string
+	ExplicitConv bool
+	Model        string
+	Workspace    string
+	ForceRestart bool
+	UseContinue  bool
 }
 
-// getSession retrieves an active session for the user or creates a new isolated agent process.
-func getSession(botName string, user User, chatID int64, dbs ...*sql.DB) *AgySession {
-	var db *sql.DB
-	if len(dbs) > 0 {
-		db = dbs[0]
+// acquireSession retrieves an active matching session or provisions and starts a new isolated agent process.
+// If ForceRestart is true or if environment parameters differ, any prior session is terminated.
+func acquireSession(opts SessionOptions) (*AgySession, error) {
+	model := opts.Model
+	if model == "" {
+		model = opts.User.Model
+	}
+	workspace := opts.Workspace
+	if workspace == "" {
+		workspace = opts.User.Workspace
+	}
+	convID := opts.ConvID
+	if !opts.ExplicitConv && convID == "" {
+		convID = opts.User.SessionID
 	}
 
-	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, user.ID)
+	sessionKey := fmt.Sprintf("%s:%d:%d", opts.BotName, opts.ChatID, opts.User.ID)
 
 	sessionMu.Lock()
 	session, exists := globalSessions[sessionKey]
-	if exists && session.Model == user.Model && session.Workspace == user.Workspace {
+	if !opts.ForceRestart && exists && session.Model == model && session.Workspace == workspace {
 		activeConv := session.GetConversation()
-		convMatches := (activeConv == user.SessionID) || (user.SessionID == "") || (activeConv == "") ||
-			(isValidSessionID(activeConv) && !isValidSessionID(user.SessionID))
+		convMatches := (activeConv == convID) || (convID == "") || (activeConv == "") ||
+			(isValidSessionID(activeConv) && !isValidSessionID(convID))
 
 		if convMatches && session.IsAlive() {
 			session.mu.Lock()
-			if session.DB == nil && db != nil {
-				session.DB = db
+			if session.DB == nil && opts.DB != nil {
+				session.DB = opts.DB
 			}
 			session.LastActivity = time.Now()
 			session.mu.Unlock()
 			sessionMu.Unlock()
-			return session
+			return session, nil
 		}
 	}
 
@@ -309,25 +309,68 @@ func getSession(botName string, user User, chatID int64, dbs ...*sql.DB) *AgySes
 		delete(globalSessions, sessionKey)
 	}
 
-	session = &AgySession{
-		BotName:      botName,
-		ChatID:       chatID,
-		UserID:       user.ID,
-		DB:           db,
-		Model:        user.Model,
-		Workspace:    user.Workspace,
-		Conversation: user.SessionID,
+	newSession := &AgySession{
+		BotName:      opts.BotName,
+		ChatID:       opts.ChatID,
+		UserID:       opts.User.ID,
+		DB:           opts.DB,
+		Model:        model,
+		Workspace:    workspace,
+		Conversation: convID,
+		UseContinue:  opts.UseContinue,
 		InitChan:     make(chan string, 1),
 		UpdateChan:   make(chan struct{}, 100),
-		VoiceReply:   user.VoiceReply,
+		VoiceReply:   opts.User.VoiceReply,
 		LastActivity: time.Now(),
 	}
 
-	globalSessions[sessionKey] = session
+	globalSessions[sessionKey] = newSession
 	sessionMu.Unlock()
 
-	session.start()
+	if err := newSession.start(); err != nil {
+		sessionMu.Lock()
+		if globalSessions[sessionKey] == newSession {
+			delete(globalSessions, sessionKey)
+		}
+		sessionMu.Unlock()
+		return newSession, err
+	}
 
+	return newSession, nil
+}
+
+// replaceSession handles the graceful termination of an existing agent session
+// and provisions a new isolated agent process with updated environment parameters.
+func replaceSession(db *sql.DB, botName string, user User, convID string, newModel string, newWorkspace string, chatID int64) (*AgySession, error) {
+	return acquireSession(SessionOptions{
+		DB:           db,
+		BotName:      botName,
+		User:         user,
+		ChatID:       chatID,
+		ConvID:       convID,
+		ExplicitConv: true,
+		Model:        newModel,
+		Workspace:    newWorkspace,
+		ForceRestart: true,
+	})
+}
+
+// getSession retrieves an active session for the user or creates a new isolated agent process.
+func getSession(botName string, user User, chatID int64, dbs ...*sql.DB) *AgySession {
+	var db *sql.DB
+	if len(dbs) > 0 {
+		db = dbs[0]
+	}
+	session, _ := acquireSession(SessionOptions{
+		DB:           db,
+		BotName:      botName,
+		User:         user,
+		ChatID:       chatID,
+		ConvID:       user.SessionID,
+		Model:        user.Model,
+		Workspace:    user.Workspace,
+		ForceRestart: false,
+	})
 	return session
 }
 
@@ -381,14 +424,14 @@ func StartSessionGCWorker(interval, maxIdle time.Duration, stopChan <-chan struc
 }
 
 // start initializes the Antigravity CLI process, sets up pipes, and starts the asynchronous throttler loop.
-func (s *AgySession) start() {
+func (s *AgySession) start() error {
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 
 	s.mu.Lock()
 	if s.isAlive {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	if s.cancel != nil {
 		s.cancel()
@@ -443,7 +486,7 @@ func (s *AgySession) start() {
 		s.StdoutScanner = nil
 		s.isAlive = false
 		s.mu.Unlock()
-		return
+		return err
 	}
 	s.mu.Lock()
 	s.Cmd = cmd
@@ -460,59 +503,53 @@ func (s *AgySession) start() {
 				log.Printf("[PANIC RECOVERED in session throttler for bot %s] %v", s.BotName, r)
 			}
 		}()
-		var lastSent string
-		var lastSentTime time.Time
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(1200 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.UpdateChan:
-			case <-ticker.C:
 			case <-ctx.Done():
 				return
-			}
-
-			s.mu.Lock()
-			if s.Cmd == nil {
+			case <-s.UpdateChan:
+				s.mu.Lock()
+				truncated := s.TextTruncated
+				text := s.TextBuffer
+				activeMsgID := s.ActiveMessageID
+				botAPI := s.BotAPI
+				chatID := s.ChatID
 				s.mu.Unlock()
-				break
-			}
-			currentText := s.TextBuffer
-			isTruncated := s.TextTruncated
-			activeMsgID := s.ActiveMessageID
-			botAPI := s.BotAPI
-			chatID := s.ChatID
-			s.mu.Unlock()
 
-			if currentText != "" && currentText != lastSent && botAPI != nil {
-				if activeMsgID == 0 {
-					msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
-					msg.ParseMode = "Markdown"
-					if sentMsg, err := botAPI.Send(msg); err == nil {
-						s.mu.Lock()
-						s.ActiveMessageID = sentMsg.MessageID
-						activeMsgID = sentMsg.MessageID
-						s.mu.Unlock()
-					}
+				if truncated {
+					text += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
 				}
-				if activeMsgID != 0 && time.Since(lastSentTime) > 1000*time.Millisecond {
-					textToSend := currentText + "\n\n*⏳ Typing...*"
-					if isTruncated {
-						textToSend = currentText + "\n\n⚠️ <i>[Truncated: buffer cap reached]</i>"
-					}
-					sendChunk(botAPI, chatID, activeMsgID, textToSend)
-					lastSent = currentText
-					lastSentTime = time.Now()
+
+				if activeMsgID != 0 && botAPI != nil {
+					sendChunk(botAPI, chatID, activeMsgID, text)
+				}
+			case <-ticker.C:
+				s.mu.Lock()
+				truncated := s.TextTruncated
+				text := s.TextBuffer
+				activeMsgID := s.ActiveMessageID
+				botAPI := s.BotAPI
+				chatID := s.ChatID
+				s.mu.Unlock()
+
+				if truncated {
+					text += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+				}
+
+				if activeMsgID != 0 && botAPI != nil {
+					sendChunk(botAPI, chatID, activeMsgID, text)
 				}
 			}
 		}
 	}(ctx)
 
-	// Periodic typing / record voice action loop
+	// Typing indicator loop
 	go func(ctx context.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[PANIC RECOVERED in session typingLoop for bot %s] %v", s.BotName, r)
+				log.Printf("[PANIC RECOVERED in session typing indicator for bot %s] %v", s.BotName, r)
 			}
 		}()
 		ticker := time.NewTicker(4 * time.Second)
@@ -527,7 +564,7 @@ func (s *AgySession) start() {
 		}
 	}(ctx)
 
-	go s.readStdoutLoop(scanner, ctx)
+	go s.readStdoutLoop()
 	go func(c *exec.Cmd) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -560,12 +597,14 @@ func (s *AgySession) start() {
 			sendChunk(botAPI, chatID, activeMsgID, statusMsg)
 		}
 	}(cmd)
+
+	return nil
 }
 
 // Restart gracefully restarts the session.
 func (s *AgySession) Restart() {
 	s.Kill()
-	s.start()
+	_ = s.start()
 }
 
 // ExtractAllowedArtifacts parses the agent's markdown text for local file links (file://),
@@ -668,35 +707,17 @@ func getFallbackModel(currentModel string) string {
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events.
-func (s *AgySession) readStdoutLoop(params ...interface{}) {
+func (s *AgySession) readStdoutLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[PANIC RECOVERED in readStdoutLoop for bot %s] %v", s.BotName, r)
 		}
 	}()
 
-	var scanner *bufio.Scanner
-	var ctx context.Context
-
-	if len(params) >= 2 {
-		if sc, ok := params[0].(*bufio.Scanner); ok {
-			scanner = sc
-		}
-		if c, ok := params[1].(context.Context); ok {
-			ctx = c
-		}
-	}
-
-	if scanner == nil || ctx == nil {
-		s.mu.Lock()
-		if scanner == nil {
-			scanner = s.StdoutScanner
-		}
-		if ctx == nil {
-			ctx = s.ctx
-		}
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	scanner := s.StdoutScanner
+	ctx := s.ctx
+	s.mu.Unlock()
 
 	if scanner == nil || ctx == nil {
 		return

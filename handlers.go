@@ -647,6 +647,15 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 	}
 	newWS = realPath
 
+	session, err := replaceSession(db, botName, user, "", user.Model, newWS, chatID)
+	if err != nil || (session != nil && !session.IsAlive()) {
+		if err == nil {
+			err = fmt.Errorf("agent process failed to start")
+		}
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to start session in workspace `%s`: %v", newWS, err)))
+		return
+	}
+
 	if db != nil {
 		_, err := db.Exec("UPDATE users SET workspace = ? WHERE user_id = ?", newWS, userID)
 		if err != nil {
@@ -656,7 +665,6 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 	}
 
 	updateUserSession(db, userID, "")
-	replaceSession(db, botName, user, "", user.Model, newWS, chatID)
 
 	msg := tgbotapi.NewMessage(chatID, "📂 Target Lab (Workspace) changed to: `"+newWS+"`\n\n⚠️ *Warning:* Session restarted. All active background tasks and subagents were terminated.")
 	msg.ParseMode = "Markdown"
@@ -706,9 +714,17 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 
 // handleClearCommand clears the active conversation context.
 func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
-	// For a fresh start, reset session in DB and pass an empty conversation ID to start cleanly
+	session, err := replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
+	if err != nil || (session != nil && !session.IsAlive()) {
+		if err == nil {
+			err = fmt.Errorf("agent process failed to start")
+		}
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to clear context: %v", err)))
+		return
+	}
+
+	// For a fresh start, reset session in DB only after new session is successfully provisioned
 	updateUserSession(db, userID, "")
-	replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
 	respText := "🧼 Context cleared! Starting fresh session."
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
@@ -808,8 +824,16 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 			return
 		}
 
+		session, err := replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
+		if err != nil || (session != nil && !session.IsAlive()) {
+			if err == nil {
+				err = fmt.Errorf("agent process failed to start")
+			}
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to resume session: %v", err)))
+			return
+		}
+
 		updateUserSession(db, userID, convID)
-		session := replaceSession(db, botName, user, convID, user.Model, user.Workspace, chatID)
 
 		select {
 		case newID := <-session.InitChan:
@@ -832,13 +856,21 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 
 	if strings.HasPrefix(data, "model:") {
 		newModel := strings.TrimPrefix(data, "model:")
+		session, err := replaceSession(db, botName, user, user.SessionID, newModel, user.Workspace, chatID)
+		if err != nil || (session != nil && !session.IsAlive()) {
+			if err == nil {
+				err = fmt.Errorf("agent process failed to start")
+			}
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to switch model: %v", err)))
+			return
+		}
+
 		if err := updateUserModel(db, userID, newModel); err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ DB Error: "+err.Error()))
 			return
 		}
 
 		user.Model = newModel
-		replaceSession(db, botName, user, user.SessionID, newModel, user.Workspace, chatID)
 		respText = "🧠 Model switched to `" + newModel + "`\n✨ *Context preserved!* Continuing existing session."
 	} else if data == "cmd:status" {
 		respText = fmt.Sprintf("📊 *Status:*\n\n*Bot:* `%s`\n*Workspace:* `%s`\n*Model:* `%s`\n*Session:* `%s`", botName, user.Workspace, user.Model, user.SessionID)
@@ -846,8 +878,15 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		handleModelCommand(bot, chatID)
 		return
 	} else if data == "cmd:clear" {
+		session, err := replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
+		if err != nil || (session != nil && !session.IsAlive()) {
+			if err == nil {
+				err = fmt.Errorf("agent process failed to start")
+			}
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to clear context: %v", err)))
+			return
+		}
 		updateUserSession(db, userID, "")
-		replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
 		respText = "🧼 Context cleared! Starting fresh session."
 	} else if data == "cmd:usage" {
 		handleUsageCommand(bot, chatID)

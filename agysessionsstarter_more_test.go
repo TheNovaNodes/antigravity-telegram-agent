@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,8 +61,13 @@ func TestLoadAllowedAdmins(t *testing.T) {
 }
 
 func TestGetSession(t *testing.T) {
-	os.Setenv("AGY_BINARY", "cat")
-	defer os.Unsetenv("AGY_BINARY")
+	tempDir := t.TempDir()
+	mockScript := filepath.Join(tempDir, "mock_agy.sh")
+	scriptContent := "#!/bin/sh\nexec sleep 30\n"
+	if err := os.WriteFile(mockScript, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to create mock script: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockScript)
 
 	botName := "TestBotSession"
 	user := User{
