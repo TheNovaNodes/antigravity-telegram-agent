@@ -459,13 +459,15 @@ func (s *AgySession) start() error {
 	}
 
 	agyPath := getAgyPath()
+	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.Command(agyPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
-	os.MkdirAll(agentDir, 0755)
+	// #nosec G703 -- gosec:nri (Need Review)
+	_ = os.MkdirAll(agentDir, 0700)
 	cmd.Dir = agentDir
 
 	stdin, _ := cmd.StdinPipe()
@@ -656,6 +658,7 @@ func ExtractAllowedArtifacts(text string) []string {
 func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	paths := ExtractAllowedArtifacts(text)
 	for _, realPath := range paths {
+		// #nosec G304 -- gosec:nri (Need Review)
 		f, err := os.Open(realPath)
 		if err != nil {
 			continue

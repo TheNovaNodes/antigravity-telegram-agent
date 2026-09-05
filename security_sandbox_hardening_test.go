@@ -78,6 +78,7 @@ func TestEnsureEnvPermissions(t *testing.T) {
 	}()
 
 	t.Setenv("ALLOW_DOTENV", "1")
+	t.Setenv("ENV_FILE", filepath.Join(tempDir, "nonexistent_prod_env"))
 
 	envFile := filepath.Join(tempDir, ".env")
 	if err := os.WriteFile(envFile, []byte("TEST=1\n"), 0644); err != nil {
