@@ -135,6 +135,8 @@ func isPathUnderRoot(path, root string) bool {
 	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
 }
 
+var fallbackAgyBinary string
+
 // getAgyPath resolves the absolute path to the Antigravity CLI binary.
 func getAgyPath() string {
 	if env := os.Getenv("AGY_BINARY"); env != "" {
@@ -144,7 +146,14 @@ func getAgyPath() string {
 	if err != nil {
 		home = "/root"
 	}
-	return filepath.Join(home, ".local/bin/agy")
+	p := filepath.Join(home, ".local/bin/agy")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if fallbackAgyBinary != "" {
+		return fallbackAgyBinary
+	}
+	return p
 }
 
 // Kill gracefully cancels the session context, closes pipes, and terminates the underlying process tree.
