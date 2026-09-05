@@ -62,5 +62,5 @@ jobs:
     - name: Show Coverage Report
       run: go tool cover -func=coverage.out
 
-    - name: Build binary
-      run: go build -v ./...
+    - name: Build binary (CGO_ENABLED=0)
+      run: CGO_ENABLED=0 go build -v ./...

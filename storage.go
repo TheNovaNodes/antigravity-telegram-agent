@@ -9,8 +9,17 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
+	sqliteDriver "modernc.org/sqlite"
 )
+
+func init() {
+	for _, d := range sql.Drivers() {
+		if d == "sqlite3" {
+			return
+		}
+	}
+	sql.Register("sqlite3", &sqliteDriver.Driver{})
+}
 
 // User represents the User data structure.
 type User struct {

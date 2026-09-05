@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 func TestExtractAllowedArtifacts_ProjectsDirAndFileValidation(t *testing.T) {

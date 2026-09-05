@@ -10,7 +10,7 @@ all: build
 
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(BUILD_PATH) .
+	CGO_ENABLED=0 go build -o $(BUILD_PATH) .
 	@echo "✅ Build complete: $(BUILD_PATH)"
 
 fmt:
