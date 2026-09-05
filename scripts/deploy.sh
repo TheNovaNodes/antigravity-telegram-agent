@@ -21,6 +21,8 @@ cat << SVC > "${SERVICE_FILE}"
 [Unit]
 Description=Antigravity Go Telegram Bot Engine (Multi-Agent Swarm)
 After=network.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -31,6 +33,15 @@ Environment="HOME=/root"
 Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
 Restart=always
 RestartSec=3
+
+# Sandboxing & Hardening (#197)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+InaccessiblePaths=-/root/.ssh -/root/.gnupg
 
 [Install]
 WantedBy=multi-user.target

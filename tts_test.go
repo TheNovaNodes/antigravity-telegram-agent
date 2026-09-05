@@ -18,34 +18,34 @@ func TestExtractElevenLabsKeys(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:        "Single Valid Key",
+			name:        "Whitespace and Delimiters Only",
+			rawEnv:      "  \n \r \t , ,   ",
+			expectLen:   0,
+			expectError: true,
+		},
+		{
+			name:        "Single Valid Key with sk_ prefix",
 			rawEnv:      "sk_1234567890abcdef",
 			expectLen:   1,
 			expectError: false,
 		},
 		{
+			name:        "Single Valid Key without prefix (legacy/custom)",
+			rawEnv:      "1234567890abcdef",
+			expectLen:   1,
+			expectError: false,
+		},
+		{
 			name:        "Multiple Valid Keys Comma Separated",
-			rawEnv:      "sk_abc,sk_def,sk_ghi",
+			rawEnv:      "sk_abc,sk_def,custom_ghi",
 			expectLen:   3,
 			expectError: false,
 		},
 		{
-			name:        "Multiple Valid Keys With Spaces and Newlines",
-			rawEnv:      "sk_abc, sk_def \n sk_ghi\r sk_jkl",
+			name:        "Multiple Valid Keys With Spaces, Newlines and Quotes",
+			rawEnv:      "sk_abc, \"sk_def\" \n 'custom_ghi'\r sk_jkl",
 			expectLen:   4,
 			expectError: false,
-		},
-		{
-			name:        "Mix of Valid and Invalid Keys",
-			rawEnv:      "sk_abc, invalid_key, sk_def",
-			expectLen:   2,
-			expectError: false,
-		},
-		{
-			name:        "Only Invalid Keys",
-			rawEnv:      "invalid1, invalid2",
-			expectLen:   0,
-			expectError: true,
 		},
 	}
 
