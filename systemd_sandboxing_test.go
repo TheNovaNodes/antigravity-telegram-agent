@@ -27,6 +27,8 @@ func TestSystemdSandboxingConfigInDeployScript(t *testing.T) {
 		"ProtectKernelModules=yes",
 		"ProtectControlGroups=yes",
 		"InaccessiblePaths=-/root/.ssh -/root/.gnupg",
+		"EnvironmentFile=${PROD_ENV_FILE}",
+		`ENV_DIR="/etc/antigravity-bot"`,
 	}
 
 	for _, dir := range requiredDirectives {

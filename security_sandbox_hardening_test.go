@@ -77,6 +77,8 @@ func TestEnsureEnvPermissions(t *testing.T) {
 		_ = os.Chdir(origWd)
 	}()
 
+	t.Setenv("ALLOW_DOTENV", "1")
+
 	envFile := filepath.Join(tempDir, ".env")
 	if err := os.WriteFile(envFile, []byte("TEST=1\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test .env: %v", err)
