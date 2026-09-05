@@ -57,6 +57,87 @@ func truncateUTF8Bytes(s string, maxBytes int) string {
 	return string(b)
 }
 
+// sanitizeFilename converts a title into a filesystem-safe slug (preserving Latin and Cyrillic runes).
+func sanitizeFilename(s string) string {
+	s = strings.TrimSpace(s)
+	lower := strings.ToLower(s)
+	if lower == "" || lower == "(untitled session)" || lower == "untitled session" ||
+		lower == "(empty)" || lower == "empty" ||
+		lower == "session active" || lower == "(session active)" {
+		return ""
+	}
+	var sb strings.Builder
+	lastWasUnderscore := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			(r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') || r == '-' {
+			sb.WriteRune(r)
+			lastWasUnderscore = false
+		} else if r == ' ' || r == '_' {
+			if !lastWasUnderscore && sb.Len() > 0 {
+				sb.WriteRune('_')
+				lastWasUnderscore = true
+			}
+		}
+	}
+	res := strings.Trim(sb.String(), "_-")
+	runes := []rune(res)
+	if len(runes) > 30 {
+		runes = runes[:30]
+	}
+	return strings.Trim(string(runes), "_-")
+}
+
+// formatToolCalls formats tool execution steps concisely without dumping raw multiline JSON.
+func formatToolCalls(tcs []interface{}) string {
+	if len(tcs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, tcRaw := range tcs {
+		tc, ok := tcRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := tc["name"].(string)
+		if name == "" {
+			continue
+		}
+		summary, _ := tc["toolSummary"].(string)
+		action, _ := tc["toolAction"].(string)
+		detail := strings.TrimSpace(summary)
+		if detail == "" {
+			detail = strings.TrimSpace(action)
+		}
+		if detail == "" {
+			if argJSON, ok := tc["argumentsJson"].(string); ok && len(argJSON) > 0 {
+				clean := strings.ReplaceAll(strings.ReplaceAll(argJSON, "\n", " "), "\r", "")
+				runes := []rune(clean)
+				if len(runes) > 80 {
+					clean = string(runes[:77]) + "..."
+				}
+				detail = clean
+			} else if argsMap, ok := tc["args"].(map[string]interface{}); ok && len(argsMap) > 0 {
+				if b, err := json.Marshal(argsMap); err == nil {
+					clean := string(b)
+					runes := []rune(clean)
+					if len(runes) > 80 {
+						clean = string(runes[:77]) + "..."
+					}
+					detail = clean
+				}
+			}
+		}
+
+		if detail != "" {
+			sb.WriteString(fmt.Sprintf("🛠️ *Tool:* `%s` — %s\n", name, detail))
+		} else {
+			sb.WriteString(fmt.Sprintf("🛠️ *Tool:* `%s`\n", name))
+		}
+	}
+	return sb.String()
+}
+
 var (
 	questionOptionsMu sync.RWMutex
 	questionOptions   = make(map[string]string)
@@ -404,9 +485,15 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 		}
 		var step map[string]interface{}
 		if json.Unmarshal([]byte(line), &step) == nil {
-			stepNum++
 			source, _ := step["source"].(string)
 			stepType, _ := step["type"].(string)
+
+			// Filter out raw tool output dumps (GENERIC/TOOL_OUTPUT) to prevent log bloat
+			if (source == "MODEL" && stepType == "GENERIC") || source == "TOOL" || stepType == "TOOL_OUTPUT" {
+				continue
+			}
+
+			stepNum++
 			createdAt, _ := step["created_at"].(string)
 			content, _ := step["content"].(string)
 
@@ -427,19 +514,22 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 				timeStr = fmt.Sprintf(" (%s)", t.Format("2006-01-02 15:04:05 UTC"))
 			}
 
-			sb.WriteString(fmt.Sprintf("%s%s\n\n", roleHeader, timeStr))
-			if strings.TrimSpace(content) != "" {
-				sb.WriteString(strings.TrimSpace(content) + "\n\n")
+			toolCallsStr := ""
+			if tcs, ok := step["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
+				toolCallsStr = formatToolCalls(tcs)
 			}
 
-			if tcs, ok := step["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
-				sb.WriteString("```json\n")
-				for _, tc := range tcs {
-					if tcBytes, err := json.MarshalIndent(tc, "", "  "); err == nil {
-						sb.WriteString(string(tcBytes) + "\n")
-					}
-				}
-				sb.WriteString("```\n\n")
+			trimmedContent := strings.TrimSpace(content)
+			if trimmedContent == "" && toolCallsStr == "" {
+				continue
+			}
+
+			sb.WriteString(fmt.Sprintf("%s%s\n\n", roleHeader, timeStr))
+			if trimmedContent != "" {
+				sb.WriteString(trimmedContent + "\n\n")
+			}
+			if toolCallsStr != "" {
+				sb.WriteString(toolCallsStr + "\n")
 			}
 		}
 	}
@@ -452,6 +542,9 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	exportDir := filepath.Join(getAgentsDir(), botName, "scratch", "exports")
 	os.MkdirAll(exportDir, 0755)
 	safeFilename := fmt.Sprintf("session_%s.md", safePrefix(user.SessionID, 8))
+	if slug := sanitizeFilename(sessionTitle); slug != "" {
+		safeFilename = fmt.Sprintf("session_%s_%s.md", slug, safePrefix(user.SessionID, 8))
+	}
 	exportPath := filepath.Join(exportDir, safeFilename)
 
 	if err := os.WriteFile(exportPath, []byte(sb.String()), 0644); err != nil {
@@ -784,7 +877,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 }
 
 // downloadTelegramMedia downloads incoming Telegram media attachment (file, photo, voice, audio).
-func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text, caption, botName string) (string, bool, error) {
+func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text, caption, botName string, originalFileName ...string) (string, bool, error) {
 	if fileID == "" {
 		return text, false, nil
 	}
@@ -846,9 +939,17 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 		return "", false, fmt.Errorf("file exceeds limit")
 	}
 
+	origName := ""
+	if len(originalFileName) > 0 {
+		origName = originalFileName[0]
+	}
+
 	baseText := text
 	if baseText == "" {
 		baseText = caption
+	}
+	if baseText == "" && strings.HasPrefix(strings.ToLower(origName), "session_") && strings.HasSuffix(strings.ToLower(origName), ".md") {
+		baseText = "📋 Контекст предыдущей сессии загружен из файла экспорта. Изучи историю, текущее состояние задачи и продолжай выполнение с места остановки."
 	}
 	formattedText := fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
 	return formattedText, true, nil
@@ -1040,10 +1141,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 		text = strings.Replace(text, "/teamwork_preview", "/teamwork-preview", 1)
 	}
 
-	var fileID, ext string
+	var fileID, ext, originalFileName string
 	isVoice := false
 	if msg.Document != nil {
 		fileID = msg.Document.FileID
+		originalFileName = msg.Document.FileName
 		ext = filepath.Ext(msg.Document.FileName)
 		if ext == "" {
 			ext = ".bin"
@@ -1069,7 +1171,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 
 	downloadedFile := false
 	if fileID != "" {
-		formattedText, isFile, err := downloadTelegramMedia(bot, chatID, fileID, ext, text, caption, botName)
+		formattedText, isFile, err := downloadTelegramMedia(bot, chatID, fileID, ext, text, caption, botName, originalFileName)
 		if err != nil {
 			return
 		}
