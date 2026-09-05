@@ -114,10 +114,11 @@ func main() {
 		}
 	}
 
-	// Start background housekeeping workers (session GC and disk cleanup)
+	// Start background housekeeping workers (session GC, disk cleanup, and subprocess watchdog)
 	stopHousekeeping := make(chan struct{})
 	StartSessionGCWorker(30*time.Minute, 24*time.Hour, stopHousekeeping)
 	StartDiskCleanupWorker(2*time.Hour, 24*time.Hour, stopHousekeeping)
+	StartSubprocessWatchdogWorker(2*time.Second, 3*time.Second, stopHousekeeping)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
