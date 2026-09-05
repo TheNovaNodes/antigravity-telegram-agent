@@ -132,7 +132,7 @@ func TestChaos_CorruptedJSONL_StreamRecovery(t *testing.T) {
 	defer session.cancel()
 
 	// Should not panic on garbage
-	session.readStdoutLoop(scanner, session.ctx)
+	session.readStdoutLoop()
 
 	if session.Conversation != "valid-conv-1" {
 		t.Errorf("Expected conversation to be initialized, got %s", session.Conversation)
@@ -161,7 +161,7 @@ func TestChaos_HugeTokenLine_NoScannerOverflow(t *testing.T) {
 	session.ctx, session.cancel = context.WithCancel(context.Background())
 	defer session.cancel()
 
-	session.readStdoutLoop(scanner, session.ctx)
+	session.readStdoutLoop()
 
 	// Result event clears text buffer
 	session.mu.Lock()

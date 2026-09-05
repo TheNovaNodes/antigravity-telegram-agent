@@ -27,12 +27,21 @@ func TestGetSession_AttachesDBAndPersistsInitEvent(t *testing.T) {
 		t.Error("Expected session.DB to be attached and non-nil")
 	}
 
+	// Stop background process started by getSession before testing mock stdout stream
+	session.Kill()
+
 	// Simulate agy outputting an init event with the actual conversation ID
 	realConvID := "agy-real-conversation-uuid-777"
 	jsonl := `{"event":"init","conversation_id":"` + realConvID + `"}` + "\n"
 	scanner := bufio.NewScanner(strings.NewReader(jsonl))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	session.mu.Lock()
+	session.ctx = ctx
+	session.cancel = cancel
+	session.isAlive = true
 	session.StdoutScanner = scanner
 	session.mu.Unlock()
 
@@ -78,15 +87,21 @@ func TestGetSession_MultiTurnContextRetention_NoProcessKill(t *testing.T) {
 	if session1 == nil {
 		t.Fatal("Expected turn 1 session to be created")
 	}
-	session1.mu.Lock()
-	session1.isAlive = true
-	session1.mu.Unlock()
+	session1.Kill()
 
 	// Simulate init event updating conversation
 	realConvID := "conv-multi-turn-999"
 	jsonl := `{"event":"init","conversation_id":"` + realConvID + `"}` + "\n"
+	scanner1 := bufio.NewScanner(strings.NewReader(jsonl))
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+
 	session1.mu.Lock()
-	session1.StdoutScanner = bufio.NewScanner(strings.NewReader(jsonl))
+	session1.ctx = ctx1
+	session1.cancel = cancel1
+	session1.isAlive = true
+	session1.StdoutScanner = scanner1
 	session1.mu.Unlock()
 	session1.readStdoutLoop()
 

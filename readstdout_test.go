@@ -109,7 +109,7 @@ func TestReadStdoutLoop_AskQuestion(t *testing.T) {
 	}
 	session1.ctx, session1.cancel = context.WithCancel(context.Background())
 	defer session1.cancel()
-	session1.readStdoutLoop(scanner1, session1.ctx)
+	session1.readStdoutLoop()
 
 	// 2. Full BotAPI delivery and options caching check
 	ms := newMockServer()
@@ -129,7 +129,7 @@ func TestReadStdoutLoop_AskQuestion(t *testing.T) {
 	}
 	session2.ctx, session2.cancel = context.WithCancel(context.Background())
 	defer session2.cancel()
-	session2.readStdoutLoop(scanner2, session2.ctx)
+	session2.readStdoutLoop()
 
 	ms.mu.Lock()
 	sentBodies := append([]string{}, ms.sentBodies...)
@@ -174,7 +174,7 @@ func TestReadStdoutLoop_ErrorResult(t *testing.T) {
 	session.ctx, session.cancel = context.WithCancel(context.Background())
 	defer session.cancel()
 
-	session.readStdoutLoop(scanner, session.ctx)
+	session.readStdoutLoop()
 
 	// Assert session killed on ERROR result
 	if session.IsAlive() {
