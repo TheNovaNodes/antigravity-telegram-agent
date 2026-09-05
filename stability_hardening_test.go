@@ -149,4 +149,3 @@ func BenchmarkTextBuffer_Append(b *testing.B) {
 		session.mu.Unlock()
 	}
 }
-
