@@ -1194,7 +1194,12 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 }
 
 // sendChunk safely breaks a large text into valid HTML chunks and sends them sequentially.
-func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) []string {
+func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) (chunks []string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED in sendChunk for chatID %d, msgID %d] %v", chatID, messageID, r)
+		}
+	}()
 	log.Printf("sendChunk called for chatID %d, msgID %d, text len %d", chatID, messageID, len(text))
 	formatted := MarkdownToTelegramHTML(text)
 	if strings.TrimSpace(formatted) == "" {
@@ -1205,7 +1210,7 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) [
 			formatted = "<i>(empty message)</i>"
 		}
 	}
-	chunks := SplitHTMLChunks(formatted, 4000)
+	chunks = SplitHTMLChunks(formatted, 4000)
 	if len(chunks) == 0 {
 		chunks = []string{"<i>(empty message)</i>"}
 	}
