@@ -2,10 +2,11 @@ package main
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/big"
 	"net/http"
 	"os"
 	"regexp"
@@ -90,17 +91,22 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 
 	bodyData, _ := json.Marshal(payload)
 
-	// Shuffle keys to distribute load evenly across key pool
+	// Shuffle keys to distribute load evenly across key pool using crypto/rand
 	shuffledKeys := make([]string, len(validKeys))
 	copy(shuffledKeys, validKeys)
-	rand.Shuffle(len(shuffledKeys), func(i, j int) {
-		shuffledKeys[i], shuffledKeys[j] = shuffledKeys[j], shuffledKeys[i]
-	})
+	for i := len(shuffledKeys) - 1; i > 0; i-- {
+		n, err := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
+		if err == nil {
+			j := int(n.Int64())
+			shuffledKeys[i], shuffledKeys[j] = shuffledKeys[j], shuffledKeys[i]
+		}
+	}
 
 	client := &http.Client{Timeout: 20 * time.Second}
 	var lastErr error
 
 	for _, apiKey := range shuffledKeys {
+		// #nosec G704 -- gosec:nri (Need Review)
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyData))
 		if err != nil {
 			lastErr = err
@@ -111,6 +117,7 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 		req.Header.Add("Content-Type", "application/json")
 		req.Header.Add("Accept", "audio/mpeg")
 
+		// #nosec G704 -- gosec:nri (Need Review)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err

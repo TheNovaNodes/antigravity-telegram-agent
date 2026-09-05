@@ -1,8 +1,10 @@
-.PHONY: all build test test-fast race coverage fmt clean run env-check
+.PHONY: all build test test-fast race coverage fmt clean run env-check lint sast vuln
 
 BINARY_NAME=antigravity-bot-engine
 BIN_DIR=bin
 BUILD_PATH=$(BIN_DIR)/$(BINARY_NAME)
+
+export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
 all: build
 
@@ -14,6 +16,19 @@ build:
 fmt:
 	gofmt -s -w .
 	@echo "🎨 Code formatted with gofmt."
+
+lint:
+	go vet ./...
+	@echo "✅ go vet passed."
+
+sast:
+	staticcheck ./...
+	gosec -conf .gosec.json ./...
+	@echo "✅ SAST (staticcheck & gosec) passed."
+
+vuln:
+	CGO_ENABLED=0 govulncheck ./...
+	@echo "✅ govulncheck passed."
 
 test:
 	go test -v -race ./...

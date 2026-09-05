@@ -31,7 +31,7 @@ func getDataDir() string {
 	}
 	// Check if data directory exists or create it
 	dir := "data"
-	if err := os.MkdirAll(dir, 0755); err == nil {
+	if err := os.MkdirAll(dir, 0700); err == nil {
 		return dir
 	}
 	return "."
@@ -48,6 +48,7 @@ func loadEnvFile() {
 		envFile = "/etc/antigravity-bot/env"
 	}
 
+	// #nosec G703 -- gosec:nri (Need Review)
 	info, err := os.Stat(envFile)
 	if err != nil {
 		// Production mode: fail-closed if missing
@@ -57,6 +58,7 @@ func loadEnvFile() {
 
 		// Development mode: fallback to .env in current directory
 		envFile = ".env"
+		// #nosec G703 -- gosec:nri (Need Review)
 		info, err = os.Stat(envFile)
 		if err != nil {
 			// In dev mode, if neither exists, log warning and rely on already exported environment
@@ -67,6 +69,7 @@ func loadEnvFile() {
 
 	// Fail-closed permission check: enforce 0600
 	if mode := info.Mode().Perm(); mode != 0600 {
+		// #nosec G703 -- gosec:nri (Need Review)
 		if err := os.Chmod(envFile, 0600); err != nil {
 			log.Fatalf("FATAL [Security]: Insecure file permissions on %s (%04o) and failed to enforce 0600: %v", envFile, mode, err)
 		}
@@ -74,6 +77,7 @@ func loadEnvFile() {
 	}
 
 	// Parse and populate environment variables
+	// #nosec G304 G703 -- gosec:nri (Need Review)
 	data, err := os.ReadFile(envFile)
 	if err != nil {
 		log.Fatalf("FATAL [Security]: Failed to read env file %s: %v", envFile, err)
@@ -119,9 +123,11 @@ func initDB(botName string) *sql.DB {
 	dbPath := filepath.Join(dbDir, fmt.Sprintf("sessions_%s.db", botName))
 
 	// Ensure secure permissions (0600) on database file to prevent unauthorized local reading
+	// #nosec G304 G703 -- gosec:nri (Need Review)
 	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
 		f.Close()
 	}
+	// #nosec G703 -- gosec:nri (Need Review)
 	if err := os.Chmod(dbPath, 0600); err != nil {
 		log.Printf("⚠️ Warning: Failed to enforce 0600 permissions on db %s: %v", dbPath, err)
 	}

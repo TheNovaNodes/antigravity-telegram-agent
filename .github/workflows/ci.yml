@@ -24,6 +24,7 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version-file: 'go.mod'
+        check-latest: true
         cache: true
 
     - name: Check code formatting (gofmt)
@@ -40,8 +41,20 @@ jobs:
         go mod tidy
         git diff --exit-code go.mod go.sum
 
-    - name: Go Vet
-      run: go vet ./...
+    - name: Run Linter (go vet)
+      run: make lint
+
+    - name: Install Static Analysis & SAST Tools
+      run: |
+        go install honnef.co/go/tools/cmd/staticcheck@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+
+    - name: Run SAST Security Scans (staticcheck & gosec)
+      run: make sast
+
+    - name: Run Vulnerability Check (govulncheck)
+      run: make vuln
 
     - name: Run Tests with Race Detector
       run: go test -v -race -coverprofile=coverage.out ./...
