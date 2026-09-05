@@ -27,7 +27,7 @@ sast:
 	@echo "✅ SAST (staticcheck & gosec) passed."
 
 vuln:
-	govulncheck ./...
+	CGO_ENABLED=0 govulncheck ./...
 	@echo "✅ govulncheck passed."
 
 test:
