@@ -22,6 +22,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+const maxTextBufferBytes = 1 << 20 // 1MB maximum streaming buffer per session
+
 // AgySession represents the active execution session of an Antigravity agent process.
 type AgySession struct {
 	BotName         string
@@ -41,6 +43,7 @@ type AgySession struct {
 	DB              *sql.DB
 	ActiveMessageID int
 	TextBuffer      string
+	TextTruncated   bool
 	LastEdit        time.Time
 	LastActivity    time.Time
 	UpdateChan      chan struct{}
@@ -160,6 +163,7 @@ func (s *AgySession) Kill() {
 	s.Cmd = nil
 	s.ActiveMessageID = 0
 	s.TextBuffer = ""
+	s.TextTruncated = false
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -451,6 +455,11 @@ func (s *AgySession) start() {
 
 	// Streaming throttler loop
 	go func(ctx context.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC RECOVERED in session throttler for bot %s] %v", s.BotName, r)
+			}
+		}()
 		var lastSent string
 		var lastSentTime time.Time
 		ticker := time.NewTicker(100 * time.Millisecond)
@@ -469,6 +478,7 @@ func (s *AgySession) start() {
 				break
 			}
 			currentText := s.TextBuffer
+			isTruncated := s.TextTruncated
 			activeMsgID := s.ActiveMessageID
 			botAPI := s.BotAPI
 			chatID := s.ChatID
@@ -486,7 +496,11 @@ func (s *AgySession) start() {
 					}
 				}
 				if activeMsgID != 0 && time.Since(lastSentTime) > 1000*time.Millisecond {
-					sendChunk(botAPI, chatID, activeMsgID, currentText+"\n\n*⏳ Typing...*")
+					textToSend := currentText + "\n\n*⏳ Typing...*"
+					if isTruncated {
+						textToSend = currentText + "\n\n⚠️ <i>[Truncated: buffer cap reached]</i>"
+					}
+					sendChunk(botAPI, chatID, activeMsgID, textToSend)
 					lastSent = currentText
 					lastSentTime = time.Now()
 				}
@@ -496,6 +510,11 @@ func (s *AgySession) start() {
 
 	// Periodic typing / record voice action loop
 	go func(ctx context.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC RECOVERED in session typingLoop for bot %s] %v", s.BotName, r)
+			}
+		}()
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -510,6 +529,11 @@ func (s *AgySession) start() {
 
 	go s.readStdoutLoop(scanner, ctx)
 	go func(c *exec.Cmd) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC RECOVERED in session cmdWait for bot %s] %v", s.BotName, r)
+			}
+		}()
 		err := c.Wait()
 		s.mu.Lock()
 		activeMsgID := s.ActiveMessageID
@@ -523,6 +547,7 @@ func (s *AgySession) start() {
 			s.StdoutScanner = nil
 			s.ActiveMessageID = 0
 			s.TextBuffer = ""
+			s.TextTruncated = false
 		}
 		s.mu.Unlock()
 
@@ -614,21 +639,32 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	}
 }
 
+// fallbackChain defines the prioritized failover progression for LLM models upon encountering rate limits (429/503).
+var fallbackChain = []string{
+	"gemini-3.8-flash-high",
+	"gemini-3.7-flash-high",
+	"gemini-3.1-pro-high",
+	"gemini-3.6-flash-low",
+}
+
 // getFallbackModel provides an automatic failover model when rate limits or quota exhaustion are encountered.
+// It iterates through fallbackChain. If currentModel is found, it returns the next model in sequence.
+// If currentModel is not in the chain, it fails over to the head of the chain (unless already equal).
 // It returns an empty string when the fallback chain is exhausted, preventing infinite switching loops.
 func getFallbackModel(currentModel string) string {
-	switch currentModel {
-	case "gemini-3.8-flash-high":
-		return "gemini-3.7-flash-high"
-	case "gemini-3.7-flash-high":
-		return "gemini-3.1-pro-high"
-	case "gemini-3.1-pro-high":
-		return "gemini-3.6-flash-low"
-	case "gemini-3.6-flash-low":
-		return "" // Chain exhausted, terminal state
-	default:
-		return "gemini-3.7-flash-high"
+	for i, m := range fallbackChain {
+		if m == currentModel {
+			if i+1 < len(fallbackChain) {
+				return fallbackChain[i+1]
+			}
+			return "" // Chain exhausted, terminal state
+		}
 	}
+	// If currentModel is not in fallbackChain, fail over to the first entry (flagship)
+	if len(fallbackChain) > 0 && fallbackChain[0] != currentModel {
+		return fallbackChain[0]
+	}
+	return ""
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events.
@@ -763,7 +799,11 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 				if delta, ok := su["text_delta"].(string); ok && delta != "" {
 					s.mu.Lock()
-					s.TextBuffer += delta
+					if len(s.TextBuffer)+len(delta) <= maxTextBufferBytes {
+						s.TextBuffer += delta
+					} else {
+						s.TextTruncated = true
+					}
 					s.mu.Unlock()
 					select {
 					case s.UpdateChan <- struct{}{}:
@@ -807,7 +847,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 								updateUserModel(db, uID, fallback)
 							}
 
-							displayErr = fmt.Sprintf("⚠️ Достигнут лимит для `%s` (Quota/429).\n🔄 *Авто-переключение на `%s`*.\n✨ Контекст сохранён! Отправьте сообщение повторно.", oldModel, fallback)
+							displayErr = fmt.Sprintf("⚠️ Достигнут лимит для `%s` (Quota/429).\n🔄 *Авто-переключение на `%s`*.\nОтправьте сообщение повторно для продолжения.", oldModel, fallback)
 						} else {
 							displayErr = "⚠️ Превышен лимит запросов ко всем доступным моделям (Rate limit / Quota Exhausted). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
 						}
@@ -826,11 +866,15 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					s.mu.Lock()
 					s.ActiveMessageID = 0
 					s.TextBuffer = ""
+					s.TextTruncated = false
 					s.mu.Unlock()
 					continue
 				}
 				s.mu.Lock()
 				response := s.TextBuffer
+				if s.TextTruncated {
+					response += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+				}
 				activeMsgID := s.ActiveMessageID
 				s.mu.Unlock()
 
