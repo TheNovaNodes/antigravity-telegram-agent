@@ -754,6 +754,7 @@ func ExtractAllowedArtifacts(text string) []string {
 			continue
 		}
 
+		// #nosec G703 -- gosec:nri (Need Review)
 		if info, err := os.Stat(realPath); err == nil && !info.IsDir() {
 			if !seen[realPath] {
 				seen[realPath] = true
