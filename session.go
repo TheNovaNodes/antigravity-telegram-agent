@@ -498,7 +498,7 @@ func (s *AgySession) start() error {
 	s.isAlive = true
 	s.mu.Unlock()
 
-	// Streaming throttler loop
+	// Streaming throttler loop: coalesces rapid token updates and edits Telegram at most once every 1200ms
 	go func(ctx context.Context) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -507,27 +507,20 @@ func (s *AgySession) start() error {
 		}()
 		ticker := time.NewTicker(1200 * time.Millisecond)
 		defer ticker.Stop()
+		var lastSentText string
+		hasDelta := false
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-s.UpdateChan:
-				s.mu.Lock()
-				truncated := s.TextTruncated
-				text := s.TextBuffer
-				activeMsgID := s.ActiveMessageID
-				botAPI := s.BotAPI
-				chatID := s.ChatID
-				s.mu.Unlock()
-
-				if truncated {
-					text += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
-				}
-
-				if activeMsgID != 0 && botAPI != nil {
-					sendChunk(botAPI, chatID, activeMsgID, text)
-				}
+				hasDelta = true
 			case <-ticker.C:
+				if !hasDelta {
+					continue
+				}
+
 				s.mu.Lock()
 				truncated := s.TextTruncated
 				text := s.TextBuffer
@@ -536,13 +529,22 @@ func (s *AgySession) start() error {
 				chatID := s.ChatID
 				s.mu.Unlock()
 
+				trimmed := strings.TrimSpace(text)
+				if activeMsgID == 0 || botAPI == nil || trimmed == "" {
+					continue
+				}
+				if trimmed == lastSentText {
+					hasDelta = false
+					continue
+				}
+
 				if truncated {
 					text += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
 				}
 
-				if activeMsgID != 0 && botAPI != nil {
-					sendChunk(botAPI, chatID, activeMsgID, text)
-				}
+				sendChunk(botAPI, chatID, activeMsgID, text)
+				lastSentText = trimmed
+				hasDelta = false
 			}
 		}
 	}(ctx)
@@ -566,7 +568,11 @@ func (s *AgySession) start() error {
 		}
 	}(ctx)
 
-	go s.readStdoutLoop(scanner, ctx)
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		s.readStdoutLoop(scanner, ctx)
+	}()
 	go func(c *exec.Cmd) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -574,6 +580,9 @@ func (s *AgySession) start() error {
 			}
 		}()
 		err := c.Wait()
+		// Wait for readStdoutLoop to consume all remaining buffered stdout and process final results
+		<-stdoutDone
+
 		s.mu.Lock()
 		activeMsgID := s.ActiveMessageID
 		botAPI := s.BotAPI
@@ -609,11 +618,12 @@ func (s *AgySession) Restart() {
 	_ = s.start()
 }
 
-// ExtractAllowedArtifacts parses the agent's markdown text for local file links (file://),
+// ExtractAllowedArtifacts parses the agent's markdown text for local file links (file:// and markdown paths),
 // normalizes the paths, evaluates symlinks, checks them against the LFI whitelists (Fail-Closed), and verifies files exist.
 func ExtractAllowedArtifacts(text string) []string {
 	var validPaths []string
-	re := regexp.MustCompile(`\(file://(.*?)\)`)
+	seen := make(map[string]bool)
+	re := regexp.MustCompile(`(?:\[[^\]]*\]\((?:file://)?([^)\s]+)\)|\(file://([^)\s]+)\))`)
 	matches := re.FindAllStringSubmatch(text, -1)
 
 	agentsDir := getAgentsDir()
@@ -621,32 +631,39 @@ func ExtractAllowedArtifacts(text string) []string {
 	projectsDir := getProjectsDir()
 
 	for _, match := range matches {
-		if len(match) > 1 {
-			filePath := match[1]
-			if decoded, err := url.PathUnescape(filePath); err == nil {
-				filePath = decoded
-			}
-			cleanPath, err := filepath.Abs(filePath)
-			if err != nil {
-				continue
-			}
+		filePath := match[1]
+		if filePath == "" && len(match) > 2 {
+			filePath = match[2]
+		}
+		if filePath == "" || strings.HasPrefix(filePath, "http://") || strings.HasPrefix(filePath, "https://") {
+			continue
+		}
+		if decoded, err := url.PathUnescape(filePath); err == nil {
+			filePath = decoded
+		}
+		cleanPath, err := filepath.Abs(filePath)
+		if err != nil {
+			continue
+		}
 
-			realPath, err := filepath.EvalSymlinks(cleanPath)
-			if err != nil {
-				continue
-			}
+		realPath, err := filepath.EvalSymlinks(cleanPath)
+		if err != nil {
+			continue
+		}
 
-			// Fail-Closed: Verify that realPath is strictly contained inside allowed roots
-			isAllowed := isPathUnderRoot(realPath, agentsDir) ||
-				isPathUnderRoot(realPath, brainDir) ||
-				isPathUnderRoot(realPath, projectsDir)
+		// Fail-Closed: Verify that realPath is strictly contained inside allowed roots
+		isAllowed := isPathUnderRoot(realPath, agentsDir) ||
+			isPathUnderRoot(realPath, brainDir) ||
+			isPathUnderRoot(realPath, projectsDir)
 
-			if !isAllowed {
-				log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
-				continue
-			}
+		if !isAllowed {
+			log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
+			continue
+		}
 
-			if info, err := os.Stat(realPath); err == nil && !info.IsDir() {
+		if info, err := os.Stat(realPath); err == nil && !info.IsDir() {
+			if !seen[realPath] {
+				seen[realPath] = true
 				validPaths = append(validPaths, realPath)
 			}
 		}
@@ -661,6 +678,7 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		// #nosec G304 -- gosec:nri (Need Review)
 		f, err := os.Open(realPath)
 		if err != nil {
+			log.Printf("[Artifacts] Failed to open %s: %v", realPath, err)
 			continue
 		}
 		info, err := f.Stat()
@@ -675,7 +693,11 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		})
 		doc.Caption = "📦 Artifact: " + filepath.Base(realPath)
 		if bot != nil {
-			bot.Send(doc)
+			if _, err := bot.Send(doc); err != nil {
+				log.Printf("[Artifacts] Failed to send artifact %s to chat %d: %v", realPath, chatID, err)
+			} else {
+				log.Printf("[Artifacts] Successfully sent artifact %s to chat %d", realPath, chatID)
+			}
 		}
 		f.Close()
 	}

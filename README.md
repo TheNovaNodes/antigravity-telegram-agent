@@ -1,7 +1,7 @@
 # 🛸 Antigravity Go Telegram Bot Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-82%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-83%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
@@ -89,7 +89,7 @@ The engine supports flexible configuration through environment variables:
 | `BRAIN_DIR` | String | `/root/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
 | `PROJECTS_DIR` | String | `/root/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
 | `DATA_DIR` | String | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
-| `AGY_BINARY` | String | `/root/.gemini/antigravity-cli/bin/agy` | Absolute path to the Antigravity CLI binary. |
+| `AGY_BINARY` | String | `~/.local/bin/agy` | Absolute path to the Antigravity CLI binary (defaults to `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
 | `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |
 
