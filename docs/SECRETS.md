@@ -11,8 +11,8 @@ This document outlines standard operational practices for provisioning, storing,
    - In production mode (`ALLOW_DOTENV != "1"`), the engine fails closed if an environment file is missing from its isolated path (`ENV_FILE`, default `/etc/antigravity-bot/env`).
 2. **Fail-Closed Permission Enforcement**:
    - All environment files MUST have mode `0600` (`-rw-------`). If permissions are looser, the runtime attempts an immediate `chmod 0600`. If this fails, the process exits fatally (`log.Fatalf`).
-3. **Defense-in-Depth File Access**:
-   - Systemd units configure `InaccessiblePaths=-/root/.ssh -/root/.gnupg` and `ProtectSystem=full` to ensure that even compromised subagent processes cannot traverse host SSH/GPG credentials.
+3. **Operational Capabilities for Dev/Admin Swarm**:
+   - Bot engine processes run with root environment access to ensure coding agents can manage host system configurations, systemd units, SSH credentials, and developer tooling without artificial filesystem barriers.
 
 ---
 

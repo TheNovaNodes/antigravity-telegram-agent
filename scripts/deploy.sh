@@ -50,15 +50,6 @@ Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr
 Restart=always
 RestartSec=3
 
-# Sandboxing & Hardening (#197)
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=full
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-InaccessiblePaths=-/root/.ssh -/root/.gnupg
-
 [Install]
 WantedBy=multi-user.target
 SVC

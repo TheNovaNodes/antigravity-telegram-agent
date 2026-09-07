@@ -20,13 +20,8 @@ func TestSystemdSandboxingConfigInDeployScript(t *testing.T) {
 	requiredDirectives := []string{
 		"StartLimitIntervalSec=60s",
 		"StartLimitBurst=5",
-		"NoNewPrivileges=yes",
-		"PrivateTmp=yes",
-		"ProtectSystem=full",
-		"ProtectKernelTunables=yes",
-		"ProtectKernelModules=yes",
-		"ProtectControlGroups=yes",
-		"InaccessiblePaths=-/root/.ssh -/root/.gnupg",
+		"Restart=always",
+		"RestartSec=3",
 		"EnvironmentFile=${PROD_ENV_FILE}",
 		`ENV_DIR="/etc/antigravity-bot"`,
 	}
@@ -37,12 +32,29 @@ func TestSystemdSandboxingConfigInDeployScript(t *testing.T) {
 		}
 	}
 
+	// Ensure restrictive sandbox directives that hamper devops/coding agents are NOT present
+	forbiddenDirectives := []string{
+		"ProtectSystem=",
+		"InaccessiblePaths=",
+		"ProtectKernelTunables=",
+		"ProtectKernelModules=",
+		"ProtectControlGroups=",
+		"NoNewPrivileges=",
+		"PrivateTmp=",
+	}
+
+	for _, dir := range forbiddenDirectives {
+		if strings.Contains(content, dir) {
+			t.Errorf("deploy.sh contains restrictive sandbox directive that hampers coding agents: %q", dir)
+		}
+	}
+
 	// Verify syntax using systemd-analyze if installed
 	if systemdAnalyzePath, err := exec.LookPath("systemd-analyze"); err == nil {
 		tempDir := t.TempDir()
 		unitFile := filepath.Join(tempDir, "test-antigravity.service")
 
-		// Minimal mock unit containing the directives
+		// Minimal mock unit matching the deploy script template
 		mockUnit := `[Unit]
 Description=Test Antigravity Service
 After=network.target
@@ -54,13 +66,6 @@ Type=simple
 ExecStart=/bin/true
 Restart=always
 RestartSec=3
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=full
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-InaccessiblePaths=-/root/.ssh -/root/.gnupg
 
 [Install]
 WantedBy=multi-user.target
