@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -264,5 +265,152 @@ func TestRateLimit_ColdSafeParking_PreservesModel(t *testing.T) {
 	sessionMu.Unlock()
 	if exists {
 		t.Errorf("Expected session to be evicted from globalSessions on cold parking")
+	}
+}
+
+// TestReadStdoutLoop_RefreshesLastActivityOnAnyJsonEvent verifies that non-text JSON events
+// (such as step_update with tool_calls) refresh LastActivity, preventing active tool runners
+// from being falsely flagged as stalled.
+func TestReadStdoutLoop_RefreshesLastActivityOnAnyJsonEvent(t *testing.T) {
+	pastTime := time.Now().Add(-10 * time.Minute)
+	jsonl := `{"event":"step_update","step_update":{"tool_calls":[{"name":"run_command","args":{"CommandLine":"pytest"}}]}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	session := &AgySession{
+		BotName:       "ActivityRefreshTestBot",
+		LastActivity:  pastTime,
+		StdoutScanner: scanner,
+		UpdateChan:    make(chan struct{}, 10),
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+
+	session.mu.Lock()
+	lastAct := session.LastActivity
+	session.mu.Unlock()
+
+	if !lastAct.After(pastTime.Add(9 * time.Minute)) {
+		t.Errorf("Expected LastActivity to be refreshed close to time.Now(), was %v (past was %v)", lastAct, pastTime)
+	}
+}
+
+// TestTurnWatchdog_BufferSalvageAndProcessKill verifies that when a turn stalls,
+// any existing text in TextBuffer is salvaged and s.Kill() terminates the session process.
+func TestTurnWatchdog_BufferSalvageAndProcessKill(t *testing.T) {
+	os.Setenv("TURN_TIMEOUT_MINUTES", "1")
+	defer os.Unsetenv("TURN_TIMEOUT_MINUTES")
+
+	timeout := getTurnTimeout()
+	if timeout != 1*time.Minute {
+		t.Fatalf("Expected timeout of 1m, got %v", timeout)
+	}
+
+	reportText := "### Medical Report: Polyp analysis complete\n[models.py](file:///tmp/models.py)"
+	session := &AgySession{
+		BotName:         "SalvageWatchdogBot",
+		ChatID:          98765,
+		ActiveMessageID: 555,
+		ActiveTurnStart: time.Now().Add(-3 * time.Minute),
+		LastActivity:    time.Now().Add(-3 * time.Minute),
+		TextBuffer:      reportText,
+		isAlive:         true,
+	}
+
+	now := time.Now()
+	stalled := false
+	if !session.LastActivity.IsZero() && now.Sub(session.LastActivity) > timeout {
+		stalled = true
+	}
+
+	if !stalled {
+		t.Fatalf("Expected session to be stalled")
+	}
+
+	// Execute the hardened watchdog cleanup block
+	session.mu.Lock()
+	activeMsgID := session.ActiveMessageID
+	text := session.TextBuffer
+	truncated := session.TextTruncated
+	session.ActiveMessageID = 0
+	session.ActiveTurnStart = time.Time{}
+	session.StreamRetries = 0
+	session.TextBuffer = ""
+	session.TextTruncated = false
+	session.mu.Unlock()
+
+	session.Kill()
+
+	if activeMsgID != 555 {
+		t.Errorf("Expected activeMsgID to be 555, got %d", activeMsgID)
+	}
+	if text != reportText {
+		t.Errorf("Expected salvaged text %q, got %q", reportText, text)
+	}
+
+	trimmed := strings.TrimSpace(text)
+	if truncated {
+		trimmed += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+	}
+	trimmed += "\n\n⚠️ <i>[Время ожидания ответа агента истекло (таймаут активности). Вывод сохранён выше]</i>"
+
+	if !strings.Contains(trimmed, reportText) {
+		t.Errorf("Expected salvaged output to contain original reportText")
+	}
+	if !strings.Contains(trimmed, "Время ожидания ответа агента истекло") {
+		t.Errorf("Expected salvaged output to contain timeout notice")
+	}
+
+	// Verify session was killed
+	if session.IsAlive() {
+		t.Errorf("Expected session.isAlive to be false after s.Kill()")
+	}
+}
+
+// TestStopCommand_PreservesBufferAndSendsArtifacts verifies that when a user triggers
+// /stop on a streaming session, any existing TextBuffer is preserved and artifacts extracted.
+func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
+	tempDir := t.TempDir()
+	os.Setenv("DATA_DIR", tempDir)
+	defer os.Unsetenv("DATA_DIR")
+
+	db := initDB("StopPreserveBot")
+	defer db.Close()
+
+	user := getUser(db, 5005, "StopPreserveBot")
+	convID := "test-stop-preserve-conv"
+	updateUserSession(db, 5005, convID)
+	user = getUser(db, 5005, "StopPreserveBot")
+
+	sessionKey := fmt.Sprintf("StopPreserveBot:%d:%d", int64(12345), user.ID)
+	existingText := "Step 1 complete: Code compiled successfully."
+	session := &AgySession{
+		BotName:         "StopPreserveBot",
+		ChatID:          12345,
+		UserID:          user.ID,
+		DB:              db,
+		Conversation:    convID,
+		ActiveMessageID: 777,
+		ActiveTurnStart: time.Now(),
+		LastActivity:    time.Now(),
+		TextBuffer:      existingText,
+		isAlive:         true,
+	}
+
+	sessionMu.Lock()
+	globalSessions[sessionKey] = session
+	sessionMu.Unlock()
+
+	handled := handleCommand(nil, 12345, user.ID, "/stop", "StopPreserveBot", user, db)
+	if !handled {
+		t.Errorf("Expected /stop to be handled")
+	}
+
+	if session.IsAlive() {
+		t.Errorf("Expected session to be killed after /stop")
+	}
+	if session.ActiveMessageID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 after /stop")
 	}
 }

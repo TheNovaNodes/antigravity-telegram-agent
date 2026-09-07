@@ -759,6 +759,8 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 
 	s.mu.Lock()
 	activeID := s.ActiveMessageID
+	text := s.TextBuffer
+	truncated := s.TextTruncated
 	s.ActiveMessageID = 0
 	s.ActiveTurnStart = time.Time{}
 	s.TextBuffer = ""
@@ -769,13 +771,32 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 	s.Kill()
 
 	if bot != nil {
-		stopMsg := "🛑 *Выполнение прервано по требованию пользователя.*\nКонтекст сессии сохранён, бот готов к новым командам."
-		if activeID != 0 {
-			sendChunk(bot, chatID, activeID, stopMsg)
+		trimmed := strings.TrimSpace(text)
+		if trimmed != "" {
+			if truncated {
+				trimmed += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+			}
+			trimmed += "\n\n🛑 <i>[Выполнение прервано по требованию пользователя. Вывод сохранён выше]</i>"
+			if activeID != 0 {
+				sendChunk(bot, chatID, activeID, trimmed)
+			} else {
+				chunks := SplitHTMLChunks(trimmed, 4000)
+				for _, ch := range chunks {
+					msg := tgbotapi.NewMessage(chatID, ch)
+					msg.ParseMode = "HTML"
+					bot.Send(msg)
+				}
+			}
+			sendArtifacts(bot, chatID, trimmed)
 		} else {
-			msg := tgbotapi.NewMessage(chatID, stopMsg)
-			msg.ParseMode = "Markdown"
-			bot.Send(msg)
+			stopMsg := "🛑 *Выполнение прервано по требованию пользователя.*\nКонтекст сессии сохранён, бот готов к новым командам."
+			if activeID != 0 {
+				sendChunk(bot, chatID, activeID, stopMsg)
+			} else {
+				msg := tgbotapi.NewMessage(chatID, stopMsg)
+				msg.ParseMode = "Markdown"
+				bot.Send(msg)
+			}
 		}
 	}
 }

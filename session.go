@@ -606,8 +606,6 @@ func (s *AgySession) start() error {
 				activeID := s.ActiveMessageID
 				turnStart := s.ActiveTurnStart
 				lastAct := s.LastActivity
-				botAPI := s.BotAPI
-				chatID := s.ChatID
 				s.mu.Unlock()
 
 				if activeID == 0 {
@@ -623,8 +621,13 @@ func (s *AgySession) start() error {
 				}
 
 				if stalled {
-					log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d). Resetting turn lock.", s.BotName, chatID, activeID)
 					s.mu.Lock()
+					activeMsgID := s.ActiveMessageID
+					text := s.TextBuffer
+					truncated := s.TextTruncated
+					botAPI := s.BotAPI
+					cID := s.ChatID
+					bName := s.BotName
 					s.ActiveMessageID = 0
 					s.ActiveTurnStart = time.Time{}
 					s.StreamRetries = 0
@@ -632,9 +635,24 @@ func (s *AgySession) start() error {
 					s.TextTruncated = false
 					s.mu.Unlock()
 
-					if botAPI != nil && activeID != 0 {
-						stalledMsg := "⚠️ *Время ожидания ответа агента истекло (таймаут активности).* Выполнение приостановлено, бот готов к новым командам."
-						sendChunk(botAPI, chatID, activeID, stalledMsg)
+					log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d). Terminating zombie processes and salvaging buffer.", bName, cID, activeMsgID)
+
+					// Terminate runaway/zombie process group (including child PTY processes)
+					s.Kill()
+
+					if botAPI != nil && activeMsgID != 0 {
+						trimmed := strings.TrimSpace(text)
+						if trimmed != "" {
+							if truncated {
+								trimmed += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+							}
+							trimmed += "\n\n⚠️ <i>[Время ожидания ответа агента истекло (таймаут активности). Вывод сохранён выше]</i>"
+							sendChunk(botAPI, cID, activeMsgID, trimmed)
+							sendArtifacts(botAPI, cID, trimmed)
+						} else {
+							stalledMsg := "⚠️ *Время ожидания ответа агента истекло (таймаут активности).* Выполнение приостановлено, бот готов к новым командам."
+							sendChunk(botAPI, cID, activeMsgID, stalledMsg)
+						}
 					}
 				}
 			}
@@ -874,6 +892,10 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 		if err := json.Unmarshal([]byte(line), &data); err != nil {
 			continue
 		}
+
+		s.mu.Lock()
+		s.LastActivity = time.Now()
+		s.mu.Unlock()
 
 		event, _ := data["event"].(string)
 		if event == "init" {
