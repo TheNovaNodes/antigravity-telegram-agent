@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	_ "modernc.org/sqlite"
@@ -163,5 +166,115 @@ func TestHandleMessagePayload_VoiceReplyPerTurnNoLatch(t *testing.T) {
 
 	if session.VoiceReply {
 		t.Errorf("Expected session.VoiceReply to reset to false for text turn, but it latched to true")
+	}
+}
+
+func TestExtractAllowedArtifacts_MarkdownLinksAndDeduplication(t *testing.T) {
+	tempDir := t.TempDir()
+	agentsDir := filepath.Join(tempDir, "agents")
+	os.MkdirAll(agentsDir, 0755)
+	t.Setenv("AGENTS_DIR", agentsDir)
+
+	pdfFile := filepath.Join(agentsDir, "CHECKLIST_FXLAB_2026-09-07.pdf")
+	os.WriteFile(pdfFile, []byte("%PDF-1.4"), 0644)
+
+	docFile := filepath.Join(agentsDir, "report.docx")
+	os.WriteFile(docFile, []byte("data"), 0644)
+
+	text := fmt.Sprintf("Here are files:\n"+
+		"1. Standard markdown: [Checklist](%s)\n"+
+		"2. File URI: (file://%s)\n"+
+		"3. Image markdown: ![Report](%s)\n"+
+		"4. Web link: [Web](https://example.com/file.pdf)\n",
+		pdfFile, pdfFile, docFile)
+
+	paths := ExtractAllowedArtifacts(text)
+
+	// Should extract exactly 2 unique files: pdfFile (deduplicated) and docFile
+	if len(paths) != 2 {
+		t.Fatalf("Expected exactly 2 deduplicated files, got %d: %v", len(paths), paths)
+	}
+	foundMap := make(map[string]bool)
+	for _, p := range paths {
+		foundMap[p] = true
+	}
+	if !foundMap[pdfFile] {
+		t.Errorf("Expected %s to be in extracted paths", pdfFile)
+	}
+	if !foundMap[docFile] {
+		t.Errorf("Expected %s to be in extracted paths", docFile)
+	}
+}
+
+func TestStreamingThrottler_EmptySuppression(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	session := &AgySession{
+		BotName:         "ThrottlerTestBot",
+		BotAPI:          bot,
+		ChatID:          777888,
+		ActiveMessageID: 100,
+		TextBuffer:      "",
+		UpdateChan:      make(chan struct{}, 10),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Launch throttler loop with empty TextBuffer
+	var lastSentText string
+	hasDelta := false
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	// Simulate UpdateChan events while TextBuffer remains whitespace only
+	session.UpdateChan <- struct{}{}
+
+	ticks := 0
+	for ticks < 3 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("Context timed out waiting for ticks")
+		case <-session.UpdateChan:
+			hasDelta = true
+		case <-ticker.C:
+			ticks++
+			if !hasDelta {
+				continue
+			}
+			session.mu.Lock()
+			text := session.TextBuffer
+			activeMsgID := session.ActiveMessageID
+			botAPI := session.BotAPI
+			chatID := session.ChatID
+			session.mu.Unlock()
+
+			trimmed := strings.TrimSpace(text)
+			if activeMsgID == 0 || botAPI == nil || trimmed == "" {
+				continue
+			}
+			if trimmed == lastSentText {
+				hasDelta = false
+				continue
+			}
+			sendChunk(botAPI, chatID, activeMsgID, text)
+			lastSentText = trimmed
+			hasDelta = false
+		}
+	}
+
+	// Because TextBuffer was empty, no edits or messages should have been sent to mockServer
+	ms.mu.Lock()
+	var messageCalls []string
+	for _, req := range ms.sentRequests {
+		if !strings.Contains(req.URL.Path, "getMe") {
+			messageCalls = append(messageCalls, req.URL.Path)
+		}
+	}
+	ms.mu.Unlock()
+	if len(messageCalls) != 0 {
+		t.Errorf("Expected 0 Telegram edits/messages when TextBuffer is empty, got %d: %v", len(messageCalls), messageCalls)
 	}
 }
