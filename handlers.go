@@ -437,6 +437,7 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		"• /start - Show dashboard\n" +
 		"• /model - Change LLM model\n" +
 		"• /usage - Check API quota\n" +
+		"• /stop - Interrupt active turn without resetting session\n" +
 		"• /clear - Clear context (reset session)\n" +
 		"• /resume - Resume previous session\n" +
 		"• /rename <name> - Rename current session\n" +
@@ -742,6 +743,43 @@ func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName stri
 	bot.Send(msg)
 }
 
+// handleStopCommand interrupts the active execution turn for the user's session without clearing conversation context.
+func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
+	sessionMu.Lock()
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
+	s, exists := globalSessions[sessionKey]
+	sessionMu.Unlock()
+
+	if !exists || s == nil {
+		if bot != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "ℹ️ Нет активных задач для прерывания."))
+		}
+		return
+	}
+
+	s.mu.Lock()
+	activeID := s.ActiveMessageID
+	s.ActiveMessageID = 0
+	s.ActiveTurnStart = time.Time{}
+	s.TextBuffer = ""
+	s.TextTruncated = false
+	s.StreamRetries = 0
+	s.mu.Unlock()
+
+	s.Kill()
+
+	if bot != nil {
+		stopMsg := "🛑 *Выполнение прервано по требованию пользователя.*\nКонтекст сессии сохранён, бот готов к новым командам."
+		if activeID != 0 {
+			sendChunk(bot, chatID, activeID, stopMsg)
+		} else {
+			msg := tgbotapi.NewMessage(chatID, stopMsg)
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
+		}
+	}
+}
+
 // handleRefreshModelsCommand dynamically refreshes models cache.
 func handleRefreshModelsCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	fetchModels()
@@ -798,6 +836,9 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 	case "/clear":
 		handleClearCommand(bot, chatID, userID, botName, user, db)
 		return true
+	case "/stop", "/cancel":
+		handleStopCommand(bot, chatID, userID, botName, user, db)
+		return true
 	default:
 		return false
 	}
@@ -810,6 +851,17 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 	data := cb.Data
 
 	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+
+	if data == "cmd:stop" {
+		handleStopCommand(bot, chatID, userID, botName, user, db)
+		return
+	}
+
+	if data == "cmd:retry" {
+		retryMsg := "The streaming connection was interrupted mid-turn. Please resume your response and continue the task seamlessly."
+		handleMessagePayload(bot, chatID, userID, retryMsg, botName, user, false, false, db)
+		return
+	}
 
 	if strings.HasPrefix(data, "ans_id:") || strings.HasPrefix(data, "ans:") {
 		if optText, ok := getQuestionOption(data); ok {
@@ -1037,19 +1089,28 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 	session.mu.Unlock()
 
 	if !downloadedFile && bot != nil {
+		stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🛑 Прервать", "cmd:stop"),
+			),
+		)
 		if activeMsgID == 0 {
 			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
 			msg.ParseMode = "Markdown"
+			msg.ReplyMarkup = stopMarkup
 			if sentMsg, err := bot.Send(msg); err == nil {
 				session.mu.Lock()
 				if session.ActiveMessageID == 0 {
 					session.ActiveMessageID = sentMsg.MessageID
+					session.ActiveTurnStart = time.Now()
+					session.LastActivity = time.Now()
 				}
 				session.mu.Unlock()
 			}
 		} else {
 			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
 			msg.ParseMode = "Markdown"
+			msg.ReplyMarkup = stopMarkup
 			bot.Send(msg)
 		}
 
@@ -1249,7 +1310,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 }
 
 // sendChunk safely breaks a large text into valid HTML chunks and sends them sequentially.
-func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) (chunks []string) {
+func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, markups ...*tgbotapi.InlineKeyboardMarkup) (chunks []string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[PANIC RECOVERED in sendChunk for chatID %d, msgID %d] %v", chatID, messageID, r)
@@ -1284,11 +1345,17 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) (
 
 	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, chunkToEdit)
 	editMsg.ParseMode = "HTML"
+	if len(markups) > 0 && markups[0] != nil {
+		editMsg.ReplyMarkup = markups[0]
+	}
 	_, err := bot.Send(editMsg)
 	if err != nil && err.Error() != "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message" {
 		log.Printf("Edit error: %v, falling back to new message", err)
 		newMsg := tgbotapi.NewMessage(chatID, chunkToEdit)
 		newMsg.ParseMode = "HTML"
+		if len(markups) > 0 && markups[0] != nil {
+			newMsg.ReplyMarkup = markups[0]
+		}
 		bot.Send(newMsg)
 	}
 	return chunks

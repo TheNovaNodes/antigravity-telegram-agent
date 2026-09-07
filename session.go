@@ -42,6 +42,8 @@ type AgySession struct {
 	UserID          int64
 	DB              *sql.DB
 	ActiveMessageID int
+	ActiveTurnStart time.Time
+	StreamRetries   int
 	TextBuffer      string
 	TextTruncated   bool
 	LastEdit        time.Time
@@ -52,6 +54,16 @@ type AgySession struct {
 	InitChan        chan string
 	VoiceReply      bool
 	isAlive         bool
+}
+
+// getTurnTimeout returns the maximum duration allowed for an active turn before the watchdog triggers.
+func getTurnTimeout() time.Duration {
+	if env := os.Getenv("TURN_TIMEOUT_MINUTES"); env != "" {
+		if minutes, err := strconv.Atoi(env); err == nil && minutes > 0 {
+			return time.Duration(minutes) * time.Minute
+		}
+	}
+	return 5 * time.Minute
 }
 
 var globalSessions = make(map[string]*AgySession)
@@ -171,6 +183,7 @@ func (s *AgySession) Kill() {
 	cmd := s.Cmd
 	s.Cmd = nil
 	s.ActiveMessageID = 0
+	s.ActiveTurnStart = time.Time{}
 	s.TextBuffer = ""
 	s.TextTruncated = false
 	s.StdoutScanner = nil
@@ -542,7 +555,12 @@ func (s *AgySession) start() error {
 					text += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
 				}
 
-				sendChunk(botAPI, chatID, activeMsgID, text)
+				stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("🛑 Прервать", "cmd:stop"),
+					),
+				)
+				sendChunk(botAPI, chatID, activeMsgID, text, &stopMarkup)
 				lastSentText = trimmed
 				hasDelta = false
 			}
@@ -564,6 +582,61 @@ func (s *AgySession) start() error {
 				return
 			case <-ticker.C:
 				s.sendTypingAction()
+			}
+		}
+	}(ctx)
+
+	// Turn watchdog loop: monitors active turns and breaks deadlocks if stalled without activity
+	go func(ctx context.Context) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC RECOVERED in turn watchdog for bot %s] %v", s.BotName, r)
+			}
+		}()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		turnTimeout := getTurnTimeout()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.mu.Lock()
+				activeID := s.ActiveMessageID
+				turnStart := s.ActiveTurnStart
+				lastAct := s.LastActivity
+				botAPI := s.BotAPI
+				chatID := s.ChatID
+				s.mu.Unlock()
+
+				if activeID == 0 {
+					continue
+				}
+
+				now := time.Now()
+				stalled := false
+				if !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout {
+					stalled = true
+				} else if !turnStart.IsZero() && now.Sub(turnStart) > (2*turnTimeout) {
+					stalled = true
+				}
+
+				if stalled {
+					log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d). Resetting turn lock.", s.BotName, chatID, activeID)
+					s.mu.Lock()
+					s.ActiveMessageID = 0
+					s.ActiveTurnStart = time.Time{}
+					s.StreamRetries = 0
+					s.TextBuffer = ""
+					s.TextTruncated = false
+					s.mu.Unlock()
+
+					if botAPI != nil && activeID != 0 {
+						stalledMsg := "⚠️ *Время ожидания ответа агента истекло (таймаут активности).* Выполнение приостановлено, бот готов к новым командам."
+						sendChunk(botAPI, chatID, activeID, stalledMsg)
+					}
+				}
 			}
 		}
 	}(ctx)
@@ -594,6 +667,8 @@ func (s *AgySession) start() error {
 			s.StdoutPipe = nil
 			s.StdoutScanner = nil
 			s.ActiveMessageID = 0
+			s.ActiveTurnStart = time.Time{}
+			s.StreamRetries = 0
 			s.TextBuffer = ""
 			s.TextTruncated = false
 		}
@@ -863,6 +938,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 				if delta, ok := su["text_delta"].(string); ok && delta != "" {
 					s.mu.Lock()
+					s.LastActivity = time.Now()
 					if len(s.TextBuffer)+len(delta) <= maxTextBufferBytes {
 						s.TextBuffer += delta
 					} else {
@@ -889,32 +965,145 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					s.mu.Unlock()
 
 					errLower := strings.ToLower(errMsg)
-					isRateLimit := strings.Contains(errMsg, "429") ||
-						strings.Contains(errMsg, "503") ||
-						strings.Contains(errLower, "timeout") ||
-						strings.Contains(errLower, "rate limit") ||
-						strings.Contains(errLower, "quota") ||
-						strings.Contains(errLower, "resource_exhausted")
+					isStreamInterrupted := strings.Contains(errLower, "stream was interrupted") ||
+						strings.Contains(errLower, "stream interrupted") ||
+						strings.Contains(errLower, "connection reset")
 
-					displayErr := "❌ Error from agent: " + errMsg
-					if isRateLimit {
-						fallback := getFallbackModel(s.Model)
-						if fallback != "" && fallback != s.Model {
-							oldModel := s.Model
+					if isStreamInterrupted {
+						s.mu.Lock()
+						retries := s.StreamRetries
+						activeID := s.ActiveMessageID
+						convID := s.Conversation
+						botAPI := s.BotAPI
+						chatID := s.ChatID
+						s.mu.Unlock()
+
+						if retries < 2 {
 							s.mu.Lock()
-							s.Model = fallback
-							uID := s.UserID
-							db := s.DB
+							s.StreamRetries++
+							curRetry := s.StreamRetries
 							s.mu.Unlock()
 
-							if db != nil && uID != 0 {
-								updateUserModel(db, uID, fallback)
+							log.Printf("[StreamRecovery] Stream interrupted for bot %s (retry %d/2). Auto-continuing turn...", s.BotName, curRetry)
+
+							if botAPI != nil && activeID != 0 {
+								retryNotice := fmt.Sprintf("⚠️ *Сетевой поток был прерван.* Авто-возобновление (попытка %d/2)...", curRetry)
+								sendChunk(botAPI, chatID, activeID, retryNotice)
 							}
 
-							displayErr = fmt.Sprintf("⚠️ Достигнут лимит для `%s` (Quota/429).\n🔄 *Авто-переключение на `%s`*.\nОтправьте сообщение повторно для продолжения.", oldModel, fallback)
-						} else {
-							displayErr = "⚠️ Превышен лимит запросов ко всем доступным моделям (Rate limit / Quota Exhausted). Пожалуйста, подождите некоторое время и отправьте сообщение повторно."
+							s.Kill()
+
+							s.mu.Lock()
+							s.ActiveMessageID = activeID
+							s.ActiveTurnStart = time.Now()
+							s.LastActivity = time.Now()
+							s.Conversation = convID
+							s.mu.Unlock()
+
+							time.Sleep(1 * time.Second)
+							if err := s.start(); err == nil {
+								continuePrompt := "The streaming connection was interrupted mid-turn. Please continue your response and complete the task seamlessly from where you were interrupted."
+								payload := map[string]interface{}{
+									"event": "user",
+									"message": map[string]string{
+										"content": continuePrompt,
+									},
+								}
+								b, _ := json.Marshal(payload)
+								b = append(b, '\n')
+								s.mu.Lock()
+								if s.Stdin != nil {
+									_, _ = s.Stdin.Write(b)
+								}
+								s.mu.Unlock()
+								continue
+							}
 						}
+
+						// Retries exhausted or restart failed
+						s.mu.Lock()
+						s.StreamRetries = 0
+						s.ActiveMessageID = 0
+						s.ActiveTurnStart = time.Time{}
+						s.mu.Unlock()
+						s.Kill()
+
+						if botAPI != nil && activeID != 0 {
+							failNotice := "⚠️ *Связь с агентом была временно прервана (разрыв сетевого потока Google Cloud).* Нажмите кнопку ниже, чтобы продолжить."
+							retryMarkup := tgbotapi.NewInlineKeyboardMarkup(
+								tgbotapi.NewInlineKeyboardRow(
+									tgbotapi.NewInlineKeyboardButtonData("🔄 Продолжить задачу", "cmd:retry"),
+								),
+							)
+							sendChunk(botAPI, chatID, activeID, failNotice, &retryMarkup)
+						}
+						continue
+					}
+
+					isRateLimit := (strings.Contains(errMsg, "429") ||
+						strings.Contains(errMsg, "503") ||
+						strings.Contains(errLower, "rate limit") ||
+						strings.Contains(errLower, "quota") ||
+						strings.Contains(errLower, "resource_exhausted")) &&
+						!strings.Contains(errLower, "timeout waiting for response")
+
+					if isRateLimit {
+						log.Printf("[RateLimit] Genuine 429 quota exhaustion detected for bot %s", s.BotName)
+						s.mu.Lock()
+						activeID := s.ActiveMessageID
+						uID := s.UserID
+						convID := s.Conversation
+						model := s.Model
+						ws := s.Workspace
+						botAPI := s.BotAPI
+						chatID := s.ChatID
+						db := s.DB
+						botName := s.BotName
+						s.mu.Unlock()
+
+						if botAPI != nil && chatID != 0 {
+							user := User{
+								ID:        uID,
+								SessionID: convID,
+								Model:     model,
+								Workspace: ws,
+							}
+							handleExportCommand(botAPI, chatID, uID, botName, user)
+
+							quotaNotice := "⚠️ *Лимиты Google Cloud (429 / Quota Exhausted) временно исчерпаны.*\n\n" +
+								"📦 Ваша текущая сессия автоматически экспортирована в файл выше и безопасно запаркована.\n" +
+								"Как только квоты восстановятся — просто перешлите этот `.md` файл боту, и работа продолжится без потери контекста!"
+							if activeID != 0 {
+								sendChunk(botAPI, chatID, activeID, quotaNotice)
+							} else {
+								msg := tgbotapi.NewMessage(chatID, quotaNotice)
+								msg.ParseMode = "Markdown"
+								botAPI.Send(msg)
+							}
+						}
+
+						s.Kill()
+						s.mu.Lock()
+						s.ActiveMessageID = 0
+						s.ActiveTurnStart = time.Time{}
+						s.StreamRetries = 0
+						s.TextBuffer = ""
+						s.TextTruncated = false
+						s.mu.Unlock()
+
+						if db != nil && uID != 0 {
+							updateUserSession(db, uID, "")
+						}
+						sessionMu.Lock()
+						sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
+						delete(globalSessions, sessionKey)
+						sessionMu.Unlock()
+						continue
+					}
+
+					displayErr := "❌ Error from agent: " + errMsg
+					if strings.Contains(errLower, "timeout waiting for response") {
+						displayErr = "⏱️ *Превышено время ожидания ответа агента (CLI print timeout).* Сессия сохранена, вы можете отправить сообщение повторно."
 					}
 
 					if s.BotAPI != nil {
@@ -929,6 +1118,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					s.Kill()
 					s.mu.Lock()
 					s.ActiveMessageID = 0
+					s.ActiveTurnStart = time.Time{}
+					s.StreamRetries = 0
 					s.TextBuffer = ""
 					s.TextTruncated = false
 					s.mu.Unlock()
@@ -971,6 +1162,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				shouldVoice := s.VoiceReply
 				s.VoiceReply = false
 				s.ActiveMessageID = 0
+				s.ActiveTurnStart = time.Time{}
+				s.StreamRetries = 0
 				s.TextBuffer = ""
 				botAPI := s.BotAPI
 				targetChatID := s.ChatID
