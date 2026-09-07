@@ -70,6 +70,7 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 		{Command: "model", Description: "Select LLM model"},
 		{Command: "usage", Description: "Show API quota usage"},
 		{Command: "clear", Description: "Clear context and restart agent"},
+		{Command: "stop", Description: "Interrupt active execution turn"},
 		{Command: "resume", Description: "Resume previous conversation"},
 		{Command: "rename", Description: "Rename current session"},
 		{Command: "workspace", Description: "Change target workspace directory"},
