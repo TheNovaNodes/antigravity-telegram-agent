@@ -618,7 +618,7 @@ func (s *AgySession) start() error {
 				stalled := false
 				if !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout {
 					stalled = true
-				} else if !turnStart.IsZero() && now.Sub(turnStart) > (2 * turnTimeout) {
+				} else if !turnStart.IsZero() && now.Sub(turnStart) > (2*turnTimeout) {
 					stalled = true
 				}
 
