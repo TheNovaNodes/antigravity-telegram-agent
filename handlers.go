@@ -437,6 +437,7 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		"• /start - Show dashboard\n" +
 		"• /model - Change LLM model\n" +
 		"• /usage - Check API quota\n" +
+		"• /accounts - Multi-account pool manager, rotation & cooldowns\n" +
 		"• /stop - Interrupt active turn without resetting session\n" +
 		"• /clear - Clear context (reset session)\n" +
 		"• /resume - Resume previous session\n" +
@@ -846,6 +847,9 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 	case "/usage":
 		handleUsageCommand(bot, chatID)
 		return true
+	case "/accounts":
+		handleAccountsCommand(bot, chatID, userID, text, botName, db)
+		return true
 	case "/help":
 		handleHelpCommand(bot, chatID)
 		return true
@@ -873,6 +877,10 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 	data := cb.Data
 
 	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+
+	if handleAccountCallbackQuery(bot, cb, botName, db) {
+		return
+	}
 
 	if data == "cmd:stop" {
 		handleStopCommand(bot, chatID, userID, botName, user, db)

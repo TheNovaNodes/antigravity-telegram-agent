@@ -54,6 +54,8 @@ type AgySession struct {
 	InitChan        chan string
 	VoiceReply      bool
 	isAlive         bool
+	AccountID       string
+	AccountHomeDir  string
 }
 
 // getTurnTimeout returns the maximum duration allowed for an active turn before the watchdog triggers.
@@ -558,6 +560,33 @@ func (s *AgySession) start() error {
 	cmd := exec.Command(agyPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
+
+	// Multi-account profile isolation (#216)
+	if GlobalAccountPool != nil {
+		s.mu.Lock()
+		accID := s.AccountID
+		s.mu.Unlock()
+		if accID == "" {
+			if acc, err := GlobalAccountPool.AcquireAccount(s.ChatID); err == nil && acc != nil {
+				s.mu.Lock()
+				s.AccountID = acc.ID
+				s.AccountHomeDir = acc.HomeDir
+				s.mu.Unlock()
+			}
+		} else {
+			if acc, err := GlobalAccountPool.GetAccount(accID); err == nil && acc != nil {
+				s.mu.Lock()
+				s.AccountHomeDir = acc.HomeDir
+				s.mu.Unlock()
+			}
+		}
+	}
+	s.mu.Lock()
+	accHome := s.AccountHomeDir
+	s.mu.Unlock()
+	if accHome != "" {
+		cmd.Env = append(os.Environ(), "HOME="+accHome)
+	}
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
@@ -1102,46 +1131,100 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						chatID := s.ChatID
 						db := s.DB
 						botName := s.BotName
+						currentAccID := s.AccountID
 						s.mu.Unlock()
 
-						if botAPI != nil && chatID != 0 {
-							user := User{
-								ID:        uID,
-								SessionID: convID,
-								Model:     model,
-								Workspace: ws,
-							}
-							handleExportCommand(botAPI, chatID, uID, botName, user)
+						// Multi-Account Pool Auto-Failover (#216)
+						rotated := false
+						if GlobalAccountPool != nil && currentAccID != "" {
+							GlobalAccountPool.MarkCooldown(currentAccID, 5*time.Hour)
+							if !GlobalAccountPool.IsPinned(chatID) {
+								if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID); err == nil && nextAcc != nil {
+									log.Printf("[AccountPool] Auto-rotating bot %s chat %d from %s to %s", botName, chatID, currentAccID, nextAcc.ID)
+									rotated = true
 
-							quotaNotice := "⚠️ *Google Cloud quota limit exceeded (429 / Quota Exhausted).*\n\n" +
-								"📦 Your current session has been automatically exported to the file above and safely parked.\n" +
-								"Once quotas recover, simply forward this `.md` file to the bot to resume work seamlessly!"
-							if activeID != 0 {
-								sendChunk(botAPI, chatID, activeID, quotaNotice)
-							} else {
-								msg := tgbotapi.NewMessage(chatID, quotaNotice)
-								msg.ParseMode = "Markdown"
-								botAPI.Send(msg)
+									if botAPI != nil && activeID != 0 {
+										rotateNotice := fmt.Sprintf("⚠️ <b>[429 Quota Exceeded]</b> Account <code>%s</code> reached quota limits. Rotating to <code>%s</code> (%s). Session cache cleared. Resuming...",
+											currentAccID, nextAcc.ID, maskEmail(nextAcc.Email))
+										sendChunk(botAPI, chatID, activeID, rotateNotice)
+									}
+
+									s.Kill()
+									resetChatSessionCache(db, botName, uID, chatID)
+
+									s.mu.Lock()
+									s.AccountID = nextAcc.ID
+									s.AccountHomeDir = nextAcc.HomeDir
+									s.Conversation = ""
+									s.UseContinue = false
+									s.ActiveMessageID = activeID
+									s.ActiveTurnStart = time.Now()
+									s.LastActivity = time.Now()
+									s.mu.Unlock()
+
+									time.Sleep(500 * time.Millisecond)
+									if err := s.start(); err == nil {
+										resumePrompt := "The previous turn was interrupted by a quota limit on the previous profile. Please resume and complete the task seamlessly."
+										payload := map[string]interface{}{
+											"event": "user",
+											"message": map[string]string{
+												"content": resumePrompt,
+											},
+										}
+										b, _ := json.Marshal(payload)
+										b = append(b, '\n')
+										s.mu.Lock()
+										if s.Stdin != nil {
+											_, _ = s.Stdin.Write(b)
+										}
+										s.mu.Unlock()
+										continue
+									}
+								}
 							}
 						}
 
-						s.Kill()
-						s.mu.Lock()
-						s.ActiveMessageID = 0
-						s.ActiveTurnStart = time.Time{}
-						s.StreamRetries = 0
-						s.TextBuffer = ""
-						s.TextTruncated = false
-						s.mu.Unlock()
+						if !rotated {
+							// Tier 2 Escalation: Emergency Safe Parking (#204)
+							if botAPI != nil && chatID != 0 {
+								user := User{
+									ID:        uID,
+									SessionID: convID,
+									Model:     model,
+									Workspace: ws,
+								}
+								handleExportCommand(botAPI, chatID, uID, botName, user)
 
-						if db != nil && uID != 0 {
-							updateUserSession(db, uID, "")
+								quotaNotice := "⚠️ *Google Cloud quota limit exceeded (429 / Quota Exhausted).*\n\n" +
+									"📦 All available accounts are in cooldown. Your current session has been automatically exported to the file above and safely parked.\n" +
+									"Once quotas recover, simply forward this `.md` file to the bot to resume work seamlessly!"
+								if activeID != 0 {
+									sendChunk(botAPI, chatID, activeID, quotaNotice)
+								} else {
+									msg := tgbotapi.NewMessage(chatID, quotaNotice)
+									msg.ParseMode = "Markdown"
+									botAPI.Send(msg)
+								}
+							}
+
+							s.Kill()
+							s.mu.Lock()
+							s.ActiveMessageID = 0
+							s.ActiveTurnStart = time.Time{}
+							s.StreamRetries = 0
+							s.TextBuffer = ""
+							s.TextTruncated = false
+							s.mu.Unlock()
+
+							if db != nil && uID != 0 {
+								updateUserSession(db, uID, "")
+							}
+							sessionMu.Lock()
+							sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
+							delete(globalSessions, sessionKey)
+							sessionMu.Unlock()
+							continue
 						}
-						sessionMu.Lock()
-						sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
-						delete(globalSessions, sessionKey)
-						sessionMu.Unlock()
-						continue
 					}
 
 					displayErr := "❌ Error from agent: " + errMsg
@@ -1210,7 +1293,12 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				s.TextBuffer = ""
 				botAPI := s.BotAPI
 				targetChatID := s.ChatID
+				accountID := s.AccountID
 				s.mu.Unlock()
+
+				if GlobalAccountPool != nil && accountID != "" {
+					GlobalAccountPool.ReleaseAccount(accountID)
+				}
 
 				if shouldVoice && response != "" && botAPI != nil {
 					go func(b *tgbotapi.BotAPI, cID int64, txt string) {
