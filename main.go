@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -69,6 +71,7 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 		{Command: "start", Description: "Welcome menu & status"},
 		{Command: "model", Description: "Select LLM model"},
 		{Command: "usage", Description: "Show API quota usage"},
+		{Command: "accounts", Description: "Manage multi-account pool and rotation"},
 		{Command: "clear", Description: "Clear context and restart agent"},
 		{Command: "stop", Description: "Interrupt active execution turn"},
 		{Command: "resume", Description: "Resume previous conversation"},
@@ -105,6 +108,29 @@ func main() {
 	allowedAdmins := loadAllowedAdmins()
 	if len(allowedAdmins) == 0 {
 		log.Fatal("FATAL: ALLOWED_ADMIN_IDS is required and must contain at least one valid Telegram User ID. Refusing to start in open-access mode.")
+	}
+
+	// Initialize Multi-Account Rotation Pool (#216)
+	var poolErr error
+	GlobalAccountPool, poolErr = NewAccountPool("")
+	if poolErr != nil {
+		log.Printf("[AccountPool] Warning: failed to initialize account pool: %v", poolErr)
+	} else {
+		log.Printf("[AccountPool] Initialized successfully with %d accounts", len(GlobalAccountPool.ListAccounts()))
+		go GlobalAccountPool.StartBackgroundReaper(context.Background(), func(acc *Account) {
+			broadcastNotice := fmt.Sprintf("🔔 <b>[Account Cooldown Ended]</b> Account <code>%s</code> (<code>%s</code>) has completed cooldown and returned to the active pool.", acc.ID, maskEmail(acc.Email))
+			activeBotsMu.Lock()
+			bots := make([]*tgbotapi.BotAPI, len(activeBots))
+			copy(bots, activeBots)
+			activeBotsMu.Unlock()
+			if len(bots) > 0 {
+				for adminID := range allowedAdmins {
+					msg := tgbotapi.NewMessage(adminID, broadcastNotice)
+					msg.ParseMode = "HTML"
+					bots[0].Send(msg)
+				}
+			}
+		})
 	}
 	var wg sync.WaitGroup
 
