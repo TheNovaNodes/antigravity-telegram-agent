@@ -752,7 +752,7 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 
 	if !exists || s == nil {
 		if bot != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "ℹ️ Нет активных задач для прерывания."))
+			bot.Send(tgbotapi.NewMessage(chatID, "ℹ️ No active tasks to interrupt."))
 		}
 		return
 	}
@@ -774,13 +774,14 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 		trimmed := strings.TrimSpace(text)
 		if trimmed != "" {
 			if truncated {
-				trimmed += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+				trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 			}
-			trimmed += "\n\n🛑 <i>[Выполнение прервано по требованию пользователя. Вывод сохранён выше]</i>"
+			trimmed += "\n\n🛑 _[Execution interrupted by user. Output preserved above]_"
 			if activeID != 0 {
 				sendChunk(bot, chatID, activeID, trimmed)
 			} else {
-				chunks := SplitHTMLChunks(trimmed, 4000)
+				htmlFormatted := MarkdownToTelegramHTML(trimmed)
+				chunks := SplitHTMLChunks(htmlFormatted, 4000)
 				for _, ch := range chunks {
 					msg := tgbotapi.NewMessage(chatID, ch)
 					msg.ParseMode = "HTML"
@@ -789,7 +790,7 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 			}
 			sendArtifacts(bot, chatID, trimmed)
 		} else {
-			stopMsg := "🛑 *Выполнение прервано по требованию пользователя.*\nКонтекст сессии сохранён, бот готов к новым командам."
+			stopMsg := "🛑 *Execution interrupted by user.*\nSession context preserved. Ready for new commands."
 			if activeID != 0 {
 				sendChunk(bot, chatID, activeID, stopMsg)
 			} else {
@@ -888,7 +889,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		if optText, ok := getQuestionOption(data); ok {
 			handleMessagePayload(bot, chatID, userID, optText, botName, user, false, false, db)
 		} else {
-			msg := tgbotapi.NewMessage(chatID, "⚠️ Этот вариант ответа устарел или бот был перезагружен. Пожалуйста, отправьте ваш ответ текстом.")
+			msg := tgbotapi.NewMessage(chatID, "⚠️ This option has expired or the bot was restarted. Please reply with text.")
 			bot.Send(msg)
 		}
 		return
@@ -1077,7 +1078,7 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 		baseText = caption
 	}
 	if baseText == "" && strings.HasPrefix(strings.ToLower(origName), "session_") && strings.HasSuffix(strings.ToLower(origName), ".md") {
-		baseText = "📋 Контекст предыдущей сессии загружен из файла экспорта. Изучи историю, текущее состояние задачи и продолжай выполнение с места остановки."
+		baseText = "📋 Previous session context loaded from export file. Review the history, current task state, and continue execution from where it left off."
 	}
 	formattedText := fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
 	return formattedText, true, nil
@@ -1112,7 +1113,7 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 	if !downloadedFile && bot != nil {
 		stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🛑 Прервать", "cmd:stop"),
+				tgbotapi.NewInlineKeyboardButtonData("🛑 Stop", "cmd:stop"),
 			),
 		)
 		if activeMsgID == 0 {
@@ -1168,7 +1169,7 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 		session.ActiveMessageID = 0
 		session.mu.Unlock()
 		if bot != nil {
-			statusMsg := "⚠️ *Процесс агента был перезапущен.* Пожалуйста, отправьте сообщение повторно."
+			statusMsg := "⚠️ *Agent process was restarted.* Please resend your message."
 			if activeID != 0 {
 				sendChunk(bot, chatID, activeID, statusMsg)
 			} else {
@@ -1300,7 +1301,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	}
 
 	if text == "" && caption == "" && fileID == "" {
-		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Sticker/contact/location не поддерживается. Отправьте текст, фото, документ или голосовое."))
+		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Stickers, contacts, and locations are not supported. Please send text, photo, document, or voice message."))
 		return
 	}
 

@@ -67,6 +67,11 @@ func TestMarkdownToTelegramHTML(t *testing.T) {
 		out  string
 	}{
 		{
+			name: "Watchdog and notice markdown italics",
+			in:   "⚠️ _[Response truncated: buffer exceeded 1MB limit]_",
+			out:  "⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>",
+		},
+		{
 			name: "Bold and Italic",
 			in:   "**bold** and *italic*",
 			out:  "<b>bold</b> and <i>italic</i>",

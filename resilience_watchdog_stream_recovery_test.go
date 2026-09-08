@@ -351,14 +351,14 @@ func TestTurnWatchdog_BufferSalvageAndProcessKill(t *testing.T) {
 
 	trimmed := strings.TrimSpace(text)
 	if truncated {
-		trimmed += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+		trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 	}
-	trimmed += "\n\n⚠️ <i>[Время ожидания ответа агента истекло (таймаут активности). Вывод сохранён выше]</i>"
+	trimmed += "\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_"
 
 	if !strings.Contains(trimmed, reportText) {
 		t.Errorf("Expected salvaged output to contain original reportText")
 	}
-	if !strings.Contains(trimmed, "Время ожидания ответа агента истекло") {
+	if !strings.Contains(trimmed, "Agent response timed out (inactivity timeout)") {
 		t.Errorf("Expected salvaged output to contain timeout notice")
 	}
 
