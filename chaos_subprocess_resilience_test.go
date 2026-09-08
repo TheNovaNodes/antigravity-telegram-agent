@@ -93,7 +93,7 @@ func TestChaos_ProcessCrash_CleansActiveMessageSpinner(t *testing.T) {
 	foundCleanupMsg := false
 	for _, raw := range sentBodies {
 		decoded, _ := url.QueryUnescape(raw)
-		if strings.Contains(decoded, "Сессия агента была остановлена или перезапущена") {
+		if strings.Contains(decoded, "Agent session was stopped or restarted") {
 			foundCleanupMsg = true
 			break
 		}

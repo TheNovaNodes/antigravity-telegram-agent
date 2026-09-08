@@ -552,12 +552,12 @@ func (s *AgySession) start() error {
 				}
 
 				if truncated {
-					text += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+					text += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 				}
 
 				stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
 					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("🛑 Прервать", "cmd:stop"),
+						tgbotapi.NewInlineKeyboardButtonData("🛑 Stop", "cmd:stop"),
 					),
 				)
 				sendChunk(botAPI, chatID, activeMsgID, text, &stopMarkup)
@@ -644,13 +644,13 @@ func (s *AgySession) start() error {
 						trimmed := strings.TrimSpace(text)
 						if trimmed != "" {
 							if truncated {
-								trimmed += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+								trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 							}
-							trimmed += "\n\n⚠️ <i>[Время ожидания ответа агента истекло (таймаут активности). Вывод сохранён выше]</i>"
+							trimmed += "\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_"
 							sendChunk(botAPI, cID, activeMsgID, trimmed)
 							sendArtifacts(botAPI, cID, trimmed)
 						} else {
-							stalledMsg := "⚠️ *Время ожидания ответа агента истекло (таймаут активности).* Выполнение приостановлено, бот готов к новым командам."
+							stalledMsg := "⚠️ *Agent response timed out (inactivity timeout).* Execution suspended. Ready for new commands."
 							sendChunk(botAPI, cID, activeMsgID, stalledMsg)
 						}
 					}
@@ -694,7 +694,7 @@ func (s *AgySession) start() error {
 
 		// If the process exited unexpectedly while a message was active, clean up the Telegram UI spinner
 		if activeMsgID != 0 && botAPI != nil {
-			statusMsg := "⚠️ *Сессия агента была остановлена или перезапущена.* Пожалуйста, отправьте сообщение повторно."
+			statusMsg := "⚠️ *Agent session was stopped or restarted.* Please resend your message."
 			if err != nil {
 				log.Printf("[Process exited for bot %s] %v", s.BotName, err)
 			}
@@ -1010,7 +1010,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							log.Printf("[StreamRecovery] Stream interrupted for bot %s (retry %d/2). Auto-continuing turn...", s.BotName, curRetry)
 
 							if botAPI != nil && activeID != 0 {
-								retryNotice := fmt.Sprintf("⚠️ *Сетевой поток был прерван.* Авто-возобновление (попытка %d/2)...", curRetry)
+								retryNotice := fmt.Sprintf("⚠️ *Network stream was interrupted.* Auto-recovering (attempt %d/2)...", curRetry)
 								sendChunk(botAPI, chatID, activeID, retryNotice)
 							}
 
@@ -1052,10 +1052,10 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						s.Kill()
 
 						if botAPI != nil && activeID != 0 {
-							failNotice := "⚠️ *Связь с агентом была временно прервана (разрыв сетевого потока Google Cloud).* Нажмите кнопку ниже, чтобы продолжить."
+							failNotice := "⚠️ *Connection to agent was temporarily interrupted (Google Cloud stream severed).* Tap the button below to resume."
 							retryMarkup := tgbotapi.NewInlineKeyboardMarkup(
 								tgbotapi.NewInlineKeyboardRow(
-									tgbotapi.NewInlineKeyboardButtonData("🔄 Продолжить задачу", "cmd:retry"),
+									tgbotapi.NewInlineKeyboardButtonData("🔄 Resume task", "cmd:retry"),
 								),
 							)
 							sendChunk(botAPI, chatID, activeID, failNotice, &retryMarkup)
@@ -1093,9 +1093,9 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							}
 							handleExportCommand(botAPI, chatID, uID, botName, user)
 
-							quotaNotice := "⚠️ *Лимиты Google Cloud (429 / Quota Exhausted) временно исчерпаны.*\n\n" +
-								"📦 Ваша текущая сессия автоматически экспортирована в файл выше и безопасно запаркована.\n" +
-								"Как только квоты восстановятся — просто перешлите этот `.md` файл боту, и работа продолжится без потери контекста!"
+							quotaNotice := "⚠️ *Google Cloud quota limit exceeded (429 / Quota Exhausted).*\n\n" +
+								"📦 Your current session has been automatically exported to the file above and safely parked.\n" +
+								"Once quotas recover, simply forward this `.md` file to the bot to resume work seamlessly!"
 							if activeID != 0 {
 								sendChunk(botAPI, chatID, activeID, quotaNotice)
 							} else {
@@ -1126,7 +1126,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 					displayErr := "❌ Error from agent: " + errMsg
 					if strings.Contains(errLower, "timeout waiting for response") {
-						displayErr = "⏱️ *Превышено время ожидания ответа агента (CLI print timeout).* Сессия сохранена, вы можете отправить сообщение повторно."
+						displayErr = "⏱️ *Agent response timed out (CLI print timeout).* Session preserved. You may resend your message."
 					}
 
 					if s.BotAPI != nil {
@@ -1151,7 +1151,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				s.mu.Lock()
 				response := s.TextBuffer
 				if s.TextTruncated {
-					response += "\n\n⚠️ <i>[Response truncated: buffer exceeded 1MB limit]</i>"
+					response += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 				}
 				activeMsgID := s.ActiveMessageID
 				s.mu.Unlock()

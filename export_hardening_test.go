@@ -183,7 +183,7 @@ func TestDownloadTelegramMedia_SessionExportAutoPrompt(t *testing.T) {
 	if err != nil || !isFile {
 		t.Fatalf("Download failed: %v, isFile: %v", err, isFile)
 	}
-	if !strings.Contains(formatted, "Контекст предыдущей сессии загружен из файла экспорта") {
+	if !strings.Contains(formatted, "Previous session context loaded from export file") {
 		t.Errorf("Expected auto-prompt for session export file, got: %s", formatted)
 	}
 
@@ -195,7 +195,7 @@ func TestDownloadTelegramMedia_SessionExportAutoPrompt(t *testing.T) {
 	if !strings.Contains(formatted2, "User custom instructions") {
 		t.Errorf("Expected user caption to be preserved, got: %s", formatted2)
 	}
-	if strings.Contains(formatted2, "Контекст предыдущей сессии загружен") {
+	if strings.Contains(formatted2, "Previous session context loaded") {
 		t.Errorf("Auto-prompt should NOT override user-supplied caption, got: %s", formatted2)
 	}
 }
