@@ -10,18 +10,9 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// maskEmail masks the username part of an email address for privacy (e.g. j***e@gmail.com).
+// maskEmail returns the full email address without obfuscation (#228).
 func maskEmail(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		return email
-	}
-	user := parts[0]
-	domain := parts[1]
-	if len(user) <= 2 {
-		return user + "***@" + domain
-	}
-	return string(user[0]) + "***" + string(user[len(user)-1]) + "@" + domain
+	return email
 }
 
 // resetChatSessionCache resets the conversation identifier in SQLite and in-memory session.
@@ -102,8 +93,26 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64) (string, tgbotapi.
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("%s <b>[%s]</b> <code>%s</code>%s\n", statusBadge, acc.ID, maskEmail(acc.Email), currentTag))
+		sb.WriteString(fmt.Sprintf("%s <b>[%s]</b> <code>%s</code>%s\n", statusBadge, acc.ID, acc.Email, currentTag))
 		sb.WriteString(fmt.Sprintf("   ├─ Status: %s\n", statusText))
+
+		if !acc.Quota.LastFetchedAt.IsZero() {
+			g5h := fmt.Sprintf("%.0f%%", acc.Quota.Gemini5h.RemainingFraction*100)
+			gWeekly := fmt.Sprintf("%.0f%%", acc.Quota.GeminiWeekly.RemainingFraction*100)
+			c5h := fmt.Sprintf("%.0f%%", acc.Quota.Claude5h.RemainingFraction*100)
+			cWeekly := fmt.Sprintf("%.0f%%", acc.Quota.ClaudeWeekly.RemainingFraction*100)
+
+			reset5h := ""
+			if !acc.Quota.Gemini5h.ResetTime.IsZero() && time.Now().Before(acc.Quota.Gemini5h.ResetTime) {
+				reset5h = fmt.Sprintf(" (resets %s UTC)", acc.Quota.Gemini5h.ResetTime.UTC().Format("15:04"))
+			}
+
+			sb.WriteString(fmt.Sprintf("   ├─ Gemini: 5h %s%s • 7d %s\n", g5h, reset5h, gWeekly))
+			sb.WriteString(fmt.Sprintf("   ├─ Claude/GPT: 5h %s • 7d %s\n", c5h, cWeekly))
+		} else {
+			sb.WriteString("   ├─ Quotas: <i>Not fetched (tap [🔄 Refresh Quotas])</i>\n")
+		}
+
 		sb.WriteString(fmt.Sprintf("   ├─ Active Turns: %d | Total Errors: %d\n", acc.ActiveTurns, acc.TotalErrors))
 		if !acc.LastUsed.IsZero() {
 			sb.WriteString(fmt.Sprintf("   └─ Last Used: %s\n\n", acc.LastUsed.Format("15:04:05 UTC")))
@@ -137,8 +146,8 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64) (string, tgbotapi.
 
 	// Actions row
 	actionRow := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("🔄 Refresh Quotas", "acc:refresh"),
 		tgbotapi.NewInlineKeyboardButtonData("📥 Ingest Current Login", "acc:ingest"),
-		tgbotapi.NewInlineKeyboardButtonData("🔄 Refresh Dashboard", "acc:refresh"),
 	}
 	keyboardRows = append(keyboardRows, actionRow)
 
@@ -241,9 +250,19 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
 
+	case "quotas", "refresh":
+		GlobalAccountPool.FetchAllQuotas()
+		dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID)
+		msg := tgbotapi.NewMessage(chatID, dashboardText)
+		msg.ParseMode = "HTML"
+		msg.ReplyMarkup = keyboard
+		bot.Send(msg)
+		return
+
 	case "help":
 		helpText := "📖 <b>Account Pool Management Commands</b>\n\n" +
 			"• <code>/accounts</code> — Show pool dashboard and quick actions\n" +
+			"• <code>/accounts quotas</code> — Refresh and display real-time quotas\n" +
 			"• <code>/accounts ingest</code> — Capture server's current CLI login into pool\n" +
 			"• <code>/accounts switch &lt;id&gt;</code> — Switch active account and reset session cache\n" +
 			"• <code>/accounts pin &lt;id&gt;</code> — Lock chat to an account (Sticky Mode)\n" +
@@ -321,14 +340,15 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 
 	case "ingest":
 		bot.Request(tgbotapi.NewCallback(cb.ID, "Ingesting current login..."))
-		if _, err := GlobalAccountPool.IngestCurrentAccount(); err != nil {
+		if acc, err := GlobalAccountPool.IngestCurrentAccount(); err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Ingest failed: %v", err)))
 		} else {
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Successfully ingested current account!"))
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Successfully ingested account %s (%s)!", acc.ID, acc.Email)))
 		}
 
 	case "refresh":
-		bot.Request(tgbotapi.NewCallback(cb.ID, "Dashboard refreshed"))
+		bot.Request(tgbotapi.NewCallback(cb.ID, "Refreshing quotas from Google..."))
+		GlobalAccountPool.FetchAllQuotas()
 	}
 
 	// Update dashboard message in place

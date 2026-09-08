@@ -1134,10 +1134,20 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						currentAccID := s.AccountID
 						s.mu.Unlock()
 
-						// Multi-Account Pool Auto-Failover (#216)
+						// Multi-Account Pool Auto-Failover (#216, #228)
 						rotated := false
 						if GlobalAccountPool != nil && currentAccID != "" {
-							GlobalAccountPool.MarkCooldown(currentAccID, 5*time.Hour)
+							cooldownDuration := 5 * time.Hour
+							// Synchronize with exact quota reset time if available (#228)
+							if q, err := GlobalAccountPool.FetchAccountQuotas(currentAccID); err == nil && q != nil {
+								now := time.Now()
+								if q.Gemini5h.RemainingFraction == 0 && !q.Gemini5h.ResetTime.IsZero() && now.Before(q.Gemini5h.ResetTime) {
+									cooldownDuration = time.Until(q.Gemini5h.ResetTime)
+								} else if q.GeminiWeekly.RemainingFraction == 0 && !q.GeminiWeekly.ResetTime.IsZero() && now.Before(q.GeminiWeekly.ResetTime) {
+									cooldownDuration = time.Until(q.GeminiWeekly.ResetTime)
+								}
+							}
+							GlobalAccountPool.MarkCooldown(currentAccID, cooldownDuration)
 							if !GlobalAccountPool.IsPinned(chatID) {
 								if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID); err == nil && nextAcc != nil {
 									log.Printf("[AccountPool] Auto-rotating bot %s chat %d from %s to %s", botName, chatID, currentAccID, nextAcc.ID)
@@ -1145,7 +1155,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 									if botAPI != nil && activeID != 0 {
 										rotateNotice := fmt.Sprintf("⚠️ <b>[429 Quota Exceeded]</b> Account <code>%s</code> reached quota limits. Rotating to <code>%s</code> (%s). Session cache cleared. Resuming...",
-											currentAccID, nextAcc.ID, maskEmail(nextAcc.Email))
+											currentAccID, nextAcc.ID, nextAcc.Email)
 										sendChunk(botAPI, chatID, activeID, rotateNotice)
 									}
 
