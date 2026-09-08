@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,11 +91,35 @@ func TestHandleStartCommand_WithTranscriptAndTitle(t *testing.T) {
 	handleStartCommand(bot, chatID, "TestMockBot", user)
 
 	ms.mu.Lock()
-	reqs := len(ms.sentRequests)
+	sentBodies := append([]string{}, ms.sentBodies...)
 	ms.mu.Unlock()
 
-	if reqs == 0 {
-		t.Error("Expected Telegram message to be sent for handleStartCommand")
+	if len(sentBodies) == 0 {
+		t.Fatal("Expected Telegram message to be sent for handleStartCommand")
+	}
+
+	var foundTitle, foundSteps, foundModel bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "My Custom Session Title") {
+			foundTitle = true
+		}
+		if strings.Contains(unescaped, "Steps:* 2") || strings.Contains(unescaped, "Steps: 2") {
+			foundSteps = true
+		}
+		if strings.Contains(unescaped, user.Model) {
+			foundModel = true
+		}
+	}
+
+	if !foundTitle {
+		t.Errorf("Expected start message to contain session title 'My Custom Session Title', got: %v", sentBodies)
+	}
+	if !foundSteps {
+		t.Errorf("Expected start message to contain steps count 2, got: %v", sentBodies)
+	}
+	if !foundModel {
+		t.Errorf("Expected start message to contain user model %s, got: %v", user.Model, sentBodies)
 	}
 }
 

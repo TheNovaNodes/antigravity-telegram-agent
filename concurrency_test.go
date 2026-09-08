@@ -49,6 +49,16 @@ func TestConcurrentClearSpam(t *testing.T) {
 	if session != nil {
 		session.Kill()
 	}
+
+	if user.SessionID != "" {
+		t.Errorf("Expected user.SessionID to be cleared after /clear spam, got %q", user.SessionID)
+	}
+	ms.mu.Lock()
+	clearReqCount := len(ms.sentRequests)
+	ms.mu.Unlock()
+	if clearReqCount == 0 {
+		t.Errorf("Expected Telegram messages to be sent during /clear spam, got 0")
+	}
 }
 
 func TestConcurrentMessageSpam(t *testing.T) {
@@ -89,8 +99,22 @@ func TestConcurrentMessageSpam(t *testing.T) {
 
 	user := getUser(db, userID, "TestMockBot")
 	session := getSession("TestMockBot", user, chatID)
-	if session != nil {
-		session.Kill()
+	if session == nil {
+		t.Fatal("Expected active session to exist after message spam")
+	}
+	defer session.Kill()
+
+	if !session.IsAlive() {
+		t.Error("Expected session to be alive after message spam")
+	}
+	if user.ID != userID {
+		t.Errorf("Expected user ID %d, got %d", userID, user.ID)
+	}
+	ms.mu.Lock()
+	msgReqCount := len(ms.sentRequests)
+	ms.mu.Unlock()
+	if msgReqCount == 0 {
+		t.Errorf("Expected Telegram requests to be dispatched during message spam, got 0")
 	}
 }
 
@@ -142,7 +166,17 @@ func TestConcurrentModelSwitchSpam(t *testing.T) {
 	user := getUser(db, userID, "TestMockBot")
 	session := getSession("TestMockBot", user, chatID)
 	if session != nil {
-		session.Kill()
+		defer session.Kill()
+	}
+
+	if user.Model != "gemini-3.7-flash-high" && user.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Expected user.Model to be one of the switched models, got %q", user.Model)
+	}
+	ms.mu.Lock()
+	cbReqCount := len(ms.sentRequests)
+	ms.mu.Unlock()
+	if cbReqCount == 0 {
+		t.Errorf("Expected callback query answers sent to mock bot, got 0")
 	}
 }
 

@@ -66,6 +66,88 @@ func getTurnTimeout() time.Duration {
 	return 5 * time.Minute
 }
 
+// checkTurnInactivity checks if the session's active turn has stalled based on last activity or turn start.
+// If stalled, it terminates runaway processes, salvages any accumulated text buffer, sends artifacts,
+// and notifies Telegram. Returns true if a stall was detected and handled.
+func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duration) bool {
+	s.mu.Lock()
+	activeID := s.ActiveMessageID
+	turnStart := s.ActiveTurnStart
+	lastAct := s.LastActivity
+	s.mu.Unlock()
+
+	if activeID == 0 {
+		return false
+	}
+
+	stalled := false
+	if !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout {
+		stalled = true
+	} else if !turnStart.IsZero() && now.Sub(turnStart) > (2 * turnTimeout) {
+		stalled = true
+	}
+
+	if !stalled {
+		return false
+	}
+
+	s.mu.Lock()
+	activeMsgID := s.ActiveMessageID
+	text := s.TextBuffer
+	truncated := s.TextTruncated
+	botAPI := s.BotAPI
+	cID := s.ChatID
+	bName := s.BotName
+	s.ActiveMessageID = 0
+	s.ActiveTurnStart = time.Time{}
+	s.StreamRetries = 0
+	s.TextBuffer = ""
+	s.TextTruncated = false
+	s.mu.Unlock()
+
+	log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d). Terminating zombie processes and salvaging buffer.", bName, cID, activeMsgID)
+
+	// Terminate runaway/zombie process group (including child PTY processes)
+	s.Kill()
+
+	if botAPI != nil && activeMsgID != 0 {
+		trimmed := strings.TrimSpace(text)
+		if trimmed != "" {
+			if truncated {
+				trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+			}
+			trimmed += "\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_"
+			sendChunk(botAPI, cID, activeMsgID, trimmed)
+			sendArtifacts(botAPI, cID, trimmed)
+		} else {
+			stalledMsg := "⚠️ *Agent response timed out (inactivity timeout).* Execution suspended. Ready for new commands."
+			sendChunk(botAPI, cID, activeMsgID, stalledMsg)
+		}
+	}
+	return true
+}
+
+// ClassifyAgentError inspects an error message emitted by the CLI agent process
+// and classifies whether it corresponds to a severable network stream interruption,
+// a genuine 429/503 quota exhaustion, or a CLI print timeout.
+func ClassifyAgentError(errMsg string) (isStreamInterrupt, isRateLimit, isPrintTimeout bool) {
+	errLower := strings.ToLower(errMsg)
+	isStreamInterrupt = strings.Contains(errLower, "stream was interrupted") ||
+		strings.Contains(errLower, "stream interrupted") ||
+		strings.Contains(errLower, "connection reset")
+
+	isPrintTimeout = strings.Contains(errLower, "timeout waiting for response")
+
+	isRateLimit = (strings.Contains(errMsg, "429") ||
+		strings.Contains(errMsg, "503") ||
+		strings.Contains(errLower, "rate limit") ||
+		strings.Contains(errLower, "quota") ||
+		strings.Contains(errLower, "resource_exhausted")) &&
+		!isPrintTimeout
+
+	return isStreamInterrupt, isRateLimit, isPrintTimeout
+}
+
 var globalSessions = make(map[string]*AgySession)
 var sessionMu sync.Mutex
 
@@ -602,59 +684,7 @@ func (s *AgySession) start() error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.mu.Lock()
-				activeID := s.ActiveMessageID
-				turnStart := s.ActiveTurnStart
-				lastAct := s.LastActivity
-				s.mu.Unlock()
-
-				if activeID == 0 {
-					continue
-				}
-
-				now := time.Now()
-				stalled := false
-				if !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout {
-					stalled = true
-				} else if !turnStart.IsZero() && now.Sub(turnStart) > (2*turnTimeout) {
-					stalled = true
-				}
-
-				if stalled {
-					s.mu.Lock()
-					activeMsgID := s.ActiveMessageID
-					text := s.TextBuffer
-					truncated := s.TextTruncated
-					botAPI := s.BotAPI
-					cID := s.ChatID
-					bName := s.BotName
-					s.ActiveMessageID = 0
-					s.ActiveTurnStart = time.Time{}
-					s.StreamRetries = 0
-					s.TextBuffer = ""
-					s.TextTruncated = false
-					s.mu.Unlock()
-
-					log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d). Terminating zombie processes and salvaging buffer.", bName, cID, activeMsgID)
-
-					// Terminate runaway/zombie process group (including child PTY processes)
-					s.Kill()
-
-					if botAPI != nil && activeMsgID != 0 {
-						trimmed := strings.TrimSpace(text)
-						if trimmed != "" {
-							if truncated {
-								trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
-							}
-							trimmed += "\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_"
-							sendChunk(botAPI, cID, activeMsgID, trimmed)
-							sendArtifacts(botAPI, cID, trimmed)
-						} else {
-							stalledMsg := "⚠️ *Agent response timed out (inactivity timeout).* Execution suspended. Ready for new commands."
-							sendChunk(botAPI, cID, activeMsgID, stalledMsg)
-						}
-					}
-				}
+				s.checkTurnInactivity(time.Now(), turnTimeout)
 			}
 		}
 	}(ctx)
@@ -987,10 +1017,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					activeMsgID := s.ActiveMessageID
 					s.mu.Unlock()
 
-					errLower := strings.ToLower(errMsg)
-					isStreamInterrupted := strings.Contains(errLower, "stream was interrupted") ||
-						strings.Contains(errLower, "stream interrupted") ||
-						strings.Contains(errLower, "connection reset")
+					isStreamInterrupted, isRateLimit, isPrintTimeout := ClassifyAgentError(errMsg)
 
 					if isStreamInterrupted {
 						s.mu.Lock()
@@ -1063,13 +1090,6 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						continue
 					}
 
-					isRateLimit := (strings.Contains(errMsg, "429") ||
-						strings.Contains(errMsg, "503") ||
-						strings.Contains(errLower, "rate limit") ||
-						strings.Contains(errLower, "quota") ||
-						strings.Contains(errLower, "resource_exhausted")) &&
-						!strings.Contains(errLower, "timeout waiting for response")
-
 					if isRateLimit {
 						log.Printf("[RateLimit] Genuine 429 quota exhaustion detected for bot %s", s.BotName)
 						s.mu.Lock()
@@ -1125,7 +1145,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					}
 
 					displayErr := "❌ Error from agent: " + errMsg
-					if strings.Contains(errLower, "timeout waiting for response") {
+					if isPrintTimeout {
 						displayErr = "⏱️ *Agent response timed out (CLI print timeout).* Session preserved. You may resend your message."
 					}
 
