@@ -83,7 +83,7 @@ func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duratio
 	stalled := false
 	if !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout {
 		stalled = true
-	} else if !turnStart.IsZero() && now.Sub(turnStart) > (2 * turnTimeout) {
+	} else if !turnStart.IsZero() && now.Sub(turnStart) > (2*turnTimeout) {
 		stalled = true
 	}
 
