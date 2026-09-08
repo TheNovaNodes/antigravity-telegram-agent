@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 )
 
 // TestTurnWatchdog_TimeoutResetsActiveMessageID verifies that a stalled turn with no activity
-// is detected by the watchdog, resetting ActiveMessageID and clearing turn locks.
+// is detected by the watchdog via checkTurnInactivity, resetting ActiveMessageID and clearing turn locks.
 func TestTurnWatchdog_TimeoutResetsActiveMessageID(t *testing.T) {
 	os.Setenv("TURN_TIMEOUT_MINUTES", "1")
 	defer os.Unsetenv("TURN_TIMEOUT_MINUTES")
@@ -25,43 +26,53 @@ func TestTurnWatchdog_TimeoutResetsActiveMessageID(t *testing.T) {
 		ActiveMessageID: 777,
 		ActiveTurnStart: time.Now().Add(-2 * time.Minute),
 		LastActivity:    time.Now().Add(-2 * time.Minute),
+		isAlive:         true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Run watchdog evaluation loop
 	timeout := getTurnTimeout()
 	if timeout != 1*time.Minute {
 		t.Fatalf("Expected timeout of 1m, got %v", timeout)
 	}
 
-	now := time.Now()
-	stalled := false
-	if !s.LastActivity.IsZero() && now.Sub(s.LastActivity) > timeout {
-		stalled = true
-	}
-
+	// 1. Stalled turn must be detected and handled by production checkTurnInactivity
+	stalled := s.checkTurnInactivity(time.Now(), timeout)
 	if !stalled {
-		t.Fatalf("Expected session to be marked stalled")
+		t.Fatalf("Expected checkTurnInactivity to return true for stalled turn")
 	}
 
-	// Trigger watchdog cleanup
 	s.mu.Lock()
-	s.ActiveMessageID = 0
-	s.ActiveTurnStart = time.Time{}
-	s.StreamRetries = 0
+	activeID := s.ActiveMessageID
+	turnStart := s.ActiveTurnStart
+	alive := s.isAlive
 	s.mu.Unlock()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ActiveMessageID != 0 {
-		t.Errorf("Expected ActiveMessageID to be 0, got %d", s.ActiveMessageID)
+	if activeID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 after watchdog, got %d", activeID)
 	}
-	if !s.ActiveTurnStart.IsZero() {
-		t.Errorf("Expected ActiveTurnStart to be zero, got %v", s.ActiveTurnStart)
+	if !turnStart.IsZero() {
+		t.Errorf("Expected ActiveTurnStart to be zero, got %v", turnStart)
 	}
-	_ = ctx
+	if alive {
+		t.Errorf("Expected session to be killed, but isAlive is true")
+	}
+
+	// 2. Fresh turn with recent activity must NOT stall
+	sFresh := &AgySession{
+		BotName:         "FreshBot",
+		ChatID:          12345,
+		UserID:          1001,
+		ActiveMessageID: 888,
+		ActiveTurnStart: time.Now(),
+		LastActivity:    time.Now(),
+		isAlive:         true,
+	}
+	stalledFresh := sFresh.checkTurnInactivity(time.Now(), timeout)
+	if stalledFresh {
+		t.Errorf("Expected checkTurnInactivity to return false for fresh turn")
+	}
+	if sFresh.ActiveMessageID != 888 {
+		t.Errorf("Expected ActiveMessageID to remain 888, got %d", sFresh.ActiveMessageID)
+	}
 }
 
 // TestStopCommand_InterruptsActiveTurn_PreservesConversation verifies that /stop terminates the active turn
@@ -178,20 +189,7 @@ func TestErrorClassification_StreamInterruptionAndRateLimit(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.errMsg, func(t *testing.T) {
-			errLower := strings.ToLower(tc.errMsg)
-
-			isStreamInterrupted := strings.Contains(errLower, "stream was interrupted") ||
-				strings.Contains(errLower, "stream interrupted") ||
-				strings.Contains(errLower, "connection reset")
-
-			isPrintTimeout := strings.Contains(errLower, "timeout waiting for response")
-
-			isRateLimit := (strings.Contains(tc.errMsg, "429") ||
-				strings.Contains(tc.errMsg, "503") ||
-				strings.Contains(errLower, "rate limit") ||
-				strings.Contains(errLower, "quota") ||
-				strings.Contains(errLower, "resource_exhausted")) &&
-				!isPrintTimeout
+			isStreamInterrupted, isRateLimit, isPrintTimeout := ClassifyAgentError(tc.errMsg)
 
 			if isStreamInterrupted != tc.wantStreamInterrupt {
 				t.Errorf("isStreamInterrupted = %v, want %v", isStreamInterrupted, tc.wantStreamInterrupt)
@@ -297,7 +295,8 @@ func TestReadStdoutLoop_RefreshesLastActivityOnAnyJsonEvent(t *testing.T) {
 }
 
 // TestTurnWatchdog_BufferSalvageAndProcessKill verifies that when a turn stalls,
-// any existing text in TextBuffer is salvaged and s.Kill() terminates the session process.
+// any existing text in TextBuffer is salvaged and s.Kill() terminates the session process,
+// dispatching the salvaged content to Telegram.
 func TestTurnWatchdog_BufferSalvageAndProcessKill(t *testing.T) {
 	os.Setenv("TURN_TIMEOUT_MINUTES", "1")
 	defer os.Unsetenv("TURN_TIMEOUT_MINUTES")
@@ -307,9 +306,14 @@ func TestTurnWatchdog_BufferSalvageAndProcessKill(t *testing.T) {
 		t.Fatalf("Expected timeout of 1m, got %v", timeout)
 	}
 
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
 	reportText := "### Medical Report: Polyp analysis complete\n[models.py](file:///tmp/models.py)"
 	session := &AgySession{
 		BotName:         "SalvageWatchdogBot",
+		BotAPI:          bot,
 		ChatID:          98765,
 		ActiveMessageID: 555,
 		ActiveTurnStart: time.Now().Add(-3 * time.Minute),
@@ -318,58 +322,59 @@ func TestTurnWatchdog_BufferSalvageAndProcessKill(t *testing.T) {
 		isAlive:         true,
 	}
 
-	now := time.Now()
-	stalled := false
-	if !session.LastActivity.IsZero() && now.Sub(session.LastActivity) > timeout {
-		stalled = true
-	}
-
+	// Trigger production checkTurnInactivity
+	stalled := session.checkTurnInactivity(time.Now(), timeout)
 	if !stalled {
-		t.Fatalf("Expected session to be stalled")
+		t.Fatalf("Expected checkTurnInactivity to return true for stalled turn")
 	}
 
-	// Execute the hardened watchdog cleanup block
 	session.mu.Lock()
 	activeMsgID := session.ActiveMessageID
-	text := session.TextBuffer
-	truncated := session.TextTruncated
-	session.ActiveMessageID = 0
-	session.ActiveTurnStart = time.Time{}
-	session.StreamRetries = 0
-	session.TextBuffer = ""
-	session.TextTruncated = false
+	buf := session.TextBuffer
+	alive := session.isAlive
 	session.mu.Unlock()
 
-	session.Kill()
-
-	if activeMsgID != 555 {
-		t.Errorf("Expected activeMsgID to be 555, got %d", activeMsgID)
+	if activeMsgID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 after watchdog, got %d", activeMsgID)
 	}
-	if text != reportText {
-		t.Errorf("Expected salvaged text %q, got %q", reportText, text)
+	if buf != "" {
+		t.Errorf("Expected TextBuffer to be cleared after watchdog salvage, got %q", buf)
 	}
-
-	trimmed := strings.TrimSpace(text)
-	if truncated {
-		trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
-	}
-	trimmed += "\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_"
-
-	if !strings.Contains(trimmed, reportText) {
-		t.Errorf("Expected salvaged output to contain original reportText")
-	}
-	if !strings.Contains(trimmed, "Agent response timed out (inactivity timeout)") {
-		t.Errorf("Expected salvaged output to contain timeout notice")
-	}
-
-	// Verify session was killed
-	if session.IsAlive() {
+	if alive {
 		t.Errorf("Expected session.isAlive to be false after s.Kill()")
+	}
+
+	// Verify Telegram payload contains salvaged reportText and timeout notice
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	if len(sentBodies) == 0 {
+		t.Fatal("Expected Telegram message to be sent via mock server")
+	}
+
+	var foundText, foundNotice bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Polyp analysis complete") {
+			foundText = true
+		}
+		if strings.Contains(unescaped, "Agent response timed out (inactivity timeout)") {
+			foundNotice = true
+		}
+	}
+
+	if !foundText {
+		t.Errorf("Expected salvaged body to contain 'Polyp analysis complete', got %v", sentBodies)
+	}
+	if !foundNotice {
+		t.Errorf("Expected salvaged body to contain timeout notice, got %v", sentBodies)
 	}
 }
 
 // TestStopCommand_PreservesBufferAndSendsArtifacts verifies that when a user triggers
-// /stop on a streaming session, any existing TextBuffer is preserved and artifacts extracted.
+// /stop on a streaming session, any existing TextBuffer is preserved, artifacts extracted,
+// and messages dispatched to Telegram.
 func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
 	tempDir := t.TempDir()
 	os.Setenv("DATA_DIR", tempDir)
@@ -377,6 +382,10 @@ func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
 
 	db := initDB("StopPreserveBot")
 	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
 
 	user := getUser(db, 5005, "StopPreserveBot")
 	convID := "test-stop-preserve-conv"
@@ -387,6 +396,7 @@ func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
 	existingText := "Step 1 complete: Code compiled successfully."
 	session := &AgySession{
 		BotName:         "StopPreserveBot",
+		BotAPI:          bot,
 		ChatID:          12345,
 		UserID:          user.ID,
 		DB:              db,
@@ -402,7 +412,7 @@ func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
 	globalSessions[sessionKey] = session
 	sessionMu.Unlock()
 
-	handled := handleCommand(nil, 12345, user.ID, "/stop", "StopPreserveBot", user, db)
+	handled := handleCommand(bot, 12345, user.ID, "/stop", "StopPreserveBot", user, db)
 	if !handled {
 		t.Errorf("Expected /stop to be handled")
 	}
@@ -412,5 +422,32 @@ func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
 	}
 	if session.ActiveMessageID != 0 {
 		t.Errorf("Expected ActiveMessageID to be 0 after /stop")
+	}
+
+	// Verify Telegram payload received the preserved text and interruption notice
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	if len(sentBodies) == 0 {
+		t.Fatal("Expected Telegram messages to be sent upon /stop")
+	}
+
+	var foundPreservedText, foundStopNotice bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Step 1 complete: Code compiled successfully") {
+			foundPreservedText = true
+		}
+		if strings.Contains(unescaped, "Execution interrupted by user") {
+			foundStopNotice = true
+		}
+	}
+
+	if !foundPreservedText {
+		t.Errorf("Expected sent message to preserve text %q, got: %v", existingText, sentBodies)
+	}
+	if !foundStopNotice {
+		t.Errorf("Expected sent message to contain stop notice, got: %v", sentBodies)
 	}
 }

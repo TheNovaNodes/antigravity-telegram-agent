@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,15 +91,37 @@ func TestUserDBOperations(t *testing.T) {
 	}
 }
 
-func TestUpdateChan(t *testing.T) {
+func TestUpdateChan_SignaledOnStreamingContent(t *testing.T) {
+	pastTime := time.Now().Add(-10 * time.Minute)
+	jsonl := `{"event":"step_update","step_update":{"text_delta":"Streaming delta chunk 1"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
 	session := &AgySession{
-		UpdateChan: make(chan struct{}, 1),
+		BotName:       "UpdateChanTestBot",
+		LastActivity:  pastTime,
+		UpdateChan:    make(chan struct{}, 10),
+		StdoutScanner: scanner,
 	}
-	// Test sending to UpdateChan does not block (event-driven logic)
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+
+	// 1. Verify UpdateChan received the wake-up event
 	select {
-	case session.UpdateChan <- struct{}{}:
-	case <-time.After(1 * time.Second):
-		t.Error("Sending to UpdateChan blocked")
+	case <-session.UpdateChan:
+		// Successfully received wakeup event from readStdoutLoop
+	default:
+		t.Error("Expected readStdoutLoop to signal UpdateChan on streaming chunk, but channel was empty")
+	}
+
+	// 2. Verify LastActivity was refreshed during chunk processing
+	session.mu.Lock()
+	lastAct := session.LastActivity
+	session.mu.Unlock()
+
+	if !lastAct.After(pastTime.Add(9 * time.Minute)) {
+		t.Errorf("Expected LastActivity to be refreshed close to time.Now(), got %v (past was %v)", lastAct, pastTime)
 	}
 }
 
