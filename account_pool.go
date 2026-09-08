@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -45,6 +46,21 @@ func (s AccountState) String() string {
 	}
 }
 
+// ModelQuota holds the usage percentage and reset time for a quota window (#228).
+type ModelQuota struct {
+	RemainingFraction float64   `json:"remaining_fraction"`
+	ResetTime         time.Time `json:"reset_time"`
+}
+
+// AccountQuota encapsulates both Gemini and Claude/GPT quota windows (#228).
+type AccountQuota struct {
+	Gemini5h      ModelQuota `json:"gemini_5h"`
+	GeminiWeekly  ModelQuota `json:"gemini_weekly"`
+	Claude5h      ModelQuota `json:"claude_5h"`
+	ClaudeWeekly  ModelQuota `json:"claude_weekly"`
+	LastFetchedAt time.Time  `json:"last_fetched_at"`
+}
+
 // Account represents an isolated Google Antigravity account profile.
 type Account struct {
 	ID            string       `json:"id"`
@@ -55,6 +71,7 @@ type Account struct {
 	ActiveTurns   int          `json:"active_turns"`
 	TotalErrors   int          `json:"total_errors"`
 	LastUsed      time.Time    `json:"last_used"`
+	Quota         AccountQuota `json:"quota"`
 }
 
 // AccountNotification carries background events such as cooldown completion.
@@ -393,6 +410,12 @@ func (p *AccountPool) AcquireAccount(chatID int64) (*Account, error) {
 		if candidates[i].ActiveTurns != candidates[j].ActiveTurns {
 			return candidates[i].ActiveTurns < candidates[j].ActiveTurns
 		}
+		// Prioritize account with higher Gemini 5h remaining quota if info available (#228)
+		qI := candidates[i].Quota.Gemini5h.RemainingFraction
+		qJ := candidates[j].Quota.Gemini5h.RemainingFraction
+		if qI != qJ && (!candidates[i].Quota.LastFetchedAt.IsZero() || !candidates[j].Quota.LastFetchedAt.IsZero()) {
+			return qI > qJ
+		}
 		// Oldest LastUsed first (LRU)
 		return candidates[i].LastUsed.Before(candidates[j].LastUsed)
 	})
@@ -496,6 +519,136 @@ func (p *AccountPool) FetchEmailForToken(accessToken string) (string, error) {
 	return strings.TrimSpace(data.Email), nil
 }
 
+// ParseUsageJSON parses the raw JSON output of `agy -p "/usage" --output-format json` into an AccountQuota (#228).
+func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
+	var resp struct {
+		Command struct {
+			Data struct {
+				Groups []struct {
+					Name    string `json:"name"`
+					Buckets []struct {
+						ID                string  `json:"id"`
+						Window            string  `json:"window"`
+						RemainingFraction float64 `json:"remaining_fraction"`
+						ResetTime         string  `json:"reset_time"`
+					} `json:"buckets"`
+				} `json:"groups"`
+			} `json:"data"`
+		} `json:"command"`
+	}
+
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal usage json: %w", err)
+	}
+
+	quota := &AccountQuota{
+		LastFetchedAt: time.Now(),
+	}
+
+	for _, g := range resp.Command.Data.Groups {
+		nameLower := strings.ToLower(g.Name)
+		isGemini := strings.Contains(nameLower, "gemini")
+		isClaude := strings.Contains(nameLower, "claude") || strings.Contains(nameLower, "gpt")
+
+		for _, b := range g.Buckets {
+			var resetT time.Time
+			if b.ResetTime != "" {
+				resetT, _ = time.Parse(time.RFC3339, b.ResetTime)
+			}
+			mq := ModelQuota{
+				RemainingFraction: b.RemainingFraction,
+				ResetTime:         resetT,
+			}
+
+			if isGemini {
+				if b.Window == "5h" || b.ID == "gemini-5h" {
+					quota.Gemini5h = mq
+				} else if b.Window == "weekly" || b.ID == "gemini-weekly" {
+					quota.GeminiWeekly = mq
+				}
+			} else if isClaude {
+				if b.Window == "5h" || b.ID == "3p-5h" {
+					quota.Claude5h = mq
+				} else if b.Window == "weekly" || b.ID == "3p-weekly" {
+					quota.ClaudeWeekly = mq
+				}
+			}
+		}
+	}
+
+	return quota, nil
+}
+
+// FetchAccountQuotas queries the agy CLI for quota metrics using the account's home directory (#228).
+func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error) {
+	p.mu.RLock()
+	acc, ok := p.accounts[accountID]
+	p.mu.RUnlock()
+	if !ok {
+		return nil, ErrAccountNotFound
+	}
+
+	agyPath := getAgyPath()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// #nosec G204 -- gosec:nri (Need Review)
+	cmd := exec.CommandContext(ctx, agyPath, "-p", "/usage", "--output-format", "json")
+	cmd.Env = append(os.Environ(), "HOME="+acc.HomeDir)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute usage command: %w", err)
+	}
+
+	quota, err := ParseUsageJSON(out)
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	if currentAcc, exists := p.accounts[accountID]; exists {
+		currentAcc.Quota = *quota
+
+		now := time.Now()
+		if quota.Gemini5h.RemainingFraction == 0 && !quota.Gemini5h.ResetTime.IsZero() && now.Before(quota.Gemini5h.ResetTime) {
+			currentAcc.State = StateCooldown
+			currentAcc.CooldownUntil = quota.Gemini5h.ResetTime
+			log.Printf("[AccountPool] Account %s 5-hour quota exhausted, in cooldown until %s", accountID, quota.Gemini5h.ResetTime.Format(time.RFC3339))
+		} else if quota.GeminiWeekly.RemainingFraction == 0 && !quota.GeminiWeekly.ResetTime.IsZero() && now.Before(quota.GeminiWeekly.ResetTime) {
+			currentAcc.State = StateCooldown
+			currentAcc.CooldownUntil = quota.GeminiWeekly.ResetTime
+			log.Printf("[AccountPool] Account %s weekly quota exhausted, in cooldown until %s", accountID, quota.GeminiWeekly.ResetTime.Format(time.RFC3339))
+		}
+
+		_ = p.SaveState()
+	}
+	p.mu.Unlock()
+
+	return quota, nil
+}
+
+// FetchAllQuotas updates quota metrics for all accounts in the pool concurrently (#228).
+func (p *AccountPool) FetchAllQuotas() {
+	p.mu.RLock()
+	ids := make([]string, 0, len(p.accounts))
+	for id := range p.accounts {
+		ids = append(ids, id)
+	}
+	p.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(accID string) {
+			defer wg.Done()
+			if _, err := p.FetchAccountQuotas(accID); err != nil {
+				log.Printf("[AccountPool] Warning: failed to fetch quotas for %s: %v", accID, err)
+			}
+		}(id)
+	}
+	wg.Wait()
+}
+
 // IngestCurrentAccount parses the server's current ~/.gemini/antigravity-cli/antigravity-oauth-token,
 // fetches the user email, creates an isolated profile folder, and incorporates it into the pool.
 func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
@@ -594,6 +747,10 @@ func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 	_ = p.SaveState()
 
 	log.Printf("[AccountPool] Successfully ingested account %s (%s) into %s", targetAccount.ID, email, targetAccount.HomeDir)
+	go func(id string) {
+		_, _ = p.FetchAccountQuotas(id)
+	}(targetAccount.ID)
+
 	cp := *targetAccount
 	return &cp, nil
 }

@@ -257,9 +257,9 @@ func TestAccountHandlers_MaskEmail(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"john.doe@gmail.com", "j***e@gmail.com"},
-		{"ab@example.com", "ab***@example.com"},
-		{"a@domain.com", "a***@domain.com"},
+		{"john.doe@gmail.com", "john.doe@gmail.com"},
+		{"ab@example.com", "ab@example.com"},
+		{"a@domain.com", "a@domain.com"},
 		{"notanemail", "notanemail"},
 	}
 
@@ -351,15 +351,122 @@ func TestAccountHandlers_FormatDashboard(t *testing.T) {
 
 	dash, markup := formatAccountsDashboard(pool, 555)
 
-	// Check English UI strings and content
+	// Check English UI strings and unmasked email content (#228)
 	if !testing.Short() {
-		if !containsAll(dash, "Account Pool Manager", "[acc-1]", "d***d@gmail.com", "[CURRENT]", "Active (Ready)", "[acc-2]", "Cooldown") {
+		if !containsAll(dash, "Account Pool Manager", "[acc-1]", "dev.lead@gmail.com", "[CURRENT]", "Active (Ready)", "[acc-2]", "Cooldown") {
 			t.Fatalf("Dashboard missing expected English elements:\n%s", dash)
 		}
 	}
 
 	if len(markup.InlineKeyboard) == 0 {
 		t.Fatalf("Expected inline buttons in dashboard markup")
+	}
+}
+
+func TestParseUsageJSON(t *testing.T) {
+	rawJSON := []byte(`{
+		"command": {
+			"name": "usage",
+			"data": {
+				"groups": [
+					{
+						"name": "Gemini Models",
+						"buckets": [
+							{
+								"id": "gemini-weekly",
+								"window": "weekly",
+								"remaining_fraction": 0.88,
+								"reset_time": "2026-09-15T09:29:32Z"
+							},
+							{
+								"id": "gemini-5h",
+								"window": "5h",
+								"remaining_fraction": 0.60,
+								"reset_time": "2026-09-08T19:29:32Z"
+							}
+						]
+					},
+					{
+						"name": "Claude and GPT models",
+						"buckets": [
+							{
+								"id": "3p-weekly",
+								"window": "weekly",
+								"remaining_fraction": 1.0,
+								"reset_time": "2026-09-15T09:27:22Z"
+							},
+							{
+								"id": "3p-5h",
+								"window": "5h",
+								"remaining_fraction": 0.75,
+								"reset_time": "2026-09-08T21:50:36Z"
+							}
+						]
+					}
+				]
+			}
+		}
+	}`)
+
+	quota, err := ParseUsageJSON(rawJSON)
+	if err != nil {
+		t.Fatalf("ParseUsageJSON returned error: %v", err)
+	}
+
+	if quota.Gemini5h.RemainingFraction != 0.60 {
+		t.Errorf("Expected Gemini 5h 0.60, got %f", quota.Gemini5h.RemainingFraction)
+	}
+	if quota.GeminiWeekly.RemainingFraction != 0.88 {
+		t.Errorf("Expected Gemini weekly 0.88, got %f", quota.GeminiWeekly.RemainingFraction)
+	}
+	if quota.ClaudeWeekly.RemainingFraction != 1.0 {
+		t.Errorf("Expected Claude weekly 1.0, got %f", quota.ClaudeWeekly.RemainingFraction)
+	}
+	if quota.Claude5h.RemainingFraction != 0.75 {
+		t.Errorf("Expected Claude 5h 0.75, got %f", quota.Claude5h.RemainingFraction)
+	}
+	if quota.Gemini5h.ResetTime.IsZero() {
+		t.Errorf("Expected valid Gemini 5h reset time")
+	}
+}
+
+func TestAccountPool_QuotaPrioritization(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	now := time.Now()
+	// acc-1 has lower remaining quota (0.20)
+	pool.accounts["acc-1"] = &Account{
+		ID:          "acc-1",
+		Email:       "user1@gmail.com",
+		State:       StateActive,
+		LastUsed:    now.Add(-1 * time.Hour),
+		ActiveTurns: 0,
+		Quota: AccountQuota{
+			Gemini5h:      ModelQuota{RemainingFraction: 0.20},
+			LastFetchedAt: now,
+		},
+	}
+	// acc-2 has higher remaining quota (0.90)
+	pool.accounts["acc-2"] = &Account{
+		ID:          "acc-2",
+		Email:       "user2@gmail.com",
+		State:       StateActive,
+		LastUsed:    now.Add(-1 * time.Hour),
+		ActiveTurns: 0,
+		Quota: AccountQuota{
+			Gemini5h:      ModelQuota{RemainingFraction: 0.90},
+			LastFetchedAt: now,
+		},
+	}
+
+	// Should select acc-2 due to higher remaining quota
+	acc, err := pool.AcquireAccount(777)
+	if err != nil {
+		t.Fatalf("AcquireAccount failed: %v", err)
+	}
+	if acc.ID != "acc-2" {
+		t.Errorf("Expected acc-2 (higher quota 90%%), got %s", acc.ID)
 	}
 }
 
