@@ -38,8 +38,8 @@ The core is decomposed into distinct, focused domain modules:
 | Source Module | Responsibility |
 | :--- | :--- |
 | [`main.go`](main.go) | Multi-bot long-polling lifecycle, signal traps, and graceful shutdown supervisor. |
-| [`handlers.go`](handlers.go) | Telegram update router, slash-command handlers, interactive callback queries, and media downloads. |
-| [`session.go`](session.go) | `AgySession` process lifecycle, mutex-decoupled non-blocking I/O, streaming throttler, and Smart Auto-Fallback. |
+| [`handlers.go`](handlers.go) | Telegram update router, slash-command handlers (`/stop`, `/export`, etc.), interactive callback queries (`cmd:stop`, `cmd:retry`), and media downloads with `.md` drop-to-resume. |
+| [`session.go`](session.go) | `AgySession` process lifecycle, mutex-decoupled non-blocking I/O, 1200ms streaming throttler, Inactivity Turn Watchdog, Stream Auto-Recovery, and 429 Quota Safe Parking. |
 | [`subprocess_watchdog.go`](subprocess_watchdog.go) | Autonomous `/proc` scanner and reaper eliminating `SIGTTIN`/`SIGTTOU` state `T` deadlocks via two-phase `SIGCONT` + `SIGKILL`. |
 | [`storage.go`](storage.go) | SQLite schema migrations (`data/sessions_<bot>.db`), WAL mode configuration, and user CRUD. |
 | [`models.go`](models.go) | Dynamic LLM discovery from `agy models` with emoji tier badges. |
@@ -71,9 +71,24 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/workspace` | `<path>` | Switches working directory (sandboxed under `AGENTS_DIR` with symlink traversal checks). |
 | `/voice` | `[on\|off]`| Toggles persistent voice responses generated via ElevenLabs TTS. |
 | `/tts` | `<text>` | Synthesizes arbitrary text into speech and sends as a voice note. |
+| `/stop` (or `/cancel`) | None | Gracefully interrupts active execution turn, terminates subprocess process group (`SIGTERM`/`SIGKILL`), salvages output buffer, and preserves conversation context. |
 | `/help` | None | Displays comprehensive command reference. |
 | `/grill_me` (or `/grill-me`) | None | Triggers interactive interview slash-command in Antigravity CLI (auto-aliased for Telegram command syntax). |
 | `/teamwork_preview` (or `/teamwork-preview`) | None | Triggers multi-agent collaboration preview (auto-aliased for Telegram command syntax). |
+
+---
+
+## 🛡️ Autonomous Resilience & Fault-Tolerance
+
+The engine features an enterprise-grade resilience suite engineered for 24/7 headless production:
+
+* **Inactivity Turn Watchdog (`5m` deadline)**: Monitors `LastActivity` updated on all JSONL step events. If an agent hangs, stalls, or deadlocks, the watchdog terminates the rogue process group via `s.Kill()`, salvages all accumulated output text, and delivers it to Telegram with full artifact extraction.
+* **Two-Phase Process Group Annihilation (`Setpgid: true`)**: Child processes run in isolated kernel process groups. Interruption (`/stop` or watchdog) sends `SIGTERM` followed by `SIGKILL` to `-pgid`, eliminating all child compiler, worker, and PTY processes without zombies.
+* **Asynchronous Coalescing Throttler (`1200ms`)**: Buffers rapid token streams and flushes edits at 1.2-second intervals, eliminating Telegram `429 Too Many Requests` deadlocks and empty message race conditions.
+* **Stream Auto-Recovery (Up to 2 Retries)**: Automatically recovers and reconnects when underlying Google Cloud streaming sockets are severed mid-turn, continuing the task seamlessly without user intervention.
+* **Cross-Turn 429 Safe Parking Protocol**: When upstream model quotas are exhausted, the engine automatically compiles the active session into a Markdown export file (`session_<title>.md`), parks the session safely, and delivers the file to the user.
+* **Drop-to-Resume Workflow**: Users can forward or drop any `session_*.md` file directly into chat. The engine automatically parses the transcript, restores previous conversational context, and resumes execution from where it left off.
+* **Subprocess State: T Reaper**: An autonomous `/proc` scanner detects and reaps commands suspended by `SIGTTIN`/`SIGTTOU` via sequenced `SIGCONT` + `SIGKILL`.
 
 ---
 
