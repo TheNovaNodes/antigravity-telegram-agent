@@ -23,6 +23,20 @@ test_build
 *.out
 *.test
 coverage.html
+*-report.json
+*.prof
+*.pprof
+
+# Logs & System Artifacts
+*.log
+
+# Editor & OS Artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.bak
 
 # Python / Cache Artifacts
 *.pyc
