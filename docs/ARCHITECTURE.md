@@ -14,16 +14,26 @@ flowchart TD
     subgraph Handlers ["Modular Handler Layer"]
         Dispatcher -->|Slash Commands| CmdHandler[handleCommand]
         Dispatcher -->|Inline Buttons| CbHandler[handleCallbackQuery]
-        Dispatcher -->|Media & Files| MediaHandler[downloadTelegramMedia]
+        Dispatcher -->|Media & .md Exports| MediaHandler[downloadTelegramMedia]
         Dispatcher -->|Prompt Stream| MsgHandler[handleMessagePayload]
+        CmdHandler -->|/stop & /cancel| StopHandler[handleStopCommand]
+        CbHandler -->|cmd:stop| StopHandler
+        CbHandler -->|cmd:retry| MsgHandler
     end
     
-    subgraph SessionManager ["Session Manager & Process Supervisor"]
+    subgraph SessionManager ["Session Manager & Resilience Supervisor"]
         MsgHandler -->|Stdin Pipe JSONL| Session[AgySession]
         Session -->|pgid Process Group| Subproc["os/exec (agy cli)"]
         Subproc -->|Stdout JSONL Stream| StdoutLoop[readStdoutLoop]
-        StdoutLoop -->|Throttled Batching 100ms| Throttler[Stream Throttler]
+        StdoutLoop -->|Throttled Batching 1200ms| Throttler[Stream Throttler (1200ms)]
         Throttler -->|HTML Chunks / EditMessage| TG
+        Session -->|5m Turn Inactivity Deadline| Watchdog[Turn Watchdog & Buffer Salvager]
+        Watchdog -->|Timeout Stall / SIGKILL -pgid| Session
+        Watchdog -->|Salvaged Buffer & Artifacts| TG
+        StopHandler -->|Interrupt Turn / SIGKILL -pgid| Session
+        StopHandler -->|Salvaged Buffer & Artifacts| TG
+        StdoutLoop -->|Google Cloud 429| Parking[429 Quota Safe Parking]
+        Parking -->|Auto-Export Markdown File| TG
     end
 
     subgraph Storage ["SQLite WAL Storage & File Tree"]
@@ -83,6 +93,29 @@ The engine incorporates a dedicated autonomous watchdog ([`subprocess_watchdog.g
 * **Two-Phase Forced Termination**: When any descendant process remains suspended in `State: T` or `State: t` beyond the grace period (default 3 seconds), the watchdog issues a sequenced `SIGCONT` (awakening the process) followed by `SIGKILL` (unconditional kernel termination).
 * **Background Supervisor Worker**: `StartSubprocessWatchdogWorker` runs continuously on a 2-second ticker, fully integrated into the engine lifecycle alongside session garbage collection.
 
+### 2.3 Inactivity Turn Watchdog & Buffer Salvaging Pipeline
+During execution of complex tasks, external tool invocations, or network stalls, an agent process might stall without producing stream output. To prevent deadlocks, `session.go` implements an autonomous **Inactivity Turn Watchdog**:
+
+* **5-Minute Inactivity Window (`turnTimeout = 5 * time.Minute`)**: Evaluated on a 5-second polling loop (`watchdogInterval = 5 * time.Second`).
+* **Granular Heartbeat on All JSONL Events**: Field `s.LastActivity` is atomically refreshed whenever any JSONL step arrives (`init`, `user`, `tool_use`, `tool_result`, `model`, `step_finish`). Long-running tools emitting stdout do not trigger premature timeouts.
+* **Buffer Salvaging & Artifact Delivery**: If `time.Since(s.LastActivity) > turnTimeout`, the watchdog triggers fail-safe salvage:
+  1. `s.Kill()` sends `syscall.Kill(-pgid, SIGTERM)` followed by `SIGKILL` to eradicate the stuck process group.
+  2. The accumulated `s.TextBuffer` is retrieved under lock and appended with an English status notice:
+     `\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_`
+  3. The salvaged content is converted through `MarkdownToTelegramHTML` and flushed to Telegram.
+  4. Any created artifacts (`file://...`) in the salvaged text are extracted and delivered via `sendArtifacts`.
+  5. The conversation UUID in SQLite is preserved, and the bot immediately returns to ready state.
+
+### 2.4 Stream Auto-Recovery & Quota Safe Parking (429)
+The engine provides automated fault recovery across unreliable upstream networks and quota boundaries:
+
+* **Automatic Stream Recovery (Up to 2 Retries)**:
+  When upstream Google Cloud streaming connections sever mid-turn, `readStdoutLoop` detects the drop. If `s.StreamRetries < 2`, the engine increments the counter, restarts the subprocess (`s.start()`) with `--continue`, and feeds an internal continuation prompt (`The streaming connection was interrupted mid-turn...`). If retries are exhausted, the user receives an inline `🔄 Resume task` (`cmd:retry`) button.
+* **429 Quota Safe Parking**:
+  If the model returns a genuine rate limit (`429`, `RESOURCE_EXHAUSTED`, `quota`), the engine automatically triggers `handleExportCommand`, compiles the conversation transcript into a Markdown export document (`session_<title>.md`), and delivers it to the Telegram chat. The active turn is cleanly concluded without corrupting SQLite or leaving hanging processes.
+* **Drop-to-Resume Workflow**:
+  When a user forwards or uploads any `session_*.md` export file to the chat, `downloadTelegramMedia` detects the session export prefix and injects an automated prompt (`📋 Previous session context loaded from export file...`). The agent ingests the previous transcript and resumes execution seamlessly.
+
 ---
 
 ## 3. Modular Handler Decomposition
@@ -103,9 +136,10 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleRenameCommand` | Live rename of conversation title in `brain` storage. | Sanitizes title and validates conversation ID against path traversal. |
 | `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Validates session ID format (`isValidSessionID`), writes export file to scratch space. |
 | `handleClearCommand` | Session context reset for clean startup. | Cleans session state in DB and memory, launches fresh process without uninitialized conversation ID flags. |
-| `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`). |
-| `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*`). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
-| `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. | URL scheme & host validation (HTTP/HTTPS only), HTTP status check, 100 MB hard limit, and sandbox download dir. |
+| `handleStopCommand` | Gracefully interrupts active turn without clearing conversation context. | Mutex-decoupled state extraction, `s.Kill()` process group termination, output buffer salvaging, and artifact delivery. |
+| `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`). Routes `/stop` and `/cancel`. |
+| `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*` including `cmd:stop` [Turn Interruption] and `cmd:retry` [Stream Recovery]). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
+| `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. Detects session export files (`session_*.md`) and auto-injects context reload prompts for drop-to-resume. | URL scheme & host validation (HTTP/HTTPS only), HTTP status check, 100 MB hard limit, and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding, per-turn voice reply mode without latching, and clean prompt retry on Stdin error. |
 | `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
 | `ExtractAllowedArtifacts` | Validates and dispatches generated documents/artifacts to Telegram. | Fail-closed LFI sandbox (`isPathUnderRoot`) covering `AGENTS_DIR`, `BRAIN_DIR`, and `PROJECTS_DIR` (`!info.IsDir()`). |
@@ -194,7 +228,7 @@ flowchart LR
     JsonParser --> FormatEngine[MarkdownToTelegramHTML]
     FormatEngine --> Sanitizer[balanceAndSanitizeTelegramHTML]
     Sanitizer --> Chunker[SplitHTMLChunks max 4000 chars]
-    Chunker --> Throttler[100ms Throttle Queue]
+    Chunker --> Throttler[1200ms Coalescing Throttler]
     Throttler --> TGAPI[Telegram editMessageText]
 ```
 
@@ -203,6 +237,13 @@ flowchart LR
    - `balanceAndSanitizeTelegramHTML` closes any unclosed tags on chunk boundaries to prevent Telegram API `400 Bad Request: can't parse entities` errors.
 2. **Chunking Engine (`SplitHTMLChunks`)**:
    - Accurately partitions content at paragraph boundaries `<p>` or `\n\n` without breaking HTML tags across chunks.
+3. **Asynchronous Coalescing Throttling (`1200ms`)**:
+   - Evaluates accumulated text buffer every 1200ms (`throttleInterval = 1200 * time.Millisecond`), effortlessly eliminating Telegram API `429 Too Many Requests` rate limits.
+   - Prevents empty message race conditions via `hasDelta` tracking and `lastSentText` comparison: edits Telegram exclusively when content has advanced, preserving the initial `*⏳ Thinking...*` spinner until actual content arrives.
+   - Injects and maintains the interactive `🛑 Stop` button across all streaming edits.
+4. **Notice Delimiters & Telegram HTML Rendering**:
+   - System notices (watchdog stalls, truncations, user interruptions) are delimited using pure Markdown (`_[...]_`).
+   - `MarkdownToTelegramHTML` properly escapes raw angle brackets before converting Markdown delimiters into compliant Telegram `<i>...</i>` tags, preventing literal `&lt;i&gt;` text rendering.
 
 ---
 
