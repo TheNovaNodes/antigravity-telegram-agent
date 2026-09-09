@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	_ "modernc.org/sqlite"
 )
 
@@ -294,10 +296,18 @@ func TestAccountHandlers_ResetSessionCache(t *testing.T) {
 		t.Fatalf("Failed to insert user: %v", err)
 	}
 
-	// Register in-memory session
-	sessKey := "testbot:1001"
+	// Register in-memory sessions: both canonical (botName:chatID:userID) and legacy format
+	canonicalKey := "testbot:1001:42"
+	legacyKey := "testbot:1001"
 	sessionMu.Lock()
-	globalSessions[sessKey] = &AgySession{
+	globalSessions[canonicalKey] = &AgySession{
+		BotName:      "testbot",
+		ChatID:       1001,
+		UserID:       42,
+		Conversation: "session-abc-123",
+		UseContinue:  true,
+	}
+	globalSessions[legacyKey] = &AgySession{
 		BotName:      "testbot",
 		ChatID:       1001,
 		UserID:       42,
@@ -319,13 +329,17 @@ func TestAccountHandlers_ResetSessionCache(t *testing.T) {
 		t.Fatalf("Expected NULL session_id in SQLite, got %s", sessID.String)
 	}
 
-	// Verify in-memory session is cleared
+	// Verify in-memory sessions are completely evicted from globalSessions
 	sessionMu.Lock()
-	sess := globalSessions[sessKey]
+	sessCanonical, existsCanonical := globalSessions[canonicalKey]
+	sessLegacy, existsLegacy := globalSessions[legacyKey]
 	sessionMu.Unlock()
-	if sess.Conversation != "" || sess.UseContinue {
-		t.Fatalf("Expected cleared in-memory conversation, got Conversation=%q, UseContinue=%v",
-			sess.Conversation, sess.UseContinue)
+
+	if existsCanonical || sessCanonical != nil {
+		t.Fatalf("Expected canonical session to be evicted from globalSessions, got: %v", sessCanonical)
+	}
+	if existsLegacy || sessLegacy != nil {
+		t.Fatalf("Expected legacy session to be evicted from globalSessions, got: %v", sessLegacy)
 	}
 }
 
@@ -478,3 +492,59 @@ func containsAll(str string, substrs ...string) bool {
 	}
 	return true
 }
+
+func TestHandleUsageCommand_WithActiveAccount(t *testing.T) {
+	ts, sent, mu := createStrictTelegramMockServer(t)
+	defer ts.Close()
+
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("MOCK_TOKEN", ts.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatalf("Failed to create mock bot: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	mockAgy := filepath.Join(tmpDir, "agy")
+	script := "#!/bin/sh\necho \"Active HOME=$HOME\"\necho \"Gemini Models 5h: 90%\"\n"
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to write mock agy: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	targetHome := filepath.Join(tmpDir, "acc-special-home")
+	_ = os.MkdirAll(targetHome, 0755)
+
+	pool.accounts["acc-test"] = &Account{
+		ID:       "acc-test",
+		Email:    "test_user@gmail.com",
+		HomeDir:  targetHome,
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+	pool.activeChat[12345] = "acc-test"
+
+	handleUsageCommand(bot, 12345)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*sent) == 0 {
+		t.Fatalf("Expected message to be sent via mock bot")
+	}
+	lastReq := (*sent)[len(*sent)-1]
+	vals, _ := url.ParseQuery(lastReq)
+	text := vals.Get("text")
+
+	if !strings.Contains(text, "Quota Usage [acc-test (test\\_user@gmail.com)]") && !strings.Contains(text, "acc-test") {
+		t.Errorf("Expected account header in text, got: %s", text)
+	}
+	if !strings.Contains(text, "Active HOME="+targetHome) {
+		t.Errorf("Expected mock agy to receive HOME=%s, got: %s", targetHome, text)
+	}
+}
+

@@ -15,24 +15,54 @@ func maskEmail(email string) string {
 	return email
 }
 
-// resetChatSessionCache resets the conversation identifier in SQLite and in-memory session.
+// resetChatSessionCache resets the conversation identifier in SQLite and terminates/evicts in-memory sessions.
 // This prevents Google backend session ownership collisions when switching between accounts.
 func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int64) {
 	if db != nil {
-		if _, err := db.Exec("UPDATE users SET session_id = NULL WHERE user_id = ?", userID); err != nil {
-			log.Printf("[AccountPool] Warning: failed to reset session_id in db: %v", err)
+		if userID != 0 {
+			if _, err := db.Exec("UPDATE users SET session_id = NULL WHERE user_id = ?", userID); err != nil {
+				log.Printf("[AccountPool] Warning: failed to reset session_id for user %d in db: %v", userID, err)
+			}
+		} else {
+			if _, err := db.Exec("UPDATE users SET session_id = NULL"); err != nil {
+				log.Printf("[AccountPool] Warning: failed to reset session_id in db: %v", err)
+			}
 		}
 	}
+
 	sessionMu.Lock()
-	sessKey := fmt.Sprintf("%s:%d", botName, chatID)
-	if sess, ok := globalSessions[sessKey]; ok && sess != nil {
-		sess.mu.Lock()
-		sess.Conversation = ""
-		sess.UseContinue = false
-		sess.mu.Unlock()
+	defer sessionMu.Unlock()
+
+	exactKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
+	legacyKey := fmt.Sprintf("%s:%d", botName, chatID)
+	prefix := fmt.Sprintf("%s:%d:", botName, chatID)
+
+	for k, sess := range globalSessions {
+		matches := false
+		if k == exactKey || k == legacyKey {
+			matches = true
+		} else if strings.HasPrefix(k, prefix) {
+			matches = true
+		} else if sess != nil && sess.ChatID == chatID && (botName == "" || sess.BotName == botName) {
+			if userID == 0 || sess.UserID == userID {
+				matches = true
+			}
+		}
+
+		if matches {
+			if sess != nil {
+				sess.mu.Lock()
+				sess.Conversation = ""
+				sess.UseContinue = false
+				sess.AccountID = ""
+				sess.AccountHomeDir = ""
+				sess.mu.Unlock()
+				sess.Kill()
+			}
+			delete(globalSessions, k)
+		}
 	}
-	sessionMu.Unlock()
-	log.Printf("[AccountPool] Cleared session cache for bot %s, chat %d, user %d", botName, chatID, userID)
+	log.Printf("[AccountPool] Cleared session cache and terminated CLI process for bot %s, chat %d, user %d", botName, chatID, userID)
 }
 
 // formatAccountsDashboard builds the English dashboard message and inline keyboard.
