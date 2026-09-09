@@ -121,13 +121,25 @@ func getAccountsDir() string {
 	return filepath.Join(home, ".antigravity-bot", "accounts")
 }
 
+// getSharedConversationsDir resolves the shared Antigravity CLI conversations storage directory (#236).
+func getSharedConversationsDir() string {
+	if env := os.Getenv("CONVERSATIONS_DIR"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
+}
+
 // EnsureSharedAccountDirectories guarantees that conversations in account home dirs
 // are symlinked to the central shared conversations directory, preventing context loss on account rotation (#236).
 func EnsureSharedAccountDirectories(accHomeDir string) error {
 	if accHomeDir == "" {
 		return nil
 	}
-	sharedConvs := "/root/.gemini/antigravity-cli/conversations"
+	sharedConvs := getSharedConversationsDir()
 	if err := os.MkdirAll(sharedConvs, 0700); err != nil {
 		return err
 	}
@@ -801,7 +813,7 @@ func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 
 	// Symlink shared global resources into the profile so skills, MCP, and brain storage remain intact
 	sharedGeminiDir := filepath.Join(home, ".gemini", "antigravity-cli")
-	sharedItems := []string{"builtin", "mcp_config.json", "settings.json", "brain", "agents", "knowledge"}
+	sharedItems := []string{"builtin", "mcp_config.json", "settings.json", "brain", "agents", "knowledge", "conversations"}
 	for _, item := range sharedItems {
 		src := filepath.Join(sharedGeminiDir, item)
 		dst := filepath.Join(profileGeminiDir, item)

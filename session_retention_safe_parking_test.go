@@ -121,6 +121,9 @@ func TestResetChatSessionCache_PreserveDBSession(t *testing.T) {
 }
 
 func TestEnsureSharedAccountDirectories_SymlinkCreation(t *testing.T) {
+	sharedTmp := t.TempDir()
+	expectedShared := filepath.Join(sharedTmp, "conversations")
+	t.Setenv("CONVERSATIONS_DIR", expectedShared)
 	tmpAccHome := t.TempDir()
 
 	// Call EnsureSharedAccountDirectories
@@ -141,7 +144,7 @@ func TestEnsureSharedAccountDirectories_SymlinkCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read symlink %s: %v", accConvs, err)
 	}
-	if target != "/root/.gemini/antigravity-cli/conversations" {
-		t.Errorf("Expected symlink target /root/.gemini/antigravity-cli/conversations, got: %s", target)
+	if target != expectedShared {
+		t.Errorf("Expected symlink target %s, got: %s", expectedShared, target)
 	}
 }
