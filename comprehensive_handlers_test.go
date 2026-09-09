@@ -273,15 +273,15 @@ func TestDownloadTelegramMedia_WithRealServer(t *testing.T) {
 	bot := createMockBot(ms)
 
 	// Test 1: Empty file ID
-	formatted, isFile, err := downloadTelegramMedia(bot, 12345, "", ".txt", "plain text", "", "TestBot")
-	if err != nil || isFile || formatted != "plain text" {
-		t.Errorf("Expected plain text passthrough, got formatted: %s, isFile: %v, err: %v", formatted, isFile, err)
+	formatted, isFile, placeholderID, err := downloadTelegramMedia(bot, 12345, "", ".txt", "plain text", "", "TestBot")
+	if err != nil || isFile || formatted != "plain text" || placeholderID != 0 {
+		t.Errorf("Expected plain text passthrough, got formatted: %s, isFile: %v, placeholderID: %d, err: %v", formatted, isFile, placeholderID, err)
 	}
 
 	// Test 2: Valid file download
-	formatted, isFile, err = downloadTelegramMedia(bot, 12345, "file123", ".txt", "my note", "my caption", "TestBot")
-	if err != nil || !isFile || !strings.Contains(formatted, "[Attached File: file://") {
-		t.Errorf("Expected valid attached file string, got formatted: %s, isFile: %v, err: %v", formatted, isFile, err)
+	formatted, isFile, placeholderID, err = downloadTelegramMedia(bot, 12345, "file123", ".txt", "my note", "my caption", "TestBot")
+	if err != nil || !isFile || placeholderID != 99 || !strings.Contains(formatted, "[Attached File: file://") {
+		t.Errorf("Expected valid attached file string with placeholderID 99, got formatted: %s, isFile: %v, placeholderID: %d, err: %v", formatted, isFile, placeholderID, err)
 	}
 }
 

@@ -181,7 +181,7 @@ func TestDownloadTelegramMedia_ErrorHandlingAndStatus(t *testing.T) {
 
 	bot := createMockBot(ms)
 
-	_, _, err := downloadTelegramMedia(bot, 12345, "file404", ".txt", "test", "", "TestBot")
+	_, _, _, err := downloadTelegramMedia(bot, 12345, "file404", ".txt", "test", "", "TestBot")
 	if err == nil {
 		t.Errorf("Expected error downloading 404 media from server, got nil")
 	}

@@ -179,7 +179,7 @@ func TestDownloadTelegramMedia_SessionExportAutoPrompt(t *testing.T) {
 	bot := createMockBot(ms)
 
 	// 1. Session export with empty caption should trigger auto-prompt
-	formatted, isFile, err := downloadTelegramMedia(bot, 12345, "fileExport1", ".md", "", "", "TestBot", "session_Fix_Auth_123.md")
+	formatted, isFile, _, err := downloadTelegramMedia(bot, 12345, "fileExport1", ".md", "", "", "TestBot", "session_Fix_Auth_123.md")
 	if err != nil || !isFile {
 		t.Fatalf("Download failed: %v, isFile: %v", err, isFile)
 	}
@@ -188,7 +188,7 @@ func TestDownloadTelegramMedia_SessionExportAutoPrompt(t *testing.T) {
 	}
 
 	// 2. Session export with user-supplied caption should keep user caption
-	formatted2, _, err := downloadTelegramMedia(bot, 12345, "fileExport1", ".md", "", "User custom instructions", "TestBot", "session_Fix_Auth_123.md")
+	formatted2, _, _, err := downloadTelegramMedia(bot, 12345, "fileExport1", ".md", "", "User custom instructions", "TestBot", "session_Fix_Auth_123.md")
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
