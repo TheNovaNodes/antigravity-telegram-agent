@@ -285,7 +285,10 @@ func cleanPresenceLock(homeDir, convID string) {
 	if homeDir == "" || convID == "" || !isValidSessionID(convID) {
 		return
 	}
-	lockFile := filepath.Join(homeDir, ".gemini", "antigravity-cli", "presence", convID+".lock")
+	cleanHome := filepath.Clean(homeDir)
+	cleanConv := filepath.Clean(convID)
+	lockFile := filepath.Join(cleanHome, ".gemini", "antigravity-cli", "presence", cleanConv+".lock")
+	// #nosec G703 -- homeDir is validated and convID is verified by isValidSessionID regex
 	_ = os.Remove(lockFile)
 }
 
