@@ -1346,8 +1346,9 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	if !exists {
 		ch = make(chan chatUpdateTask, 100)
 		chatQueues[chatID] = ch
-		go func(cID int64, taskChan chan chatUpdateTask) {
-			idleTimer := time.NewTimer(chatQueueIdleTimeout)
+		workerTimeout := chatQueueIdleTimeout
+		go func(cID int64, taskChan chan chatUpdateTask, timeout time.Duration) {
+			idleTimer := time.NewTimer(timeout)
 			defer idleTimer.Stop()
 			for {
 				select {
@@ -1362,7 +1363,7 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 						default:
 						}
 					}
-					idleTimer.Reset(chatQueueIdleTimeout)
+					idleTimer.Reset(timeout)
 				case <-idleTimer.C:
 					chatQueuesMu.Lock()
 					if len(taskChan) == 0 {
@@ -1371,10 +1372,10 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 						return
 					}
 					chatQueuesMu.Unlock()
-					idleTimer.Reset(chatQueueIdleTimeout)
+					idleTimer.Reset(timeout)
 				}
 			}
-		}(chatID, ch)
+		}(chatID, ch, workerTimeout)
 	}
 
 	select {

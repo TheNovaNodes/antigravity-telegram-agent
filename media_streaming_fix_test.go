@@ -285,6 +285,11 @@ func TestDispatchUpdate_ConcurrentSafety(t *testing.T) {
 	bot := createMockBot(ms)
 
 	chatID := int64(777111)
+	defer func() {
+		chatQueuesMu.Lock()
+		delete(chatQueues, chatID)
+		chatQueuesMu.Unlock()
+	}()
 	const numTasks = 50
 
 	var wg sync.WaitGroup
