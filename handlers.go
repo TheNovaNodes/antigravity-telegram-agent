@@ -1287,6 +1287,8 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 		ch = make(chan chatUpdateTask, 100)
 		chatQueues[chatID] = ch
 		go func(cID int64, taskChan chan chatUpdateTask) {
+			idleTimer := time.NewTimer(chatQueueIdleTimeout)
+			defer idleTimer.Stop()
 			for {
 				select {
 				case task, ok := <-taskChan:
@@ -1294,7 +1296,14 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 						return
 					}
 					handleUpdate(task.bot, task.update, task.db)
-				case <-time.After(chatQueueIdleTimeout):
+					if !idleTimer.Stop() {
+						select {
+						case <-idleTimer.C:
+						default:
+						}
+					}
+					idleTimer.Reset(chatQueueIdleTimeout)
+				case <-idleTimer.C:
 					chatQueuesMu.Lock()
 					if len(taskChan) == 0 {
 						delete(chatQueues, cID)
@@ -1302,6 +1311,7 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 						return
 					}
 					chatQueuesMu.Unlock()
+					idleTimer.Reset(chatQueueIdleTimeout)
 				}
 			}
 		}(chatID, ch)
