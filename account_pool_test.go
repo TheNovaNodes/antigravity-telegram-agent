@@ -361,7 +361,7 @@ func TestAccountHandlers_FormatDashboard(t *testing.T) {
 		TotalErrors:   1,
 	}
 
-	pool.activeChat[555] = "acc-1"
+	pool.activeChat["555"] = "acc-1"
 
 	dash, markup := formatAccountsDashboard(pool, 555)
 
@@ -527,7 +527,7 @@ func TestHandleUsageCommand_WithActiveAccount(t *testing.T) {
 		State:    StateActive,
 		LastUsed: time.Now(),
 	}
-	pool.activeChat[12345] = "acc-test"
+	pool.activeChat["12345"] = "acc-test"
 
 	handleUsageCommand(bot, 12345)
 

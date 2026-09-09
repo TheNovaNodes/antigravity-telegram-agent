@@ -280,6 +280,15 @@ func getAgyPath() string {
 	return p
 }
 
+// cleanPresenceLock removes any stale presence lock file left by an interrupted or terminated process (#236).
+func cleanPresenceLock(homeDir, convID string) {
+	if homeDir == "" || convID == "" || !isValidSessionID(convID) {
+		return
+	}
+	lockFile := filepath.Join(homeDir, ".gemini", "antigravity-cli", "presence", convID+".lock")
+	_ = os.Remove(lockFile)
+}
+
 // Kill gracefully cancels the session context, closes pipes, and terminates the underlying process tree.
 // It extracts process handles under mutex lock and performs blocking I/O and OS syscalls outside the lock
 // to eliminate thread contention and prevent potential deadlocks.
@@ -299,7 +308,11 @@ func (s *AgySession) Kill() {
 	s.TextBuffer = ""
 	s.TextTruncated = false
 	s.StdoutScanner = nil
+	accHome := s.AccountHomeDir
+	convID := s.Conversation
 	s.mu.Unlock()
+
+	cleanPresenceLock(accHome, convID)
 
 	if cancel != nil {
 		cancel()
@@ -589,13 +602,13 @@ func (s *AgySession) start() error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
 
-	// Multi-account profile isolation (#216)
+	// Multi-account profile isolation (#216, #236)
 	if GlobalAccountPool != nil {
 		s.mu.Lock()
 		accID := s.AccountID
 		s.mu.Unlock()
 		if accID == "" {
-			if acc, err := GlobalAccountPool.AcquireAccount(s.ChatID); err == nil && acc != nil {
+			if acc, err := GlobalAccountPool.AcquireAccount(s.ChatID, s.BotName); err == nil && acc != nil {
 				s.mu.Lock()
 				s.AccountID = acc.ID
 				s.AccountHomeDir = acc.HomeDir
@@ -611,6 +624,7 @@ func (s *AgySession) start() error {
 	}
 	s.mu.Lock()
 	accHome := s.AccountHomeDir
+	convID := s.Conversation
 	s.mu.Unlock()
 	if accHome != "" {
 		var cleanEnv []string
@@ -621,6 +635,9 @@ func (s *AgySession) start() error {
 		}
 		cmd.Env = append(cleanEnv, "HOME="+accHome)
 	}
+
+	// Remove any leftover presence lock file to ensure agy can resume conversation cleanly (#236)
+	cleanPresenceLock(accHome, convID)
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
@@ -1201,12 +1218,22 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						ws := s.Workspace
 						botAPI := s.BotAPI
 						chatID := s.ChatID
-						db := s.DB
 						botName := s.BotName
 						currentAccID := s.AccountID
 						s.mu.Unlock()
 
-						// Multi-Account Pool Auto-Failover (#216, #228)
+						// Safe Parking (#204, #236): ALWAYS export current session transcript to Telegram BEFORE any rotation, killing, or state changes!
+						if botAPI != nil && chatID != 0 && isValidSessionID(convID) {
+							user := User{
+								ID:        uID,
+								SessionID: convID,
+								Model:     model,
+								Workspace: ws,
+							}
+							handleExportCommand(botAPI, chatID, uID, botName, user)
+						}
+
+						// Multi-Account Pool Auto-Failover (#216, #228, #236)
 						rotated := false
 						if GlobalAccountPool != nil && currentAccID != "" {
 							cooldownDuration := 5 * time.Hour
@@ -1220,24 +1247,26 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 								}
 							}
 							GlobalAccountPool.MarkCooldown(currentAccID, cooldownDuration)
-							if !GlobalAccountPool.IsPinned(chatID) {
-								if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID); err == nil && nextAcc != nil {
+							if !GlobalAccountPool.IsPinned(chatID, botName) {
+								if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID, botName); err == nil && nextAcc != nil {
 									log.Printf("[AccountPool] Auto-rotating bot %s chat %d from %s to %s", botName, chatID, currentAccID, nextAcc.ID)
 									rotated = true
 
 									if botAPI != nil && activeID != 0 {
-										rotateNotice := fmt.Sprintf("⚠️ <b>[429 Quota Exceeded]</b> Account <code>%s</code> reached quota limits. Rotating to <code>%s</code> (%s). Session cache cleared. Resuming...",
-											currentAccID, nextAcc.ID, nextAcc.Email)
+										rotateNotice := fmt.Sprintf("⚠️ <b>[429 Quota Exceeded]</b> Account <code>%s</code> reached quota limits. Rotating to <code>%s</code> (%s). Session context preserved. Resuming...",
+											currentAccID, nextAcc.ID, maskEmail(nextAcc.Email))
 										sendChunk(botAPI, chatID, activeID, rotateNotice)
 									}
 
 									s.Kill()
-									resetChatSessionCache(db, botName, uID, chatID)
+									cleanPresenceLock(s.AccountHomeDir, convID)
+									cleanPresenceLock(nextAcc.HomeDir, convID)
 
 									s.mu.Lock()
 									s.AccountID = nextAcc.ID
 									s.AccountHomeDir = nextAcc.HomeDir
-									s.Conversation = ""
+									// Preserve active session identifier across account rotation (#236)
+									s.Conversation = convID
 									s.UseContinue = false
 									s.ActiveMessageID = activeID
 									s.ActiveTurnStart = time.Now()
@@ -1272,19 +1301,11 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						}
 
 						if !rotated {
-							// Tier 2 Escalation: Emergency Safe Parking (#204)
+							// Tier 2 Escalation: Emergency Safe Parking (#204, #236)
 							if botAPI != nil && chatID != 0 {
-								user := User{
-									ID:        uID,
-									SessionID: convID,
-									Model:     model,
-									Workspace: ws,
-								}
-								handleExportCommand(botAPI, chatID, uID, botName, user)
-
 								quotaNotice := "⚠️ *Google Cloud quota limit exceeded (429 / Quota Exhausted).*\n\n" +
 									"📦 All available accounts are in cooldown. Your current session has been automatically exported to the file above and safely parked.\n" +
-									"Once quotas recover, simply forward this `.md` file to the bot to resume work seamlessly!"
+									"Once quotas recover, simply forward this `.md` file or continue the conversation to resume seamlessly!"
 								if activeID != 0 {
 									sendChunk(botAPI, chatID, activeID, quotaNotice)
 								} else {
@@ -1303,14 +1324,11 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							s.TextTruncated = false
 							s.mu.Unlock()
 
-							if db != nil && uID != 0 {
-								updateUserSession(db, uID, "")
-							}
 							sessionMu.Lock()
 							sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
 							delete(globalSessions, sessionKey)
 							sessionMu.Unlock()
-							continue
+							return
 						}
 					}
 
