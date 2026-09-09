@@ -547,4 +547,3 @@ func TestHandleUsageCommand_WithActiveAccount(t *testing.T) {
 		t.Errorf("Expected mock agy to receive HOME=%s, got: %s", targetHome, text)
 	}
 }
-
