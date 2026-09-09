@@ -21,8 +21,8 @@
 - **Watchdog Guardrails:** 15m inactivity TTL, 45m hard deadline per turn. If a turn stalls, harvest and salvage stdout buffer and artifacts before cleanup.
 - **Streaming Throttler:** 1200ms throttled edit message cycle; always assign `ActiveMessageID` even for downloaded media.
 
-GOLDEN LOOP VERIFICATION COMMANDS:
-Execute the following verification steps in your terminal:
+## Part 3: Verification & The Golden Loop
+Execute the following verification steps in your terminal before committing or submitting a PR:
 1. `go vet ./...`
 2. `go test -v ./...`
-Ensure all checks pass cleanly before finishing.
+Ensure all checks pass cleanly with zero failures.
