@@ -451,3 +451,188 @@ func TestStopCommand_PreservesBufferAndSendsArtifacts(t *testing.T) {
 		t.Errorf("Expected sent message to contain stop notice, got: %v", sentBodies)
 	}
 }
+
+// TestStreamRecovery_BufferSalvageOnRetriesExhausted verifies that when a Google Cloud
+// stream interruption occurs and retries are exhausted, the accumulated TextBuffer is
+// salvaged, artifacts are dispatched, and the message includes both the text and retry button.
+func TestStreamRecovery_BufferSalvageOnRetriesExhausted(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	salvagedReport := "Deployment status: 4 services configured and running in prod."
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"stream was interrupted"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	session := &AgySession{
+		BotName:         "SalvageRecoveryBot",
+		BotAPI:          bot,
+		ChatID:          9911,
+		ActiveMessageID: 444,
+		TextBuffer:      salvagedReport,
+		StreamRetries:   2, // Retries exhausted
+		StdoutScanner:   scanner,
+		UpdateChan:      make(chan struct{}, 10),
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+
+	session.mu.Lock()
+	activeID := session.ActiveMessageID
+	buf := session.TextBuffer
+	retries := session.StreamRetries
+	session.mu.Unlock()
+
+	if activeID != 0 {
+		t.Errorf("Expected ActiveMessageID to be reset to 0, got %d", activeID)
+	}
+	if buf != "" {
+		t.Errorf("Expected TextBuffer to be cleared on session after dispatch, got %q", buf)
+	}
+	if retries != 0 {
+		t.Errorf("Expected StreamRetries to be reset to 0, got %d", retries)
+	}
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	var foundText, foundNotice, foundRetryMarkup bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "4 services configured and running in prod") {
+			foundText = true
+		}
+		if strings.Contains(unescaped, "Output salvaged above") {
+			foundNotice = true
+		}
+		if strings.Contains(unescaped, "cmd:retry") {
+			foundRetryMarkup = true
+		}
+	}
+
+	if !foundText {
+		t.Errorf("Expected sent message to salvage text %q, got: %v", salvagedReport, sentBodies)
+	}
+	if !foundNotice {
+		t.Errorf("Expected sent message to contain stream severed notice, got: %v", sentBodies)
+	}
+	if !foundRetryMarkup {
+		t.Errorf("Expected sent message to include cmd:retry inline button, got: %v", sentBodies)
+	}
+}
+
+// TestStreamRecovery_PreservesBufferDuringAutoRecovery verifies that when retries < 2,
+// the existing text buffer is preserved and the Telegram message includes both existing text
+// and the auto-recovering notice rather than wiping it.
+func TestStreamRecovery_PreservesBufferDuringAutoRecovery(t *testing.T) {
+	os.Setenv("AGY_BINARY", "/bin/true")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	accumulatedText := "Generating phase 1: analyzing components..."
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"stream was interrupted"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	session := &AgySession{
+		BotName:         "AutoRecoveryPreserveBot",
+		BotAPI:          bot,
+		ChatID:          9933,
+		ActiveMessageID: 666,
+		TextBuffer:      accumulatedText,
+		StreamRetries:   0,
+		StdoutScanner:   scanner,
+		UpdateChan:      make(chan struct{}, 10),
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	var foundText, foundRecoveringNotice bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Generating phase 1: analyzing components") {
+			foundText = true
+		}
+		if strings.Contains(unescaped, "Auto-recovering (attempt 1/2)") {
+			foundRecoveringNotice = true
+		}
+	}
+
+	if !foundText {
+		t.Errorf("Expected sent message to preserve text %q, got: %v", accumulatedText, sentBodies)
+	}
+	if !foundRecoveringNotice {
+		t.Errorf("Expected sent message to contain auto-recovering notice, got: %v", sentBodies)
+	}
+}
+
+// TestGenericError_BufferSalvaged verifies that when an agent error occurs (such as print timeout),
+// any accumulated TextBuffer is salvaged and displayed with the error notice.
+func TestGenericError_BufferSalvaged(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	partialReport := "Step 1 complete: Database initialized."
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"timeout waiting for response"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	session := &AgySession{
+		BotName:         "GenericErrorSalvageBot",
+		BotAPI:          bot,
+		ChatID:          9922,
+		ActiveMessageID: 555,
+		TextBuffer:      partialReport,
+		StdoutScanner:   scanner,
+		UpdateChan:      make(chan struct{}, 10),
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+
+	session.mu.Lock()
+	activeID := session.ActiveMessageID
+	buf := session.TextBuffer
+	session.mu.Unlock()
+
+	if activeID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0, got %d", activeID)
+	}
+	if buf != "" {
+		t.Errorf("Expected TextBuffer to be cleared after dispatch, got %q", buf)
+	}
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	var foundText, foundTimeoutNotice bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Step 1 complete: Database initialized") {
+			foundText = true
+		}
+		if strings.Contains(unescaped, "CLI print timeout") {
+			foundTimeoutNotice = true
+		}
+	}
+
+	if !foundText {
+		t.Errorf("Expected sent message to preserve partial report %q, got: %v", partialReport, sentBodies)
+	}
+	if !foundTimeoutNotice {
+		t.Errorf("Expected sent message to include print timeout notice, got: %v", sentBodies)
+	}
+}

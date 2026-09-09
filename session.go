@@ -1055,6 +1055,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						convID := s.Conversation
 						botAPI := s.BotAPI
 						chatID := s.ChatID
+						savedBuffer := s.TextBuffer
+						truncated := s.TextTruncated
 						s.mu.Unlock()
 
 						if retries < 2 {
@@ -1066,7 +1068,13 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							log.Printf("[StreamRecovery] Stream interrupted for bot %s (retry %d/2). Auto-continuing turn...", s.BotName, curRetry)
 
 							if botAPI != nil && activeID != 0 {
-								retryNotice := fmt.Sprintf("⚠️ *Network stream was interrupted.* Auto-recovering (attempt %d/2)...", curRetry)
+								var retryNotice string
+								trimmed := strings.TrimSpace(savedBuffer)
+								if trimmed != "" {
+									retryNotice = fmt.Sprintf("%s\n\n⏳ _[Network stream interrupted. Auto-recovering (attempt %d/2)...]_", trimmed, curRetry)
+								} else {
+									retryNotice = fmt.Sprintf("⚠️ *Network stream was interrupted.* Auto-recovering (attempt %d/2)...", curRetry)
+								}
 								sendChunk(botAPI, chatID, activeID, retryNotice)
 							}
 
@@ -1077,6 +1085,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							s.ActiveTurnStart = time.Now()
 							s.LastActivity = time.Now()
 							s.Conversation = convID
+							s.TextBuffer = savedBuffer
+							s.TextTruncated = truncated
 							s.mu.Unlock()
 
 							time.Sleep(1 * time.Second)
@@ -1104,17 +1114,43 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						s.StreamRetries = 0
 						s.ActiveMessageID = 0
 						s.ActiveTurnStart = time.Time{}
+						s.TextBuffer = ""
+						s.TextTruncated = false
 						s.mu.Unlock()
 						s.Kill()
 
-						if botAPI != nil && activeID != 0 {
-							failNotice := "⚠️ *Connection to agent was temporarily interrupted (Google Cloud stream severed).* Tap the button below to resume."
+						if botAPI != nil {
 							retryMarkup := tgbotapi.NewInlineKeyboardMarkup(
 								tgbotapi.NewInlineKeyboardRow(
 									tgbotapi.NewInlineKeyboardButtonData("🔄 Resume task", "cmd:retry"),
 								),
 							)
-							sendChunk(botAPI, chatID, activeID, failNotice, &retryMarkup)
+							trimmed := strings.TrimSpace(savedBuffer)
+							if trimmed != "" {
+								if truncated {
+									trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+								}
+								trimmed += "\n\n⚠️ _[Connection to agent was temporarily interrupted (Google Cloud stream severed). Output salvaged above. Tap below to resume]_"
+								if activeID != 0 {
+									sendChunk(botAPI, chatID, activeID, trimmed, &retryMarkup)
+								} else {
+									msg := tgbotapi.NewMessage(chatID, MarkdownToTelegramHTML(trimmed))
+									msg.ParseMode = "HTML"
+									msg.ReplyMarkup = retryMarkup
+									botAPI.Send(msg)
+								}
+								sendArtifacts(botAPI, chatID, trimmed)
+							} else {
+								failNotice := "⚠️ *Connection to agent was temporarily interrupted (Google Cloud stream severed).* Tap the button below to resume."
+								if activeID != 0 {
+									sendChunk(botAPI, chatID, activeID, failNotice, &retryMarkup)
+								} else {
+									msg := tgbotapi.NewMessage(chatID, failNotice)
+									msg.ParseMode = "Markdown"
+									msg.ReplyMarkup = retryMarkup
+									botAPI.Send(msg)
+								}
+							}
 						}
 						continue
 					}
@@ -1242,14 +1278,10 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						displayErr = "⏱️ *Agent response timed out (CLI print timeout).* Session preserved. You may resend your message."
 					}
 
-					if s.BotAPI != nil {
-						if activeMsgID == 0 {
-							msg := tgbotapi.NewMessage(s.ChatID, displayErr)
-							s.BotAPI.Send(msg)
-						} else {
-							sendChunk(s.BotAPI, s.ChatID, activeMsgID, displayErr)
-						}
-					}
+					s.mu.Lock()
+					buf := s.TextBuffer
+					trunc := s.TextTruncated
+					s.mu.Unlock()
 
 					s.Kill()
 					s.mu.Lock()
@@ -1259,6 +1291,33 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					s.TextBuffer = ""
 					s.TextTruncated = false
 					s.mu.Unlock()
+
+					trimmed := strings.TrimSpace(buf)
+					if trimmed != "" {
+						if trunc {
+							trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+						}
+						trimmed += "\n\n" + displayErr
+						if s.BotAPI != nil {
+							if activeMsgID == 0 {
+								msg := tgbotapi.NewMessage(s.ChatID, MarkdownToTelegramHTML(trimmed))
+								msg.ParseMode = "HTML"
+								s.BotAPI.Send(msg)
+							} else {
+								sendChunk(s.BotAPI, s.ChatID, activeMsgID, trimmed)
+							}
+							sendArtifacts(s.BotAPI, s.ChatID, trimmed)
+						}
+					} else {
+						if s.BotAPI != nil {
+							if activeMsgID == 0 {
+								msg := tgbotapi.NewMessage(s.ChatID, displayErr)
+								s.BotAPI.Send(msg)
+							} else {
+								sendChunk(s.BotAPI, s.ChatID, activeMsgID, displayErr)
+							}
+						}
+					}
 					continue
 				}
 				s.mu.Lock()

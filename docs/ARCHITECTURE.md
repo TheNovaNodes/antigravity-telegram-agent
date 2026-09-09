@@ -109,8 +109,8 @@ During execution of complex tasks, external tool invocations, or network stalls,
 ### 2.4 Stream Auto-Recovery & Quota Safe Parking (429)
 The engine provides automated fault recovery across unreliable upstream networks and quota boundaries:
 
-* **Automatic Stream Recovery (Up to 2 Retries)**:
-  When upstream Google Cloud streaming connections sever mid-turn, `readStdoutLoop` detects the drop. If `s.StreamRetries < 2`, the engine increments the counter, restarts the subprocess (`s.start()`) with `--continue`, and feeds an internal continuation prompt (`The streaming connection was interrupted mid-turn...`). If retries are exhausted, the user receives an inline `🔄 Resume task` (`cmd:retry`) button.
+* **Automatic Stream Recovery with Buffer Salvaging (Up to 2 Retries)**:
+  When upstream Google Cloud streaming connections sever mid-turn, `readStdoutLoop` detects the drop. If `s.StreamRetries < 2`, the engine increments the counter, preserves the accumulated `s.TextBuffer`, displays a non-destructive auto-recovering status notice without erasing previously generated output, restarts the subprocess (`s.start()`) with the conversation context, and feeds an internal continuation prompt (`The streaming connection was interrupted mid-turn...`). Any new token deltas append seamlessly to the preserved buffer. If retries are exhausted or restart fails, the full accumulated text buffer is salvaged and delivered to Telegram, any referenced artifacts are extracted and sent, and an inline `🔄 Resume task` (`cmd:retry`) button is attached. All CLI print timeouts and generic agent errors likewise salvage accumulated output rather than discarding it.
 * **429 Quota Safe Parking**:
   If the model returns a genuine rate limit (`429`, `RESOURCE_EXHAUSTED`, `quota`), the engine automatically triggers `handleExportCommand`, compiles the conversation transcript into a Markdown export document (`session_<title>.md`), and delivers it to the Telegram chat. The active turn is cleanly concluded without corrupting SQLite or leaving hanging processes.
 * **Drop-to-Resume Workflow**:
