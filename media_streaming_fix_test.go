@@ -17,8 +17,7 @@ import (
 
 func TestDownloadTelegramMedia_SuccessWithPlaceholderID(t *testing.T) {
 	fileContent := "hello world media content"
-	var fileServer *httptest.Server
-	fileServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fileContent))
 	}))
