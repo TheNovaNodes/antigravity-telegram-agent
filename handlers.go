@@ -419,16 +419,39 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64) {
 
 	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "--print", "/usage")
+
+	var accountHeader string
+	if GlobalAccountPool != nil {
+		acc := GlobalAccountPool.GetActiveAccountForChat(chatID)
+		if acc == nil {
+			acc, _ = GlobalAccountPool.AcquireAccount(chatID)
+		}
+		if acc != nil {
+			var cleanEnv []string
+			for _, e := range os.Environ() {
+				if !strings.HasPrefix(e, "HOME=") {
+					cleanEnv = append(cleanEnv, e)
+				}
+			}
+			cleanEnv = append(cleanEnv, "HOME="+acc.HomeDir)
+			cmd.Env = cleanEnv
+			accountHeader = fmt.Sprintf(" [%s (%s)]", acc.ID, acc.Email)
+		}
+	}
+
 	out, err := cmd.CombinedOutput()
 	var respText string
+	escapedHeader := strings.ReplaceAll(accountHeader, "_", "\\_")
 	if err != nil {
-		respText = "❌ Failed to get usage: " + err.Error()
+		respText = fmt.Sprintf("❌ Failed to get usage%s: %s", escapedHeader, err.Error())
 	} else {
-		respText = "📊 *Quota Usage:*\n```\n" + strings.TrimSpace(string(out)) + "\n```"
+		respText = fmt.Sprintf("📊 *Quota Usage%s:*\n```\n%s\n```", escapedHeader, strings.TrimSpace(string(out)))
 	}
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
-	bot.Send(msg)
+	if bot != nil {
+		bot.Send(msg)
+	}
 }
 
 // handleHelpCommand outputs the command reference.

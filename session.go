@@ -613,7 +613,13 @@ func (s *AgySession) start() error {
 	accHome := s.AccountHomeDir
 	s.mu.Unlock()
 	if accHome != "" {
-		cmd.Env = append(os.Environ(), "HOME="+accHome)
+		var cleanEnv []string
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "HOME=") {
+				cleanEnv = append(cleanEnv, e)
+			}
+		}
+		cmd.Env = append(cleanEnv, "HOME="+accHome)
 	}
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
@@ -1235,6 +1241,11 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 									s.ActiveTurnStart = time.Now()
 									s.LastActivity = time.Now()
 									s.mu.Unlock()
+
+									sessKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
+									sessionMu.Lock()
+									globalSessions[sessKey] = s
+									sessionMu.Unlock()
 
 									time.Sleep(500 * time.Millisecond)
 									if err := s.start(); err == nil {
