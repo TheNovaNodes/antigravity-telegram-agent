@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,9 +44,32 @@ func ExtractElevenLabsKeys(rawEnv string) ([]string, error) {
 	return validKeys, nil
 }
 
+const defaultMaxTTSChars = 1500
+
+// getMaxTTSChars returns the maximum character length for TTS speech synthesis.
+func getMaxTTSChars() int {
+	if env := os.Getenv("ELEVENLABS_MAX_CHARS"); env != "" {
+		if val, err := strconv.Atoi(env); err == nil && val > 0 {
+			return val
+		}
+	}
+	return defaultMaxTTSChars
+}
+
+// getElevenLabsTimeout returns the HTTP client timeout for ElevenLabs TTS generation.
+func getElevenLabsTimeout() time.Duration {
+	if env := os.Getenv("ELEVENLABS_TIMEOUT_SECONDS"); env != "" {
+		if val, err := strconv.Atoi(env); err == nil && val > 0 {
+			return time.Duration(val) * time.Second
+		}
+	}
+	return 60 * time.Second
+}
+
 // CleanTextForTTS prepares a raw markdown string for Text-To-Speech generation
-// by stripping out Markdown code blocks, inline code, and trimming whitespace.
-func CleanTextForTTS(text string) string {
+// by stripping out Markdown code blocks, inline code, links/URLs, bold/italic markers,
+// and capping length at maxChars to prevent runaway latency and quota exhaustion.
+func CleanTextForTTS(text string, maxCharsOpt ...int) string {
 	// 1. Strip Markdown code blocks
 	reCodeBlock := regexp.MustCompile("(?s)```.*?```")
 	cleanText := reCodeBlock.ReplaceAllString(text, "")
@@ -54,8 +78,41 @@ func CleanTextForTTS(text string) string {
 	reInlineCode := regexp.MustCompile("(?s)`.*?`")
 	cleanText = reInlineCode.ReplaceAllString(cleanText, "")
 
-	// 3. Basic cleanup
-	return strings.TrimSpace(cleanText)
+	// 3. Convert markdown links [Label](URL) to just Label
+	reLink := regexp.MustCompile(`\[([^\]]+)\]\([^\)]+\)`)
+	cleanText = reLink.ReplaceAllString(cleanText, "$1")
+
+	// 4. Strip raw URLs
+	reURL := regexp.MustCompile(`(?:https?|file)://\S+`)
+	cleanText = reURL.ReplaceAllString(cleanText, "")
+
+	// 5. Strip bold, italic, and strikethrough markers
+	cleanText = strings.ReplaceAll(cleanText, "**", "")
+	cleanText = strings.ReplaceAll(cleanText, "__", "")
+	cleanText = strings.ReplaceAll(cleanText, "~~", "")
+
+	cleanText = strings.TrimSpace(cleanText)
+
+	// 6. Max length truncation at sentence boundary
+	maxChars := getMaxTTSChars()
+	if len(maxCharsOpt) > 0 && maxCharsOpt[0] > 0 {
+		maxChars = maxCharsOpt[0]
+	}
+
+	runes := []rune(cleanText)
+	if len(runes) > maxChars {
+		sub := string(runes[:maxChars])
+		lastSentenceEnd := strings.LastIndexAny(sub, ".!?\n")
+		if lastSentenceEnd > maxChars/2 {
+			cleanText = strings.TrimSpace(sub[:lastSentenceEnd+1])
+		} else if lastSpace := strings.LastIndex(sub, " "); lastSpace > maxChars/2 {
+			cleanText = strings.TrimSpace(sub[:lastSpace]) + "..."
+		} else {
+			cleanText = strings.TrimSpace(sub) + "..."
+		}
+	}
+
+	return cleanText
 }
 
 // GenerateAndSendVoice acts as the Mirror Protocol's TTS engine. It sanitizes the agent's text,
@@ -102,8 +159,9 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 		}
 	}
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: getElevenLabsTimeout()}
 	var lastErr error
+	timeoutAttempts := 0
 
 	for _, apiKey := range shuffledKeys {
 		// #nosec G704 -- gosec:nri (Need Review)
@@ -121,6 +179,12 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
+			if os.IsTimeout(err) || strings.Contains(err.Error(), "Client.Timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
+				timeoutAttempts++
+				if timeoutAttempts >= 2 {
+					break
+				}
+			}
 			continue
 		}
 
