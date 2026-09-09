@@ -636,3 +636,123 @@ func TestGenericError_BufferSalvaged(t *testing.T) {
 		t.Errorf("Expected sent message to include print timeout notice, got: %v", sentBodies)
 	}
 }
+
+// TestTurnWatchdog_DefaultTimeouts verifies that the default inactivity timeout is 15m
+// and the hard turn deadline is 45m, and that environment overrides function properly.
+func TestTurnWatchdog_DefaultTimeouts(t *testing.T) {
+	os.Unsetenv("TURN_INACTIVITY_TIMEOUT_MINUTES")
+	os.Unsetenv("TURN_TIMEOUT_MINUTES")
+	os.Unsetenv("TURN_HARD_DEADLINE_MINUTES")
+
+	if timeout := getTurnTimeout(); timeout != 15*time.Minute {
+		t.Errorf("Expected default turn timeout of 15m, got %v", timeout)
+	}
+	if deadline := getHardTurnDeadline(); deadline != 45*time.Minute {
+		t.Errorf("Expected default hard turn deadline of 45m, got %v", deadline)
+	}
+
+	// Test environment overrides
+	os.Setenv("TURN_INACTIVITY_TIMEOUT_MINUTES", "20")
+	defer os.Unsetenv("TURN_INACTIVITY_TIMEOUT_MINUTES")
+	if timeout := getTurnTimeout(); timeout != 20*time.Minute {
+		t.Errorf("Expected overridden turn timeout of 20m, got %v", timeout)
+	}
+
+	os.Setenv("TURN_HARD_DEADLINE_MINUTES", "60")
+	defer os.Unsetenv("TURN_HARD_DEADLINE_MINUTES")
+	if deadline := getHardTurnDeadline(); deadline != 60*time.Minute {
+		t.Errorf("Expected overridden hard deadline of 60m, got %v", deadline)
+	}
+}
+
+// TestTurnWatchdog_ActiveTurnNotKilledUnderHardDeadline verifies that a turn running
+// for 20 minutes with fresh LastActivity (e.g. running tests, building, or awaiting CI)
+// is NOT killed by the watchdog.
+func TestTurnWatchdog_ActiveTurnNotKilledUnderHardDeadline(t *testing.T) {
+	session := &AgySession{
+		BotName:         "LongActiveBot",
+		ActiveMessageID: 101,
+		ActiveTurnStart: time.Now().Add(-20 * time.Minute), // Running for 20 minutes
+		LastActivity:    time.Now().Add(-10 * time.Second), // Active 10 seconds ago!
+		isAlive:         true,
+	}
+
+	timeout := 15 * time.Minute
+	stalled := session.checkTurnInactivity(time.Now(), timeout)
+	if stalled {
+		t.Fatalf("Expected active turn (running for 20m with recent activity) NOT to be killed by watchdog")
+	}
+
+	session.mu.Lock()
+	alive := session.isAlive
+	activeID := session.ActiveMessageID
+	session.mu.Unlock()
+
+	if !alive {
+		t.Errorf("Expected session to remain alive")
+	}
+	if activeID != 101 {
+		t.Errorf("Expected ActiveMessageID to remain 101, got %d", activeID)
+	}
+}
+
+// TestTurnWatchdog_HardDeadlineTriggeredWhenExceeded verifies that when a runaway turn
+// exceeds the hard deadline (e.g. 45m), the watchdog terminates the process, salvages output,
+// and reports the honest hard duration deadline rather than an inactivity error.
+func TestTurnWatchdog_HardDeadlineTriggeredWhenExceeded(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	session := &AgySession{
+		BotName:         "RunawayTurnBot",
+		BotAPI:          bot,
+		ChatID:          7788,
+		ActiveMessageID: 202,
+		ActiveTurnStart: time.Now().Add(-50 * time.Minute), // Exceeded 45m hard deadline
+		LastActivity:    time.Now().Add(-1 * time.Minute),  // Recent activity
+		TextBuffer:      "Analyzing step 999: infinite loop detected",
+		isAlive:         true,
+	}
+
+	timeout := 15 * time.Minute
+	hardDeadline := 45 * time.Minute
+	stalled := session.checkTurnInactivity(time.Now(), timeout, hardDeadline)
+	if !stalled {
+		t.Fatalf("Expected runaway turn exceeding hard deadline to be terminated")
+	}
+
+	session.mu.Lock()
+	alive := session.isAlive
+	activeID := session.ActiveMessageID
+	session.mu.Unlock()
+
+	if alive {
+		t.Errorf("Expected session.isAlive to be false after hard deadline kill")
+	}
+	if activeID != 0 {
+		t.Errorf("Expected ActiveMessageID to be reset to 0, got %d", activeID)
+	}
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	var foundText, foundHardDeadlineNotice bool
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "infinite loop detected") {
+			foundText = true
+		}
+		if strings.Contains(unescaped, "Turn exceeded maximum duration deadline") {
+			foundHardDeadlineNotice = true
+		}
+	}
+
+	if !foundText {
+		t.Errorf("Expected sent message to salvage text buffer, got: %v", sentBodies)
+	}
+	if !foundHardDeadlineNotice {
+		t.Errorf("Expected sent message to report hard duration deadline, got: %v", sentBodies)
+	}
+}

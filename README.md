@@ -82,10 +82,10 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 
 The engine features an enterprise-grade resilience suite engineered for 24/7 headless production:
 
-* **Inactivity Turn Watchdog (`5m` deadline)**: Monitors `LastActivity` updated on all JSONL step events. If an agent hangs, stalls, or deadlocks, the watchdog terminates the rogue process group via `s.Kill()`, salvages all accumulated output text, and delivers it to Telegram with full artifact extraction.
+* **Inactivity Turn Watchdog (`15m` inactivity, `45m` hard deadline)**: Monitors `LastActivity` updated on all JSONL step events. If an agent hangs, stalls, or deadlocks without activity for 15 minutes, or exceeds the 45-minute hard deadline, the watchdog terminates the rogue process group via `s.Kill()`, salvages all accumulated output text, and delivers it to Telegram with full artifact extraction.
 * **Two-Phase Process Group Annihilation (`Setpgid: true`)**: Child processes run in isolated kernel process groups. Interruption (`/stop` or watchdog) sends `SIGTERM` followed by `SIGKILL` to `-pgid`, eliminating all child compiler, worker, and PTY processes without zombies.
 * **Asynchronous Coalescing Throttler (`1200ms`)**: Buffers rapid token streams and flushes edits at 1.2-second intervals, eliminating Telegram `429 Too Many Requests` deadlocks and empty message race conditions.
-* **Stream Auto-Recovery (Up to 2 Retries)**: Automatically recovers and reconnects when underlying Google Cloud streaming sockets are severed mid-turn, continuing the task seamlessly without user intervention.
+* **Stream Auto-Recovery with Buffer Salvaging (Up to 2 Retries)**: Automatically recovers and reconnects when underlying Google Cloud streaming sockets are severed mid-turn, preserving existing output buffers and continuing the task seamlessly without user intervention.
 * **Cross-Turn 429 Safe Parking Protocol**: When upstream model quotas are exhausted, the engine automatically compiles the active session into a Markdown export file (`session_<title>.md`), parks the session safely, and delivers the file to the user.
 * **Drop-to-Resume Workflow**: Users can forward or drop any `session_*.md` file directly into chat. The engine automatically parses the transcript, restores previous conversational context, and resumes execution from where it left off.
 * **Subprocess State: T Reaper**: An autonomous `/proc` scanner detects and reaps commands suspended by `SIGTTIN`/`SIGTTOU` via sequenced `SIGCONT` + `SIGKILL`.
@@ -100,6 +100,8 @@ The engine supports flexible configuration through environment variables:
 | :--- | :--- | :--- | :--- |
 | `BOT_TOKENS` | String | `""` | Comma-separated list of Telegram Bot API tokens. |
 | `ALLOWED_ADMIN_IDS` | String | `""` | Comma-separated list of authorized Telegram User IDs (Fail-Fast enforced at startup). |
+| `TURN_INACTIVITY_TIMEOUT_MINUTES` | Integer | `15` | Maximum duration of silence allowed before the turn watchdog salvages buffer and kills process. |
+| `TURN_HARD_DEADLINE_MINUTES` | Integer | `45` | Absolute maximum duration for an active turn as a runaway failsafe. |
 | `AGENTS_DIR` | String | `/root/.agents` | Base directory containing agent workspaces and download scratchpads. |
 | `BRAIN_DIR` | String | `/root/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
 | `PROJECTS_DIR` | String | `/root/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
