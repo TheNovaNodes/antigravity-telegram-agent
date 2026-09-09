@@ -147,10 +147,14 @@ func TestTylerAudit_CleanTextForTTS_CleanOutput(t *testing.T) {
 // TestTylerAudit_DispatchUpdate_ReusedTimer verifies that dispatchUpdate properly creates
 // a worker with a reusable timer and processes updates without deadlocks or panic.
 func TestTylerAudit_DispatchUpdate_ReusedTimer(t *testing.T) {
+	chatQueuesMu.Lock()
 	origTimeout := chatQueueIdleTimeout
 	chatQueueIdleTimeout = 80 * time.Millisecond
+	chatQueuesMu.Unlock()
 	defer func() {
+		chatQueuesMu.Lock()
 		chatQueueIdleTimeout = origTimeout
+		chatQueuesMu.Unlock()
 	}()
 
 	testChatID := int64(999111)

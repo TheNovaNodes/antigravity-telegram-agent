@@ -12,10 +12,14 @@ import (
 
 func TestDispatchUpdate_IdleWorkerEviction(t *testing.T) {
 	// Set a very short idle timeout for the test
+	chatQueuesMu.Lock()
 	origTimeout := chatQueueIdleTimeout
 	chatQueueIdleTimeout = 50 * time.Millisecond
+	chatQueuesMu.Unlock()
 	defer func() {
+		chatQueuesMu.Lock()
 		chatQueueIdleTimeout = origTimeout
+		chatQueuesMu.Unlock()
 	}()
 
 	testChatID := int64(888999)

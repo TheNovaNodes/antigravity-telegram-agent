@@ -1073,15 +1073,32 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 	}
 }
 
+// sendOrEditError edits an existing placeholder message or sends a new message if placeholderID is 0.
+func sendOrEditError(bot *tgbotapi.BotAPI, chatID int64, placeholderMsgID int, errorText string) {
+	if bot == nil {
+		return
+	}
+	if placeholderMsgID > 0 {
+		editMsg := tgbotapi.NewEditMessageText(chatID, placeholderMsgID, errorText)
+		if _, err := bot.Send(editMsg); err == nil {
+			return
+		}
+	}
+	bot.Send(tgbotapi.NewMessage(chatID, errorText))
+}
+
 // downloadTelegramMedia downloads incoming Telegram media attachment (file, photo, voice, audio).
-func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text, caption, botName string, originalFileName ...string) (string, bool, error) {
+func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text, caption, botName string, originalFileName ...string) (string, bool, int, error) {
 	if fileID == "" {
-		return text, false, nil
+		return text, false, 0, nil
+	}
+	if bot == nil {
+		return "", false, 0, fmt.Errorf("bot is nil")
 	}
 	file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
-		return "", false, err
+		sendOrEditError(bot, chatID, 0, "❌ Failed to download file.")
+		return "", false, 0, err
 	}
 
 	var fileURL string
@@ -1093,35 +1110,38 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 
 	parsedURL, err := url.Parse(fileURL)
 	if err != nil || (parsedURL.Scheme != "https" && parsedURL.Scheme != "http") || parsedURL.Host == "" {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid file download URL."))
-		return "", false, fmt.Errorf("invalid file URL: %s", fileURL)
+		sendOrEditError(bot, chatID, 0, "❌ Invalid file download URL.")
+		return "", false, 0, fmt.Errorf("invalid file URL: %s", fileURL)
 	}
 	downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
 	// #nosec G703 -- gosec:nri (Need Review)
 	_ = os.MkdirAll(downloadDir, 0700)
 	safePath := filepath.Join(downloadDir, uuid.New().String()+ext)
 
-	bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file..."))
+	placeholderMsgID := 0
+	if sentMsg, err := bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file...")); err == nil {
+		placeholderMsgID = sentMsg.MessageID
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	// #nosec G107 G704 -- gosec:nri (Need Review)
 	resp, err := client.Get(fileURL)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file."))
-		return "", false, err
+		sendOrEditError(bot, chatID, placeholderMsgID, "❌ Failed to download file.")
+		return "", false, placeholderMsgID, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to download file from server."))
-		return "", false, fmt.Errorf("file download failed with HTTP status %d", resp.StatusCode)
+		sendOrEditError(bot, chatID, placeholderMsgID, "❌ Failed to download file from server.")
+		return "", false, placeholderMsgID, fmt.Errorf("file download failed with HTTP status %d", resp.StatusCode)
 	}
 
 	// #nosec G304 G703 -- gosec:nri (Need Review)
 	out, err := os.Create(safePath)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save file to disk."))
-		return "", false, err
+		sendOrEditError(bot, chatID, placeholderMsgID, "❌ Failed to save file to disk.")
+		return "", false, placeholderMsgID, err
 	}
 	defer out.Close()
 
@@ -1129,16 +1149,16 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 	if resp.ContentLength > maxUploadBytes {
 		// #nosec G703 -- gosec:nri (Need Review)
 		_ = os.Remove(safePath)
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ File too large (max 100 MB)"))
-		return "", false, fmt.Errorf("file too large")
+		sendOrEditError(bot, chatID, placeholderMsgID, "❌ File too large (max 100 MB)")
+		return "", false, placeholderMsgID, fmt.Errorf("file too large")
 	}
 
 	n, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
 	if err != nil || n > maxUploadBytes {
 		// #nosec G703 -- gosec:nri (Need Review)
 		_ = os.Remove(safePath)
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ File exceeds 100 MB limit"))
-		return "", false, fmt.Errorf("file exceeds limit")
+		sendOrEditError(bot, chatID, placeholderMsgID, "❌ File exceeds 100 MB limit")
+		return "", false, placeholderMsgID, fmt.Errorf("file exceeds limit")
 	}
 
 	origName := ""
@@ -1154,11 +1174,11 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 		baseText = "📋 Previous session context loaded from export file. Review the history, current task state, and continue execution from where it left off."
 	}
 	formattedText := fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
-	return formattedText, true, nil
+	return formattedText, true, placeholderMsgID, nil
 }
 
 // handleMessagePayload handles queuing and writing user message streams into the agent's stdin pipe.
-func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, isVoice, downloadedFile bool, db *sql.DB) {
+func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName string, user User, isVoice, downloadedFile bool, db *sql.DB, placeholderMsgIDs ...int) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -1183,30 +1203,70 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 	voiceReply := session.VoiceReply
 	session.mu.Unlock()
 
-	if !downloadedFile && bot != nil {
+	placeholderID := 0
+	if len(placeholderMsgIDs) > 0 {
+		placeholderID = placeholderMsgIDs[0]
+	}
+
+	if bot != nil {
 		stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("🛑 Stop", "cmd:stop"),
 			),
 		)
 		if activeMsgID == 0 {
-			msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = stopMarkup
-			if sentMsg, err := bot.Send(msg); err == nil {
-				session.mu.Lock()
-				if session.ActiveMessageID == 0 {
-					session.ActiveMessageID = sentMsg.MessageID
-					session.ActiveTurnStart = time.Now()
-					session.LastActivity = time.Now()
+			if placeholderID > 0 {
+				editMsg := tgbotapi.NewEditMessageText(chatID, placeholderID, "*⏳ Thinking...*")
+				editMsg.ParseMode = "Markdown"
+				editMsg.ReplyMarkup = &stopMarkup
+				if _, err := bot.Send(editMsg); err == nil {
+					session.mu.Lock()
+					if session.ActiveMessageID == 0 {
+						session.ActiveMessageID = placeholderID
+						session.ActiveTurnStart = time.Now()
+						session.LastActivity = time.Now()
+					}
+					session.mu.Unlock()
+				} else {
+					msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+					msg.ParseMode = "Markdown"
+					msg.ReplyMarkup = stopMarkup
+					if sentMsg, err := bot.Send(msg); err == nil {
+						session.mu.Lock()
+						if session.ActiveMessageID == 0 {
+							session.ActiveMessageID = sentMsg.MessageID
+							session.ActiveTurnStart = time.Now()
+							session.LastActivity = time.Now()
+						}
+						session.mu.Unlock()
+					}
 				}
-				session.mu.Unlock()
+			} else {
+				msg := tgbotapi.NewMessage(chatID, "*⏳ Thinking...*")
+				msg.ParseMode = "Markdown"
+				msg.ReplyMarkup = stopMarkup
+				if sentMsg, err := bot.Send(msg); err == nil {
+					session.mu.Lock()
+					if session.ActiveMessageID == 0 {
+						session.ActiveMessageID = sentMsg.MessageID
+						session.ActiveTurnStart = time.Now()
+						session.LastActivity = time.Now()
+					}
+					session.mu.Unlock()
+				}
 			}
 		} else {
-			msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = stopMarkup
-			bot.Send(msg)
+			if placeholderID > 0 {
+				editMsg := tgbotapi.NewEditMessageText(chatID, placeholderID, "⏳ _Message queued..._")
+				editMsg.ParseMode = "Markdown"
+				editMsg.ReplyMarkup = &stopMarkup
+				bot.Send(editMsg)
+			} else {
+				msg := tgbotapi.NewMessage(chatID, "⏳ _Message queued..._")
+				msg.ParseMode = "Markdown"
+				msg.ReplyMarkup = stopMarkup
+				bot.Send(msg)
+			}
 		}
 
 		action := tgbotapi.ChatTyping
@@ -1286,8 +1346,9 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	if !exists {
 		ch = make(chan chatUpdateTask, 100)
 		chatQueues[chatID] = ch
-		go func(cID int64, taskChan chan chatUpdateTask) {
-			idleTimer := time.NewTimer(chatQueueIdleTimeout)
+		workerTimeout := chatQueueIdleTimeout
+		go func(cID int64, taskChan chan chatUpdateTask, timeout time.Duration) {
+			idleTimer := time.NewTimer(timeout)
 			defer idleTimer.Stop()
 			for {
 				select {
@@ -1302,7 +1363,7 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 						default:
 						}
 					}
-					idleTimer.Reset(chatQueueIdleTimeout)
+					idleTimer.Reset(timeout)
 				case <-idleTimer.C:
 					chatQueuesMu.Lock()
 					if len(taskChan) == 0 {
@@ -1311,10 +1372,10 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 						return
 					}
 					chatQueuesMu.Unlock()
-					idleTimer.Reset(chatQueueIdleTimeout)
+					idleTimer.Reset(timeout)
 				}
 			}
-		}(chatID, ch)
+		}(chatID, ch, workerTimeout)
 	}
 
 	select {
@@ -1391,13 +1452,15 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	user := getUser(db, userID, botName)
 
 	downloadedFile := false
+	placeholderMsgID := 0
 	if fileID != "" {
-		formattedText, isFile, err := downloadTelegramMedia(bot, chatID, fileID, ext, text, caption, botName, originalFileName)
+		formattedText, isFile, pID, err := downloadTelegramMedia(bot, chatID, fileID, ext, text, caption, botName, originalFileName)
 		if err != nil {
 			return
 		}
 		text = formattedText
 		downloadedFile = isFile
+		placeholderMsgID = pID
 	}
 
 	text = strings.TrimSpace(text)
@@ -1411,7 +1474,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	}
 
 	// 4. Process Normal Text & Media Payloads
-	handleMessagePayload(bot, chatID, userID, text, botName, user, isVoice, downloadedFile, db)
+	handleMessagePayload(bot, chatID, userID, text, botName, user, isVoice, downloadedFile, db, placeholderMsgID)
 }
 
 // sendChunk safely breaks a large text into valid HTML chunks and sends them sequentially.
