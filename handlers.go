@@ -444,7 +444,9 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		"• /rename <name> - Rename current session\n" +
 		"• /workspace <path> - Change working directory\n" +
 		"• /export - Export conversation transcript to Markdown file\n" +
-		"• /voice [on|off] - Toggle persistent voice responses\n\n" +
+		"• /voice [on|off] - Toggle persistent voice responses\n" +
+		"• /tts <text> - Convert text to speech (Hybrid Edge + Piper)\n" +
+		"• /tts_engine [engine] - View or switch TTS engine (hybrid/edge/piper/elevenlabs)\n\n" +
 		"*Send any text or file to start the Agent.*"
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
@@ -569,14 +571,15 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	bot.Send(doc)
 }
 
-// handleTTSCommand converts text to speech using ElevenLabs and sends as audio.
+// handleTTSCommand converts text to speech using the active TTS engine and sends as audio.
 func handleTTSCommand(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	ttsText := strings.TrimSpace(strings.TrimPrefix(text, "/tts"))
 	if ttsText == "" {
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: `/tts <text>`"))
 		return
 	}
-	if os.Getenv("ELEVENLABS_API_KEY") == "" {
+	engine := GetTTSEngine()
+	if engine == "elevenlabs" && os.Getenv("ELEVENLABS_API_KEY") == "" {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ ELEVENLABS_API_KEY environment variable is not set!"))
 		return
 	}
@@ -592,6 +595,42 @@ func handleTTSCommand(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ TTS Error: "+err.Error()))
+	}
+}
+
+// handleTTSEngineCommand inspects or switches the active Text-To-Speech engine.
+func handleTTSEngineCommand(bot *tgbotapi.BotAPI, chatID int64, text string) {
+	arg := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(text, "/tts_engine")))
+	if arg == "" {
+		engine := GetTTSEngine()
+		var extra strings.Builder
+		extra.WriteString(fmt.Sprintf("🎙 *Active TTS Engine:* `%s`\n\n", engine))
+		extra.WriteString(fmt.Sprintf("• *Edge-TTS Voice:* `%s`\n", GetEdgeTTSVoice()))
+		extra.WriteString(fmt.Sprintf("• *Piper Model:* `%s`\n", GetPiperModel()))
+		extra.WriteString(fmt.Sprintf("• *Piper Binary:* `%s`\n", GetPiperPath()))
+		elevenStatus := "Configured"
+		if os.Getenv("ELEVENLABS_API_KEY") == "" {
+			elevenStatus = "Not set (optional)"
+		}
+		extra.WriteString(fmt.Sprintf("• *ElevenLabs:* `%s`\n\n", elevenStatus))
+		extra.WriteString("💡 Switch engine: `/tts_engine [hybrid|edge|piper|elevenlabs]`")
+
+		msg := tgbotapi.NewMessage(chatID, extra.String())
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+		return
+	}
+
+	switch arg {
+	case "hybrid", "edge", "piper", "elevenlabs":
+		SetActiveTTSEngine(arg)
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Active TTS engine switched to: *%s*", strings.ToUpper(arg)))
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+	default:
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Invalid engine. Supported options: `hybrid`, `edge`, `piper`, `elevenlabs`")
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
 	}
 }
 
@@ -831,6 +870,9 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 		return true
 	case "/tts":
 		handleTTSCommand(bot, chatID, text)
+		return true
+	case "/tts_engine":
+		handleTTSEngineCommand(bot, chatID, text)
 		return true
 	case "/voice":
 		handleVoiceToggleCommand(bot, chatID, userID, text, botName, user, db)

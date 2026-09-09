@@ -130,7 +130,8 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleRefreshModelsCommand` | Live fetch of supported LLMs from `agy --print /models`. | Write-locked cache update (`modelsMu.Lock()`). |
 | `handleUsageCommand` | Token quota and API tier usage display. | Executes `agy --print /usage`. |
 | `handleHelpCommand` | Quick command reference and operational guide. | Pure static format. |
-| `handleTTSCommand` | Text-to-Speech synthesis for arbitrary user text. | Multi-key ElevenLabs rotation. |
+| `handleTTSCommand` | Text-to-Speech synthesis for arbitrary user text (`/tts <text>`). | Hybrid engine (Edge-TTS primary -> Piper TTS CPU failover -> ElevenLabs key pool). |
+| `handleTTSEngineCommand` | Inspect or switch active Text-To-Speech engine (`/tts_engine [engine]`). | Thread-safe dynamic engine override and configuration inspector. |
 | `handleVoiceToggleCommand` | Persistent toggle for agent voice responses (`/voice [on\|off]`). | Atomic SQLite update to `users.voice_reply` and active in-memory session sync. |
 | `handleWorkspaceCommand` | Dynamic agent working directory switching. | Path traversal validation (`isPathUnderRoot`, restricted to `PROJECTS_DIR` or bot's own office). |
 | `handleRenameCommand` | Live rename of conversation title in `brain` storage. | Sanitizes title and validates conversation ID against path traversal. |

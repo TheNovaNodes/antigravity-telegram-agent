@@ -172,3 +172,78 @@ func TestGetElevenLabsTimeoutAndMaxChars(t *testing.T) {
 		t.Errorf("expected fallback max chars 1500 on invalid env, got %d", mc)
 	}
 }
+
+func TestGetTTSEngineAndOverrides(t *testing.T) {
+	// Reset any runtime override
+	SetActiveTTSEngine("")
+
+	// 1. Default should be "hybrid"
+	t.Setenv("TTS_ENGINE", "")
+	t.Setenv("ELEVENLABS_BASE_URL", "")
+	if engine := GetTTSEngine(); engine != "hybrid" {
+		t.Errorf("expected default engine 'hybrid', got '%s'", engine)
+	}
+
+	// 2. Env override
+	t.Setenv("TTS_ENGINE", "edge")
+	if engine := GetTTSEngine(); engine != "edge" {
+		t.Errorf("expected engine 'edge', got '%s'", engine)
+	}
+
+	// 3. ELEVENLABS_BASE_URL fallback when TTS_ENGINE is empty
+	t.Setenv("TTS_ENGINE", "")
+	t.Setenv("ELEVENLABS_BASE_URL", "http://127.0.0.1:8080")
+	if engine := GetTTSEngine(); engine != "elevenlabs" {
+		t.Errorf("expected engine 'elevenlabs' when ELEVENLABS_BASE_URL is set, got '%s'", engine)
+	}
+
+	// 4. Runtime override takes precedence
+	SetActiveTTSEngine("piper")
+	if engine := GetTTSEngine(); engine != "piper" {
+		t.Errorf("expected runtime override 'piper', got '%s'", engine)
+	}
+
+	// Clean up runtime override
+	SetActiveTTSEngine("")
+}
+
+func TestGetEdgeTTSVoice(t *testing.T) {
+	t.Setenv("EDGE_TTS_VOICE", "")
+	if v := GetEdgeTTSVoice(); v != "ru-RU-DmitryNeural" {
+		t.Errorf("expected default voice 'ru-RU-DmitryNeural', got '%s'", v)
+	}
+
+	t.Setenv("EDGE_TTS_VOICE", "ru-RU-SvetlanaNeural")
+	if v := GetEdgeTTSVoice(); v != "ru-RU-SvetlanaNeural" {
+		t.Errorf("expected overridden voice 'ru-RU-SvetlanaNeural', got '%s'", v)
+	}
+}
+
+func TestGetPiperPathAndModel(t *testing.T) {
+	t.Setenv("PIPER_PATH", "/custom/bin/piper")
+	if p := GetPiperPath(); p != "/custom/bin/piper" {
+		t.Errorf("expected custom piper path, got '%s'", p)
+	}
+
+	t.Setenv("PIPER_MODEL", "/custom/model.onnx")
+	if m := GetPiperModel(); m != "/custom/model.onnx" {
+		t.Errorf("expected custom piper model, got '%s'", m)
+	}
+}
+
+func TestSynthesizeVoice_EmptyText(t *testing.T) {
+	audio, fn, err := SynthesizeVoice("```code only```")
+	if err != nil {
+		t.Errorf("expected nil error on empty text, got %v", err)
+	}
+	if len(audio) != 0 || fn != "" {
+		t.Errorf("expected empty audio and filename on empty text, got %d bytes, fn=%s", len(audio), fn)
+	}
+}
+
+func TestGenerateVoicePiperTTS_MissingModel(t *testing.T) {
+	_, _, err := GenerateVoicePiperTTS("Hello world", "/nonexistent/model.onnx")
+	if err == nil {
+		t.Errorf("expected error for nonexistent piper model, got nil")
+	}
+}
