@@ -86,8 +86,8 @@ type AccountPool struct {
 	mu          sync.RWMutex
 	accountsDir string
 	accounts    map[string]*Account
-	pinnedChat  map[int64]string // chatID -> accountID (Sticky Lock)
-	activeChat  map[int64]string // chatID -> accountID (Current active assignment)
+	pinnedChat  map[string]string // chatKey -> accountID (Sticky Lock)
+	activeChat  map[string]string // chatKey -> accountID (Current active assignment)
 	client      *http.Client
 }
 
@@ -121,6 +121,59 @@ func getAccountsDir() string {
 	return filepath.Join(home, ".antigravity-bot", "accounts")
 }
 
+// getSharedConversationsDir resolves the shared Antigravity CLI conversations storage directory (#236).
+func getSharedConversationsDir() string {
+	if env := os.Getenv("CONVERSATIONS_DIR"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
+}
+
+// EnsureSharedAccountDirectories guarantees that conversations in account home dirs
+// are symlinked to the central shared conversations directory, preventing context loss on account rotation (#236).
+func EnsureSharedAccountDirectories(accHomeDir string) error {
+	if accHomeDir == "" {
+		return nil
+	}
+	sharedConvs := getSharedConversationsDir()
+	if err := os.MkdirAll(sharedConvs, 0700); err != nil {
+		return err
+	}
+
+	accCliDir := filepath.Join(accHomeDir, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(accCliDir, 0700); err != nil {
+		return err
+	}
+
+	accConvs := filepath.Join(accCliDir, "conversations")
+	fi, err := os.Lstat(accConvs)
+	if err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if fi.IsDir() {
+			entries, _ := os.ReadDir(accConvs)
+			for _, e := range entries {
+				src := filepath.Join(accConvs, e.Name())
+				dst := filepath.Join(sharedConvs, e.Name())
+				if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
+					// #nosec G304 -- gosec:nri (Need Review)
+					if data, readErr := os.ReadFile(src); readErr == nil {
+						// #nosec G703 G306 -- gosec:nri (Need Review)
+						_ = os.WriteFile(dst, data, 0600)
+					}
+				}
+			}
+			_ = os.RemoveAll(accConvs)
+		}
+	}
+	return os.Symlink(sharedConvs, accConvs)
+}
+
 // NewAccountPool creates and initializes an AccountPool instance.
 func NewAccountPool(dir string) (*AccountPool, error) {
 	if dir == "" {
@@ -133,8 +186,8 @@ func NewAccountPool(dir string) (*AccountPool, error) {
 	pool := &AccountPool{
 		accountsDir: dir,
 		accounts:    make(map[string]*Account),
-		pinnedChat:  make(map[int64]string),
-		activeChat:  make(map[int64]string),
+		pinnedChat:  make(map[string]string),
+		activeChat:  make(map[string]string),
 		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 
@@ -178,23 +231,13 @@ func (p *AccountPool) LoadState() error {
 		p.accounts = state.Accounts
 	}
 	if state.PinnedChat != nil {
-		for kStr, v := range state.PinnedChat {
-			var chatID int64
-			if _, err := fmt.Sscanf(kStr, "%d", &chatID); err == nil {
-				p.pinnedChat[chatID] = v
-			}
-		}
+		p.pinnedChat = state.PinnedChat
 	}
 	if state.ActiveChat != nil {
-		for kStr, v := range state.ActiveChat {
-			var chatID int64
-			if _, err := fmt.Sscanf(kStr, "%d", &chatID); err == nil {
-				p.activeChat[chatID] = v
-			}
-		}
+		p.activeChat = state.ActiveChat
 	}
 
-	// Verify profile directories exist and have valid permissions
+	// Verify profile directories exist, shared storage is linked, and have valid permissions
 	now := time.Now()
 	for _, acc := range p.accounts {
 		if acc.State == StateCooldown && now.After(acc.CooldownUntil) {
@@ -204,6 +247,7 @@ func (p *AccountPool) LoadState() error {
 		if acc.HomeDir != "" {
 			// #nosec G703 -- gosec:nri (Need Review)
 			_ = os.MkdirAll(acc.HomeDir, 0700)
+			_ = EnsureSharedAccountDirectories(acc.HomeDir)
 		}
 	}
 
@@ -215,14 +259,8 @@ func (p *AccountPool) LoadState() error {
 func (p *AccountPool) SaveState() error {
 	state := poolStateJSON{
 		Accounts:   p.accounts,
-		PinnedChat: make(map[string]string),
-		ActiveChat: make(map[string]string),
-	}
-	for k, v := range p.pinnedChat {
-		state.PinnedChat[fmt.Sprintf("%d", k)] = v
-	}
-	for k, v := range p.activeChat {
-		state.ActiveChat[fmt.Sprintf("%d", k)] = v
+		PinnedChat: p.pinnedChat,
+		ActiveChat: p.activeChat,
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -269,12 +307,23 @@ func (p *AccountPool) GetAccount(id string) (*Account, error) {
 	return &cp, nil
 }
 
-// GetActiveAccountForChat returns the account assigned to a chat.
-func (p *AccountPool) GetActiveAccountForChat(chatID int64) *Account {
+func poolChatKey(chatID int64, botNames ...string) string {
+	if len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		return fmt.Sprintf("%s:%d", strings.TrimSpace(botNames[0]), chatID)
+	}
+	return fmt.Sprintf("%d", chatID)
+}
+
+// GetActiveAccountForChat returns the account assigned to a chat, optionally scoped by bot name.
+func (p *AccountPool) GetActiveAccountForChat(chatID int64, botNames ...string) *Account {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	id, ok := p.activeChat[chatID]
+	key := poolChatKey(chatID, botNames...)
+	id, ok := p.activeChat[key]
+	if !ok && len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		id, ok = p.activeChat[fmt.Sprintf("%d", chatID)]
+	}
 	if !ok {
 		return nil
 	}
@@ -285,46 +334,65 @@ func (p *AccountPool) GetActiveAccountForChat(chatID int64) *Account {
 	return nil
 }
 
-// IsPinned reports whether a chat is locked to a specific account.
-func (p *AccountPool) IsPinned(chatID int64) bool {
+// IsPinned reports whether a chat is locked to a specific account, optionally scoped by bot name.
+func (p *AccountPool) IsPinned(chatID int64, botNames ...string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	_, pinned := p.pinnedChat[chatID]
-	return pinned
+	key := poolChatKey(chatID, botNames...)
+	if _, pinned := p.pinnedChat[key]; pinned {
+		return true
+	}
+	if len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		_, pinned := p.pinnedChat[fmt.Sprintf("%d", chatID)]
+		return pinned
+	}
+	return false
 }
 
-// GetPinnedAccount reports the pinned account ID if any.
-func (p *AccountPool) GetPinnedAccount(chatID int64) (string, bool) {
+// GetPinnedAccount reports the pinned account ID if any, optionally scoped by bot name.
+func (p *AccountPool) GetPinnedAccount(chatID int64, botNames ...string) (string, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	id, pinned := p.pinnedChat[chatID]
-	return id, pinned
+	key := poolChatKey(chatID, botNames...)
+	if id, pinned := p.pinnedChat[key]; pinned {
+		return id, true
+	}
+	if len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		id, pinned := p.pinnedChat[fmt.Sprintf("%d", chatID)]
+		return id, pinned
+	}
+	return "", false
 }
 
-// PinAccount locks a chat to a specific account.
-func (p *AccountPool) PinAccount(chatID int64, accountID string) error {
+// PinAccount locks a chat to a specific account, optionally scoped by bot name.
+func (p *AccountPool) PinAccount(chatID int64, accountID string, botNames ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if _, exists := p.accounts[accountID]; !exists {
 		return ErrAccountNotFound
 	}
-	p.pinnedChat[chatID] = accountID
-	p.activeChat[chatID] = accountID
+	key := poolChatKey(chatID, botNames...)
+	p.pinnedChat[key] = accountID
+	p.activeChat[key] = accountID
 	return p.SaveState()
 }
 
 // UnpinAccount unlocks a chat, restoring automatic pool selection.
-func (p *AccountPool) UnpinAccount(chatID int64) error {
+func (p *AccountPool) UnpinAccount(chatID int64, botNames ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	delete(p.pinnedChat, chatID)
+	key := poolChatKey(chatID, botNames...)
+	delete(p.pinnedChat, key)
+	if len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		delete(p.pinnedChat, fmt.Sprintf("%d", chatID))
+	}
 	return p.SaveState()
 }
 
-// SwitchAccount manually sets the active account for a chat.
-func (p *AccountPool) SwitchAccount(chatID int64, accountID string) error {
+// SwitchAccount manually sets the active account for a chat, optionally scoped by bot name.
+func (p *AccountPool) SwitchAccount(chatID int64, accountID string, botNames ...string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -335,12 +403,13 @@ func (p *AccountPool) SwitchAccount(chatID int64, accountID string) error {
 	if acc.State == StateCooldown && time.Now().Before(acc.CooldownUntil) {
 		return ErrAccountInCooldown
 	}
-	p.activeChat[chatID] = accountID
+	key := poolChatKey(chatID, botNames...)
+	p.activeChat[key] = accountID
 	return p.SaveState()
 }
 
-// AcquireAccount selects an account using Sticky Lock or LRU rotation.
-func (p *AccountPool) AcquireAccount(chatID int64) (*Account, error) {
+// AcquireAccount selects an account using Sticky Lock or LRU rotation, optionally scoped by bot name.
+func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -357,8 +426,15 @@ func (p *AccountPool) AcquireAccount(chatID int64) (*Account, error) {
 		}
 	}
 
+	key := poolChatKey(chatID, botNames...)
+	legacyKey := fmt.Sprintf("%d", chatID)
+
 	// 1. Check if pinned for this chat
-	if pinnedID, ok := p.pinnedChat[chatID]; ok {
+	pinnedID, ok := p.pinnedChat[key]
+	if !ok && len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		pinnedID, ok = p.pinnedChat[legacyKey]
+	}
+	if ok {
 		if acc, exists := p.accounts[pinnedID]; exists {
 			if acc.State == StateCooldown && now.Before(acc.CooldownUntil) {
 				return nil, fmt.Errorf("%w: pinned account %s is resting until %s",
@@ -367,7 +443,7 @@ func (p *AccountPool) AcquireAccount(chatID int64) (*Account, error) {
 			acc.ActiveTurns++
 			acc.LastUsed = now
 			acc.State = StateInUse
-			p.activeChat[chatID] = acc.ID
+			p.activeChat[key] = acc.ID
 			_ = p.SaveState()
 			cp := *acc
 			return &cp, nil
@@ -375,11 +451,16 @@ func (p *AccountPool) AcquireAccount(chatID int64) (*Account, error) {
 	}
 
 	// 2. If chat has an active assignment and it's healthy, try to retain it
-	if currentID, ok := p.activeChat[chatID]; ok {
+	currentID, ok := p.activeChat[key]
+	if !ok && len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		currentID, ok = p.activeChat[legacyKey]
+	}
+	if ok {
 		if acc, exists := p.accounts[currentID]; exists && acc.State == StateActive {
 			acc.ActiveTurns++
 			acc.LastUsed = now
 			acc.State = StateInUse
+			p.activeChat[key] = acc.ID
 			_ = p.SaveState()
 			cp := *acc
 			return &cp, nil
@@ -424,7 +505,7 @@ func (p *AccountPool) AcquireAccount(chatID int64) (*Account, error) {
 	selected.ActiveTurns++
 	selected.LastUsed = now
 	selected.State = StateInUse
-	p.activeChat[chatID] = selected.ID
+	p.activeChat[key] = selected.ID
 	_ = p.SaveState()
 
 	cp := *selected
@@ -732,7 +813,7 @@ func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 
 	// Symlink shared global resources into the profile so skills, MCP, and brain storage remain intact
 	sharedGeminiDir := filepath.Join(home, ".gemini", "antigravity-cli")
-	sharedItems := []string{"builtin", "mcp_config.json", "settings.json", "brain", "agents", "knowledge"}
+	sharedItems := []string{"builtin", "mcp_config.json", "settings.json", "brain", "agents", "knowledge", "conversations"}
 	for _, item := range sharedItems {
 		src := filepath.Join(sharedGeminiDir, item)
 		dst := filepath.Join(profileGeminiDir, item)

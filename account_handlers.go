@@ -16,9 +16,14 @@ func maskEmail(email string) string {
 }
 
 // resetChatSessionCache resets the conversation identifier in SQLite and terminates/evicts in-memory sessions.
-// This prevents Google backend session ownership collisions when switching between accounts.
-func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int64) {
-	if db != nil {
+// If preserveDBSession is true, the in-memory session is evicted but the SQLite user session_id is preserved (#236).
+func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int64, preserveDBSession ...bool) {
+	shouldWipeDB := true
+	if len(preserveDBSession) > 0 && preserveDBSession[0] {
+		shouldWipeDB = false
+	}
+
+	if shouldWipeDB && db != nil {
 		if userID != 0 {
 			if _, err := db.Exec("UPDATE users SET session_id = NULL WHERE user_id = ?", userID); err != nil {
 				log.Printf("[AccountPool] Warning: failed to reset session_id for user %d in db: %v", userID, err)
@@ -71,10 +76,10 @@ func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int6
 }
 
 // formatAccountsDashboard builds the English dashboard message and inline keyboard.
-func formatAccountsDashboard(pool *AccountPool, chatID int64) (string, tgbotapi.InlineKeyboardMarkup) {
+func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string) (string, tgbotapi.InlineKeyboardMarkup) {
 	accounts := pool.ListAccounts()
-	pinnedID, isPinned := pool.GetPinnedAccount(chatID)
-	activeAcc := pool.GetActiveAccountForChat(chatID)
+	pinnedID, isPinned := pool.GetPinnedAccount(chatID, botNames...)
+	activeAcc := pool.GetActiveAccountForChat(chatID, botNames...)
 
 	var activeCount int
 	for _, acc := range accounts {
@@ -227,18 +232,22 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			return
 		}
 		targetID := fields[2]
-		if err := GlobalAccountPool.SwitchAccount(chatID, targetID); err != nil {
+		if err := GlobalAccountPool.SwitchAccount(chatID, targetID, botName); err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to switch account: %v", err)))
 			return
 		}
-		resetChatSessionCache(db, botName, userID, chatID)
+		user := getUser(db, userID, botName)
+		if isValidSessionID(user.SessionID) {
+			handleExportCommand(bot, chatID, userID, botName, user)
+		}
+		resetChatSessionCache(db, botName, userID, chatID, true)
 		acc, _ := GlobalAccountPool.GetAccount(targetID)
 		emailStr := targetID
 		if acc != nil {
 			emailStr = maskEmail(acc.Email)
 		}
 		resp := fmt.Sprintf("✅ <b>Switched to Account:</b> <code>%s</code> (%s)\n\n"+
-			"🧹 <i>Session cache cleared automatically. Ready for clean prompt.</i>", targetID, emailStr)
+			"🧹 <i>In-memory session evicted and safely exported. Session context preserved for next prompt.</i>", targetID, emailStr)
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -249,19 +258,23 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			return
 		}
 		targetID := fields[2]
-		if err := GlobalAccountPool.PinAccount(chatID, targetID); err != nil {
+		if err := GlobalAccountPool.PinAccount(chatID, targetID, botName); err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to pin account: %v", err)))
 			return
 		}
-		resetChatSessionCache(db, botName, userID, chatID)
+		user := getUser(db, userID, botName)
+		if isValidSessionID(user.SessionID) {
+			handleExportCommand(bot, chatID, userID, botName, user)
+		}
+		resetChatSessionCache(db, botName, userID, chatID, true)
 		resp := fmt.Sprintf("🔒 <b>Sticky Mode Enabled:</b> Pinned to <code>%s</code>.\n\n"+
-			"<i>Automatic failover to other accounts is disabled for this chat.</i>", targetID)
+			"<i>Automatic failover to other accounts is disabled for this chat. Session context preserved.</i>", targetID)
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
 
 	case "unpin":
-		if err := GlobalAccountPool.UnpinAccount(chatID); err != nil {
+		if err := GlobalAccountPool.UnpinAccount(chatID, botName); err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to unpin: %v", err)))
 			return
 		}
@@ -337,27 +350,35 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 	case "switch":
 		if len(parts) >= 3 {
 			targetID := parts[2]
-			if err := GlobalAccountPool.SwitchAccount(chatID, targetID); err != nil {
+			if err := GlobalAccountPool.SwitchAccount(chatID, targetID, botName); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
 			}
-			resetChatSessionCache(db, botName, userID, chatID)
+			user := getUser(db, userID, botName)
+			if isValidSessionID(user.SessionID) {
+				handleExportCommand(bot, chatID, userID, botName, user)
+			}
+			resetChatSessionCache(db, botName, userID, chatID, true)
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Switched to %s", targetID)))
 		}
 
 	case "pin":
 		if len(parts) >= 3 {
 			targetID := parts[2]
-			if err := GlobalAccountPool.PinAccount(chatID, targetID); err != nil {
+			if err := GlobalAccountPool.PinAccount(chatID, targetID, botName); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
 			}
-			resetChatSessionCache(db, botName, userID, chatID)
+			user := getUser(db, userID, botName)
+			if isValidSessionID(user.SessionID) {
+				handleExportCommand(bot, chatID, userID, botName, user)
+			}
+			resetChatSessionCache(db, botName, userID, chatID, true)
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Pinned to %s", targetID)))
 		}
 
 	case "unpin":
-		if err := GlobalAccountPool.UnpinAccount(chatID); err != nil {
+		if err := GlobalAccountPool.UnpinAccount(chatID, botName); err != nil {
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 			return true
 		}
@@ -387,7 +408,7 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 	}
 
 	// Update dashboard message in place
-	dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID)
+	dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID, botName)
 	editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, dashboardText)
 	editMsg.ParseMode = "HTML"
 	editMsg.ReplyMarkup = &keyboard
