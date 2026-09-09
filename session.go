@@ -58,20 +58,38 @@ type AgySession struct {
 	AccountHomeDir  string
 }
 
-// getTurnTimeout returns the maximum duration allowed for an active turn before the watchdog triggers.
+// getTurnTimeout returns the maximum duration of complete inactivity allowed before the turn watchdog triggers.
+// Defaults to 15 minutes, configurable via TURN_INACTIVITY_TIMEOUT_MINUTES or TURN_TIMEOUT_MINUTES.
 func getTurnTimeout() time.Duration {
+	if env := os.Getenv("TURN_INACTIVITY_TIMEOUT_MINUTES"); env != "" {
+		if minutes, err := strconv.Atoi(env); err == nil && minutes > 0 {
+			return time.Duration(minutes) * time.Minute
+		}
+	}
 	if env := os.Getenv("TURN_TIMEOUT_MINUTES"); env != "" {
 		if minutes, err := strconv.Atoi(env); err == nil && minutes > 0 {
 			return time.Duration(minutes) * time.Minute
 		}
 	}
-	return 5 * time.Minute
+	return 15 * time.Minute
 }
 
-// checkTurnInactivity checks if the session's active turn has stalled based on last activity or turn start.
-// If stalled, it terminates runaway processes, salvages any accumulated text buffer, sends artifacts,
-// and notifies Telegram. Returns true if a stall was detected and handled.
-func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duration) bool {
+// getHardTurnDeadline returns the absolute maximum time a single turn can execute before being terminated,
+// as a failsafe against runaway infinite tool execution loops. Defaults to 45 minutes, configurable
+// via TURN_HARD_DEADLINE_MINUTES.
+func getHardTurnDeadline() time.Duration {
+	if env := os.Getenv("TURN_HARD_DEADLINE_MINUTES"); env != "" {
+		if minutes, err := strconv.Atoi(env); err == nil && minutes > 0 {
+			return time.Duration(minutes) * time.Minute
+		}
+	}
+	return 45 * time.Minute
+}
+
+// checkTurnInactivity checks if the session's active turn has stalled based on inactivity or hard turn deadline.
+// If stalled or deadlocked, it terminates runaway processes, salvages any accumulated text buffer, sends artifacts,
+// and notifies Telegram with an honest diagnostic reason. Returns true if a stall was detected and handled.
+func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duration, customHardDeadline ...time.Duration) bool {
 	s.mu.Lock()
 	activeID := s.ActiveMessageID
 	turnStart := s.ActiveTurnStart
@@ -82,14 +100,15 @@ func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duratio
 		return false
 	}
 
-	stalled := false
-	if !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout {
-		stalled = true
-	} else if !turnStart.IsZero() && now.Sub(turnStart) > (2*turnTimeout) {
-		stalled = true
+	hardDeadline := getHardTurnDeadline()
+	if len(customHardDeadline) > 0 && customHardDeadline[0] > 0 {
+		hardDeadline = customHardDeadline[0]
 	}
 
-	if !stalled {
+	isInactive := !lastAct.IsZero() && now.Sub(lastAct) > turnTimeout
+	isHardDeadlineExceeded := !turnStart.IsZero() && now.Sub(turnStart) > hardDeadline
+
+	if !isInactive && !isHardDeadlineExceeded {
 		return false
 	}
 
@@ -107,22 +126,31 @@ func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duratio
 	s.TextTruncated = false
 	s.mu.Unlock()
 
-	log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d). Terminating zombie processes and salvaging buffer.", bName, cID, activeMsgID)
+	log.Printf("[Watchdog] Turn stalled for bot %s (chatID %d, msgID %d, isInactive=%v, isHardDeadline=%v). Terminating zombie processes and salvaging buffer.",
+		bName, cID, activeMsgID, isInactive, isHardDeadlineExceeded)
 
 	// Terminate runaway/zombie process group (including child PTY processes)
 	s.Kill()
 
 	if botAPI != nil && activeMsgID != 0 {
 		trimmed := strings.TrimSpace(text)
+		var reasonNotice, stalledMsg string
+		if isHardDeadlineExceeded && !isInactive {
+			reasonNotice = fmt.Sprintf("\n\n⚠️ _[Turn exceeded maximum duration deadline (%v). Output preserved above]_", hardDeadline)
+			stalledMsg = fmt.Sprintf("⚠️ *Turn exceeded maximum duration deadline (%v).* Execution suspended. Ready for new commands.", hardDeadline)
+		} else {
+			reasonNotice = fmt.Sprintf("\n\n⚠️ _[Agent response timed out (inactivity timeout): no progress for %v. Output preserved above]_", turnTimeout)
+			stalledMsg = fmt.Sprintf("⚠️ *Agent response timed out (inactivity timeout):* no progress for %v. Execution suspended. Ready for new commands.", turnTimeout)
+		}
+
 		if trimmed != "" {
 			if truncated {
 				trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 			}
-			trimmed += "\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_"
+			trimmed += reasonNotice
 			sendChunk(botAPI, cID, activeMsgID, trimmed)
 			sendArtifacts(botAPI, cID, trimmed)
 		} else {
-			stalledMsg := "⚠️ *Agent response timed out (inactivity timeout).* Execution suspended. Ready for new commands."
 			sendChunk(botAPI, cID, activeMsgID, stalledMsg)
 		}
 	}

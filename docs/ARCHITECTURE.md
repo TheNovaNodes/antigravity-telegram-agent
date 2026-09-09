@@ -96,12 +96,12 @@ The engine incorporates a dedicated autonomous watchdog ([`subprocess_watchdog.g
 ### 2.3 Inactivity Turn Watchdog & Buffer Salvaging Pipeline
 During execution of complex tasks, external tool invocations, or network stalls, an agent process might stall without producing stream output. To prevent deadlocks, `session.go` implements an autonomous **Inactivity Turn Watchdog**:
 
-* **5-Minute Inactivity Window (`turnTimeout = 5 * time.Minute`)**: Evaluated on a 5-second polling loop (`watchdogInterval = 5 * time.Second`).
+* **15-Minute Inactivity Window (`turnTimeout = 15 * time.Minute`)**: Evaluated on a 5-second polling loop (`watchdogInterval = 5 * time.Second`), configurable via `TURN_INACTIVITY_TIMEOUT_MINUTES` or `TURN_TIMEOUT_MINUTES`.
+* **45-Minute Hard Turn Deadline (`hardDeadline = 45 * time.Minute`)**: Acts as a failsafe against infinite loops, configurable via `TURN_HARD_DEADLINE_MINUTES`. Active turns with continuous progress (`s.LastActivity` fresh) run uninhibited up to this safety ceiling.
 * **Granular Heartbeat on All JSONL Events**: Field `s.LastActivity` is atomically refreshed whenever any JSONL step arrives (`init`, `user`, `tool_use`, `tool_result`, `model`, `step_finish`). Long-running tools emitting stdout do not trigger premature timeouts.
-* **Buffer Salvaging & Artifact Delivery**: If `time.Since(s.LastActivity) > turnTimeout`, the watchdog triggers fail-safe salvage:
+* **Buffer Salvaging & Artifact Delivery**: If `time.Since(s.LastActivity) > turnTimeout` or `time.Since(s.ActiveTurnStart) > hardDeadline`, the watchdog triggers fail-safe salvage:
   1. `s.Kill()` sends `syscall.Kill(-pgid, SIGTERM)` followed by `SIGKILL` to eradicate the stuck process group.
-  2. The accumulated `s.TextBuffer` is retrieved under lock and appended with an English status notice:
-     `\n\n⚠️ _[Agent response timed out (inactivity timeout). Output preserved above]_`
+  2. The accumulated `s.TextBuffer` is retrieved under lock and appended with a diagnostic reason notice (clearly distinguishing between inactivity and hard turn deadline).
   3. The salvaged content is converted through `MarkdownToTelegramHTML` and flushed to Telegram.
   4. Any created artifacts (`file://...`) in the salvaged text are extracted and delivered via `sendArtifacts`.
   5. The conversation UUID in SQLite is preserved, and the bot immediately returns to ready state.
