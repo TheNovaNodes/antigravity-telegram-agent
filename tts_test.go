@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestExtractElevenLabsKeys(t *testing.T) {
@@ -93,14 +94,81 @@ func TestCleanTextForTTS(t *testing.T) {
 			input:    "```bash\nonly code\n```",
 			expected: "",
 		},
+		{
+			name:     "Markdown Link",
+			input:    "Check out [NovaNodes Documentation](https://novanodes.io/docs) for info.",
+			expected: "Check out NovaNodes Documentation for info.",
+		},
+		{
+			name:     "Raw URL Stripping",
+			input:    "Visit https://example.com or http://test.org or file:///path/to/file directly.",
+			expected: "Visit  or  or  directly.",
+		},
+		{
+			name:     "Bold and Italic Formatting",
+			input:    "This is **bold** and __underlined__ and ~~strike~~ text.",
+			expected: "This is bold and underlined and strike text.",
+		},
+		{
+			name:     "Sentence Boundary Truncation",
+			input:    "First sentence. Second sentence! Third sentence? Fourth sentence.",
+			expected: "First sentence. Second sentence!",
+		},
+		{
+			name:     "Fallback Truncation Without Sentence Boundary",
+			input:    "A very long sentence without any punctuation delimiter whatsoever",
+			expected: "A very long sentence without any...",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := CleanTextForTTS(tt.input)
+			var result string
+			if tt.name == "Sentence Boundary Truncation" {
+				result = CleanTextForTTS(tt.input, 35)
+			} else if tt.name == "Fallback Truncation Without Sentence Boundary" {
+				result = CleanTextForTTS(tt.input, 35)
+			} else {
+				result = CleanTextForTTS(tt.input)
+			}
 			if result != tt.expected {
 				t.Errorf("expected '%s', got '%s'", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestGetElevenLabsTimeoutAndMaxChars(t *testing.T) {
+	// Test defaults
+	t.Setenv("ELEVENLABS_TIMEOUT_SECONDS", "")
+	t.Setenv("ELEVENLABS_MAX_CHARS", "")
+
+	if to := getElevenLabsTimeout(); to != 60*time.Second {
+		t.Errorf("expected default timeout 60s, got %v", to)
+	}
+	if mc := getMaxTTSChars(); mc != 1500 {
+		t.Errorf("expected default max chars 1500, got %d", mc)
+	}
+
+	// Test overrides
+	t.Setenv("ELEVENLABS_TIMEOUT_SECONDS", "45")
+	t.Setenv("ELEVENLABS_MAX_CHARS", "2000")
+
+	if to := getElevenLabsTimeout(); to != 45*time.Second {
+		t.Errorf("expected overridden timeout 45s, got %v", to)
+	}
+	if mc := getMaxTTSChars(); mc != 2000 {
+		t.Errorf("expected overridden max chars 2000, got %d", mc)
+	}
+
+	// Test invalid env fallback
+	t.Setenv("ELEVENLABS_TIMEOUT_SECONDS", "invalid")
+	t.Setenv("ELEVENLABS_MAX_CHARS", "-5")
+
+	if to := getElevenLabsTimeout(); to != 60*time.Second {
+		t.Errorf("expected fallback timeout 60s on invalid env, got %v", to)
+	}
+	if mc := getMaxTTSChars(); mc != 1500 {
+		t.Errorf("expected fallback max chars 1500 on invalid env, got %d", mc)
 	}
 }
