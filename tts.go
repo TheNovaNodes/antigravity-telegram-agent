@@ -440,4 +440,3 @@ func GenerateAndSendVoice(bot *tgbotapi.BotAPI, chatID int64, text string) error
 	_, err = bot.Send(msg)
 	return err
 }
-
