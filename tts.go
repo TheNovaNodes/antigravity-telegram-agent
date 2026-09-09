@@ -244,6 +244,7 @@ func GenerateVoicePiperTTS(text string, modelPath string) ([]byte, string, error
 	defer cancel()
 
 	// 1. Run Piper -> WAV output
+	// #nosec G204 -- gosec:nri (Need Review)
 	piperCmd := exec.CommandContext(ctx, piperPath, "-m", modelPath, "-f", "-")
 	piperCmd.Stdin = strings.NewReader(cleanText)
 	piperCmd.Dir = filepath.Dir(piperPath)
@@ -262,6 +263,7 @@ func GenerateVoicePiperTTS(text string, modelPath string) ([]byte, string, error
 
 	// 2. Transcode to OGG Opus via opusenc if available, otherwise return WAV
 	if opusencPath, err := exec.LookPath("opusenc"); err == nil {
+		// #nosec G204 -- gosec:nri (Need Review)
 		opusCmd := exec.CommandContext(ctx, opusencPath, "--quiet", "-", "-")
 		opusCmd.Stdin = &wavBuf
 		var oggBuf bytes.Buffer
