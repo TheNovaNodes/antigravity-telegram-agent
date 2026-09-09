@@ -31,11 +31,11 @@ func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int6
 	}
 
 	sessionMu.Lock()
-	defer sessionMu.Unlock()
-
 	exactKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
 	legacyKey := fmt.Sprintf("%s:%d", botName, chatID)
 	prefix := fmt.Sprintf("%s:%d:", botName, chatID)
+
+	var sessionsToKill []*AgySession
 
 	for k, sess := range globalSessions {
 		matches := false
@@ -57,10 +57,15 @@ func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int6
 				sess.AccountID = ""
 				sess.AccountHomeDir = ""
 				sess.mu.Unlock()
-				sess.Kill()
+				sessionsToKill = append(sessionsToKill, sess)
 			}
 			delete(globalSessions, k)
 		}
+	}
+	sessionMu.Unlock()
+
+	for _, sess := range sessionsToKill {
+		sess.Kill()
 	}
 	log.Printf("[AccountPool] Cleared session cache and terminated CLI process for bot %s, chat %d, user %d", botName, chatID, userID)
 }

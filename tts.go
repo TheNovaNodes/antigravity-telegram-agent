@@ -144,24 +144,27 @@ func getElevenLabsTimeout() time.Duration {
 	return 60 * time.Second
 }
 
+var (
+	reCodeBlock  = regexp.MustCompile("(?s)```.*?```")
+	reInlineCode = regexp.MustCompile("(?s)`.*?`")
+	reLink       = regexp.MustCompile(`\[([^\]]+)\]\([^\)]+\)`)
+	reURL        = regexp.MustCompile(`(?:https?|file)://\S+`)
+)
+
 // CleanTextForTTS prepares a raw markdown string for Text-To-Speech generation
 // by stripping out Markdown code blocks, inline code, links/URLs, bold/italic markers,
 // and capping length at maxChars to prevent runaway latency and quota exhaustion.
 func CleanTextForTTS(text string, maxCharsOpt ...int) string {
 	// 1. Strip Markdown code blocks
-	reCodeBlock := regexp.MustCompile("(?s)```.*?```")
 	cleanText := reCodeBlock.ReplaceAllString(text, "")
 
 	// 2. Strip inline code
-	reInlineCode := regexp.MustCompile("(?s)`.*?`")
 	cleanText = reInlineCode.ReplaceAllString(cleanText, "")
 
 	// 3. Convert markdown links [Label](URL) to just Label
-	reLink := regexp.MustCompile(`\[([^\]]+)\]\([^\)]+\)`)
 	cleanText = reLink.ReplaceAllString(cleanText, "$1")
 
 	// 4. Strip raw URLs
-	reURL := regexp.MustCompile(`(?:https?|file)://\S+`)
 	cleanText = reURL.ReplaceAllString(cleanText, "")
 
 	// 5. Strip bold, italic, and strikethrough markers
