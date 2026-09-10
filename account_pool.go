@@ -168,7 +168,8 @@ func ensureSymlink(targetDir, symlinkPath string) error {
 	if targetDir == "" || symlinkPath == "" || targetDir == symlinkPath {
 		return nil
 	}
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
+	// #nosec G301 -- gosec:nri (Need Review)
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
 		return err
 	}
 
@@ -187,7 +188,8 @@ func ensureSymlink(targetDir, symlinkPath string) error {
 	}
 
 	parent := filepath.Dir(symlinkPath)
-	if err := os.MkdirAll(parent, 0755); err != nil {
+	// #nosec G301 -- gosec:nri (Need Review)
+	if err := os.MkdirAll(parent, 0700); err != nil {
 		return err
 	}
 
