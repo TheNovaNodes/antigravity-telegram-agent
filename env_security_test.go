@@ -1,11 +1,11 @@
 package main
 
 import (
-	"time"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestLoadEnvFile_ProductionSuccess validates loading environment variables from ENV_FILE

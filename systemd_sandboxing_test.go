@@ -1,12 +1,12 @@
 package main
 
 import (
-	"time"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSystemdSandboxingConfigInDeployScript(t *testing.T) {
