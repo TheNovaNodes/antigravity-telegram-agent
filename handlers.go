@@ -412,7 +412,7 @@ func handleModelCommand(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 // handleUsageCommand retrieves current token quota usage from the underlying Antigravity CLI.
-func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64) {
+func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) {
 	agyPath := getAgyPath()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -422,9 +422,13 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64) {
 
 	var accountHeader string
 	if GlobalAccountPool != nil {
-		acc := GlobalAccountPool.GetActiveAccountForChat(chatID)
+		var bName string
+		if len(botNames) > 0 {
+			bName = botNames[0]
+		}
+		acc := GlobalAccountPool.GetActiveAccountForChat(chatID, bName)
 		if acc == nil {
-			acc, _ = GlobalAccountPool.AcquireAccount(chatID)
+			acc, _ = GlobalAccountPool.AcquireAccount(chatID, bName)
 		}
 		if acc != nil {
 			var cleanEnv []string
@@ -443,7 +447,11 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	var respText string
 	escapedHeader := strings.ReplaceAll(accountHeader, "_", "\\_")
 	if err != nil {
-		respText = fmt.Sprintf("❌ Failed to get usage%s: %s", escapedHeader, err.Error())
+		errStr := strings.TrimSpace(string(out))
+		if errStr == "" {
+			errStr = err.Error()
+		}
+		respText = fmt.Sprintf("❌ Failed to get usage%s:\n```\n%s\n```", escapedHeader, errStr)
 	} else {
 		respText = fmt.Sprintf("📊 *Quota Usage%s:*\n```\n%s\n```", escapedHeader, strings.TrimSpace(string(out)))
 	}
@@ -910,7 +918,7 @@ func handleCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, botName str
 		handleExportCommand(bot, chatID, userID, botName, user)
 		return true
 	case "/usage":
-		handleUsageCommand(bot, chatID)
+		handleUsageCommand(bot, chatID, botName)
 		return true
 	case "/accounts":
 		handleAccountsCommand(bot, chatID, userID, text, botName, db)
@@ -1047,7 +1055,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		updateUserSession(db, userID, "")
 		respText = "🧼 Context cleared! Starting fresh session."
 	} else if data == "cmd:usage" {
-		handleUsageCommand(bot, chatID)
+		handleUsageCommand(bot, chatID, botName)
 		return
 	} else if data == "cmd:resume" {
 		handleResumeCommand(bot, chatID, userID, db)

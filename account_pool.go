@@ -239,7 +239,61 @@ func (p *AccountPool) LoadState() error {
 
 	// Verify profile directories exist, shared storage is linked, and have valid permissions
 	now := time.Now()
-	for _, acc := range p.accounts {
+	migrated := false
+	for oldID, acc := range p.accounts {
+		if acc == nil {
+			continue
+		}
+		// Migrate legacy acc-X identifiers to email-derived slugs
+		if strings.HasPrefix(oldID, "acc-") && acc.Email != "" {
+			newID := DeriveAccountIDFromEmail(acc.Email)
+			if newID != oldID {
+				candidateID := newID
+				counter := 2
+				for {
+					existing, exists := p.accounts[candidateID]
+					if !exists || existing == acc {
+						break
+					}
+					candidateID = fmt.Sprintf("%s-%d", newID, counter)
+					counter++
+				}
+				newID = candidateID
+
+				oldHome := acc.HomeDir
+				newHome := filepath.Clean(filepath.Join(p.accountsDir, newID))
+
+				if oldHome != "" && oldHome != newHome {
+					if _, err := os.Stat(oldHome); err == nil {
+						if _, err := os.Stat(newHome); os.IsNotExist(err) {
+							if err := os.Rename(oldHome, newHome); err == nil {
+								// Maintain backward compatibility via symlink
+								_ = os.Symlink(newHome, oldHome)
+							}
+						}
+					}
+					acc.HomeDir = newHome
+				}
+
+				acc.ID = newID
+				delete(p.accounts, oldID)
+				p.accounts[newID] = acc
+
+				for k, v := range p.pinnedChat {
+					if v == oldID {
+						p.pinnedChat[k] = newID
+					}
+				}
+				for k, v := range p.activeChat {
+					if v == oldID {
+						p.activeChat[k] = newID
+					}
+				}
+				migrated = true
+				log.Printf("[AccountPool] Migrated legacy account %s -> %s (%s)", oldID, newID, acc.Email)
+			}
+		}
+
 		if acc.State == StateCooldown && now.After(acc.CooldownUntil) {
 			acc.State = StateActive
 			acc.CooldownUntil = time.Time{}
@@ -249,6 +303,10 @@ func (p *AccountPool) LoadState() error {
 			_ = os.MkdirAll(acc.HomeDir, 0700)
 			_ = EnsureSharedAccountDirectories(acc.HomeDir)
 		}
+	}
+
+	if migrated {
+		_ = p.SaveState()
 	}
 
 	log.Printf("[AccountPool] Loaded %d accounts from %s", len(p.accounts), stateFile)
@@ -730,6 +788,30 @@ func (p *AccountPool) FetchAllQuotas() {
 	wg.Wait()
 }
 
+// DeriveAccountIDFromEmail extracts the username prefix before '@' from an email address,
+// sanitizing it to an alphanumeric, dash, dot, and underscore slug safe for filesystem paths and Telegram callbacks.
+func DeriveAccountIDFromEmail(email string) string {
+	prefix := email
+	if idx := strings.Index(email, "@"); idx != -1 {
+		prefix = email[:idx]
+	}
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	var sb strings.Builder
+	for _, r := range prefix {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			sb.WriteRune(r)
+		}
+	}
+	slug := strings.Trim(sb.String(), ".-_")
+	if len(slug) > 32 {
+		slug = slug[:32]
+	}
+	if slug == "" {
+		slug = "account"
+	}
+	return slug
+}
+
 // IngestCurrentAccount parses the server's current ~/.gemini/antigravity-cli/antigravity-oauth-token,
 // fetches the user email, creates an isolated profile folder, and incorporates it into the pool.
 func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
@@ -776,15 +858,15 @@ func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 	}
 
 	if targetAccount == nil {
-		// Allocate next ID e.g. acc-1, acc-2
-		nextIdx := len(p.accounts) + 1
-		targetID := fmt.Sprintf("acc-%d", nextIdx)
+		baseID := DeriveAccountIDFromEmail(email)
+		targetID := baseID
+		counter := 2
 		for {
 			if _, exists := p.accounts[targetID]; !exists {
 				break
 			}
-			nextIdx++
-			targetID = fmt.Sprintf("acc-%d", nextIdx)
+			targetID = fmt.Sprintf("%s-%d", baseID, counter)
+			counter++
 		}
 
 		profileDir := filepath.Clean(filepath.Join(p.accountsDir, targetID))
