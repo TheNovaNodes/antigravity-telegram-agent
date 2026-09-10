@@ -133,12 +133,81 @@ func getSharedConversationsDir() string {
 	return filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
 }
 
+func getSystemBaseHome() string {
+	if h := os.Getenv("SYSTEM_HOME"); h != "" {
+		return h
+	}
+	if h := os.Getenv("HOME"); h != "" && !strings.Contains(h, "/accounts/") {
+		return h
+	}
+	return "/root"
+}
+
+func getCentralSharedCacheDir() string {
+	if p := os.Getenv("SHARED_CACHE_DIR"); p != "" {
+		return p
+	}
+	return filepath.Join(getSystemBaseHome(), ".cache")
+}
+
+func getCentralSharedGoDir() string {
+	if p := os.Getenv("SHARED_GOPATH_DIR"); p != "" {
+		return p
+	}
+	return filepath.Join(getSystemBaseHome(), "go")
+}
+
+func getCentralSharedNpmDir() string {
+	if p := os.Getenv("SHARED_NPM_DIR"); p != "" {
+		return p
+	}
+	return filepath.Join(getSystemBaseHome(), ".npm")
+}
+
+func ensureSymlink(targetDir, symlinkPath string) error {
+	if targetDir == "" || symlinkPath == "" || targetDir == symlinkPath {
+		return nil
+	}
+	// #nosec G301 -- gosec:nri (Need Review)
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
+		return err
+	}
+
+	fi, err := os.Lstat(symlinkPath)
+	if err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			dest, readErr := os.Readlink(symlinkPath)
+			if readErr == nil && dest == targetDir {
+				return nil
+			}
+			_ = os.Remove(symlinkPath)
+		} else {
+			// Existing directory or file: remove duplicate to reclaim space
+			_ = os.RemoveAll(symlinkPath)
+		}
+	}
+
+	parent := filepath.Dir(symlinkPath)
+	// #nosec G301 -- gosec:nri (Need Review)
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return err
+	}
+
+	return os.Symlink(targetDir, symlinkPath)
+}
+
 // EnsureSharedAccountDirectories guarantees that conversations in account home dirs
-// are symlinked to the central shared conversations directory, preventing context loss on account rotation (#236).
+// are symlinked to the central shared conversations directory, and shared build caches
+// (.cache, go, .npm) are deduplicated and symlinked to central system paths (#236, #244).
 func EnsureSharedAccountDirectories(accHomeDir string) error {
 	if accHomeDir == "" {
 		return nil
 	}
+	baseHome := getSystemBaseHome()
+	if accHomeDir == baseHome {
+		return nil
+	}
+
 	sharedConvs := getSharedConversationsDir()
 	if err := os.MkdirAll(sharedConvs, 0700); err != nil {
 		return err
@@ -153,9 +222,12 @@ func EnsureSharedAccountDirectories(accHomeDir string) error {
 	fi, err := os.Lstat(accConvs)
 	if err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if fi.IsDir() {
+			target, readErr := os.Readlink(accConvs)
+			if readErr != nil || target != sharedConvs {
+				_ = os.Remove(accConvs)
+				_ = os.Symlink(sharedConvs, accConvs)
+			}
+		} else if fi.IsDir() {
 			entries, _ := os.ReadDir(accConvs)
 			for _, e := range entries {
 				src := filepath.Join(accConvs, e.Name())
@@ -169,9 +241,18 @@ func EnsureSharedAccountDirectories(accHomeDir string) error {
 				}
 			}
 			_ = os.RemoveAll(accConvs)
+			_ = os.Symlink(sharedConvs, accConvs)
 		}
+	} else if os.IsNotExist(err) {
+		_ = os.Symlink(sharedConvs, accConvs)
 	}
-	return os.Symlink(sharedConvs, accConvs)
+
+	// Deduplicate build and package caches across accounts (#244)
+	_ = ensureSymlink(getCentralSharedCacheDir(), filepath.Join(accHomeDir, ".cache"))
+	_ = ensureSymlink(getCentralSharedGoDir(), filepath.Join(accHomeDir, "go"))
+	_ = ensureSymlink(getCentralSharedNpmDir(), filepath.Join(accHomeDir, ".npm"))
+
+	return nil
 }
 
 // NewAccountPool creates and initializes an AccountPool instance.
