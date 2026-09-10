@@ -213,6 +213,28 @@ func TestAccountPool_BackgroundReaper(t *testing.T) {
 	}
 }
 
+func TestAccountPool_StartBackgroundReaper_ContextCancellation(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+
+	go func() {
+		pool.StartBackgroundReaperWithInterval(ctx, 10*time.Millisecond, nil)
+		close(stopped)
+	}()
+
+	cancel()
+
+	select {
+	case <-stopped:
+		// Goroutine exited cleanly
+	case <-time.After(1 * time.Second):
+		t.Fatal("StartBackgroundReaper did not terminate promptly upon context cancellation")
+	}
+}
+
 func TestAccountPool_ConcurrencyRace(t *testing.T) {
 	pool, tmpDir := setupTestAccountPool(t)
 	defer os.RemoveAll(tmpDir)
