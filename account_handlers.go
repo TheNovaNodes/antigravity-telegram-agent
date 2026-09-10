@@ -117,8 +117,16 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 			}
 			hours := int(timeLeft.Hours())
 			mins := int(timeLeft.Minutes()) % 60
-			statusText = fmt.Sprintf("Cooldown (%02dh %02dm remaining, resets %s UTC)",
-				hours, mins, acc.CooldownUntil.UTC().Format("15:04"))
+			secs := int(timeLeft.Seconds()) % 60
+			if hours > 0 {
+				statusText = fmt.Sprintf("Cooldown (%02dh %02dm remaining, resets %s UTC)",
+					hours, mins, acc.CooldownUntil.UTC().Format("15:04"))
+			} else if mins > 0 {
+				statusText = fmt.Sprintf("Cooldown (Backoff: %02dm %02ds remaining, resets %s UTC)",
+					mins, secs, acc.CooldownUntil.UTC().Format("15:04"))
+			} else {
+				statusText = fmt.Sprintf("Cooldown (Backoff: %02ds remaining)", secs)
+			}
 		case StateExpired:
 			statusBadge = "🔴"
 			statusText = "Expired (Re-authentication required)"

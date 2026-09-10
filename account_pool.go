@@ -678,6 +678,9 @@ func (p *AccountPool) MarkCooldown(accountID string, duration time.Duration) {
 	if !ok {
 		return
 	}
+	if duration <= 0 {
+		duration = 1 * time.Minute
+	}
 	acc.State = StateCooldown
 	acc.CooldownUntil = time.Now().Add(duration)
 	acc.TotalErrors++
@@ -839,6 +842,10 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 			currentAcc.State = StateCooldown
 			currentAcc.CooldownUntil = quota.GeminiWeekly.ResetTime
 			log.Printf("[AccountPool] Account %s weekly quota exhausted, in cooldown until %s", accountID, quota.GeminiWeekly.ResetTime.Format(time.RFC3339))
+		} else if currentAcc.State == StateCooldown && quota.Gemini5h.RemainingFraction > 0.05 {
+			currentAcc.State = StateActive
+			currentAcc.CooldownUntil = time.Time{}
+			log.Printf("[AccountPool] Account %s has healthy quota (%.1f%% Gemini 5h), cooldown cleared automatically", accountID, quota.Gemini5h.RemainingFraction*100)
 		}
 
 		_ = p.SaveState()

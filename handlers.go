@@ -431,17 +431,24 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 		if acc == nil {
 			acc, _ = GlobalAccountPool.AcquireAccount(chatID, bName)
 		}
-		if acc != nil {
-			var cleanEnv []string
-			for _, e := range os.Environ() {
-				if !strings.HasPrefix(e, "HOME=") {
-					cleanEnv = append(cleanEnv, e)
-				}
+		if acc == nil {
+			respText := "⚠️ <b>[Account Pool]</b> All accounts in the pool are currently resting in cooldown or unavailable. Live quota usage cannot be queried."
+			msg := tgbotapi.NewMessage(chatID, respText)
+			msg.ParseMode = "HTML"
+			if bot != nil {
+				bot.Send(msg)
 			}
-			cleanEnv = append(cleanEnv, "HOME="+acc.HomeDir)
-			cmd.Env = cleanEnv
-			accountHeader = fmt.Sprintf(" [%s (%s)]", acc.ID, acc.Email)
+			return
 		}
+		var cleanEnv []string
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "HOME=") {
+				cleanEnv = append(cleanEnv, e)
+			}
+		}
+		cleanEnv = append(cleanEnv, "HOME="+acc.HomeDir)
+		cmd.Env = cleanEnv
+		accountHeader = fmt.Sprintf(" [%s (%s)]", acc.ID, acc.Email)
 	}
 
 	out, err := cmd.CombinedOutput()
