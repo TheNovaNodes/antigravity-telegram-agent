@@ -316,15 +316,20 @@ func (s *AgySession) Kill() {
 	cmd := s.Cmd
 	s.Cmd = nil
 	s.ActiveMessageID = 0
+	hadActiveTurn := !s.ActiveTurnStart.IsZero()
 	s.ActiveTurnStart = time.Time{}
 	s.TextBuffer = ""
 	s.TextTruncated = false
 	s.StdoutScanner = nil
 	accHome := s.AccountHomeDir
+	accID := s.AccountID
 	convID := s.Conversation
 	s.mu.Unlock()
 
 	cleanPresenceLock(accHome, convID)
+	if GlobalAccountPool != nil && accID != "" && hadActiveTurn {
+		GlobalAccountPool.ReleaseAccount(accID)
+	}
 
 	if cancel != nil {
 		cancel()
