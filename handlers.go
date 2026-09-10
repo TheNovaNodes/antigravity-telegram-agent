@@ -796,23 +796,29 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 	}
 }
 
-// handleClearCommand clears the active conversation context.
+// handleClearCommand evicts the active session into cold state and resets conversation context.
 func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
-	session, err := replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
-	if err != nil || (session != nil && !session.IsAlive()) {
-		if err == nil {
-			err = fmt.Errorf("agent process failed to start")
-		}
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to clear context: %v", err)))
-		return
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
+
+	sessionMu.Lock()
+	session, exists := globalSessions[sessionKey]
+	if exists {
+		delete(globalSessions, sessionKey)
+	}
+	sessionMu.Unlock()
+
+	if exists && session != nil {
+		session.Kill()
 	}
 
-	// For a fresh start, reset session in DB only after new session is successfully provisioned
 	updateUserSession(db, userID, "")
-	respText := "🧼 Context cleared! Starting fresh session."
-	msg := tgbotapi.NewMessage(chatID, respText)
-	msg.ParseMode = "Markdown"
-	bot.Send(msg)
+
+	if bot != nil {
+		respText := "🧼 Context cleared! Session evicted to cold state. Next message will start a fresh dialogue."
+		msg := tgbotapi.NewMessage(chatID, respText)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+	}
 }
 
 // handleStopCommand interrupts the active execution turn for the user's session without clearing conversation context.
@@ -1045,16 +1051,8 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 		handleModelCommand(bot, chatID)
 		return
 	} else if data == "cmd:clear" {
-		session, err := replaceSession(db, botName, user, "", user.Model, user.Workspace, chatID)
-		if err != nil || (session != nil && !session.IsAlive()) {
-			if err == nil {
-				err = fmt.Errorf("agent process failed to start")
-			}
-			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to clear context: %v", err)))
-			return
-		}
-		updateUserSession(db, userID, "")
-		respText = "🧼 Context cleared! Starting fresh session."
+		handleClearCommand(bot, chatID, userID, botName, user, db)
+		return
 	} else if data == "cmd:usage" {
 		handleUsageCommand(bot, chatID, botName)
 		return

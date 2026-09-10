@@ -147,7 +147,13 @@ func main() {
 
 	// Start background housekeeping workers (session GC, disk cleanup, and subprocess watchdog)
 	stopHousekeeping := make(chan struct{})
-	StartSessionGCWorker(30*time.Minute, 24*time.Hour, stopHousekeeping)
+	maxIdleSessionDuration := 4 * time.Hour
+	if idleEnv := os.Getenv("SESSION_MAX_IDLE"); idleEnv != "" {
+		if d, err := time.ParseDuration(idleEnv); err == nil && d > 0 {
+			maxIdleSessionDuration = d
+		}
+	}
+	StartSessionGCWorker(30*time.Minute, maxIdleSessionDuration, stopHousekeeping)
 	StartDiskCleanupWorker(2*time.Hour, 24*time.Hour, stopHousekeeping)
 	StartSubprocessWatchdogWorker(2*time.Second, 3*time.Second, stopHousekeeping)
 

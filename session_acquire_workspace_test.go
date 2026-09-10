@@ -147,12 +147,11 @@ func TestHandleWorkspaceCommand_Success_DBUpdated(t *testing.T) {
 }
 
 // TestHandleClearCommand_ReplaceFailure_DBUnchanged verifies that /clear does not clear session in DB
-// if the new replacement session fails to start (Fixes #188).
-func TestHandleClearCommand_ReplaceFailure_DBUnchanged(t *testing.T) {
+// TestHandleClearCommand_ColdSessionEviction verifies that /clear cleanly terminates active sessions,
+// evicts them from globalSessions, and clears session_id in DB without spawning new processes.
+func TestHandleClearCommand_ColdSessionEviction(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
-
-	t.Setenv("AGY_BINARY", "/nonexistent/path/to/binary")
 
 	ms := newMockServer()
 	defer ms.Close()
@@ -175,7 +174,26 @@ func TestHandleClearCommand_ReplaceFailure_DBUnchanged(t *testing.T) {
 		SessionID: "active-uuid-999",
 	}
 
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
+	dummySession := &AgySession{
+		BotName:      botName,
+		ChatID:       chatID,
+		UserID:       userID,
+		Conversation: "active-uuid-999",
+		isAlive:      true,
+	}
+	sessionMu.Lock()
+	globalSessions[sessionKey] = dummySession
+	sessionMu.Unlock()
+
 	handleClearCommand(bot, chatID, userID, botName, user, db)
+
+	sessionMu.Lock()
+	_, exists := globalSessions[sessionKey]
+	sessionMu.Unlock()
+	if exists {
+		t.Errorf("Expected session %s to be evicted from globalSessions", sessionKey)
+	}
 
 	var currentSession string
 	err = db.QueryRow("SELECT session_id FROM users WHERE user_id = ?", userID).Scan(&currentSession)
@@ -183,8 +201,8 @@ func TestHandleClearCommand_ReplaceFailure_DBUnchanged(t *testing.T) {
 		t.Fatalf("Failed to query user: %v", err)
 	}
 
-	if currentSession != "active-uuid-999" {
-		t.Errorf("Expected DB session_id to remain active-uuid-999, got %s", currentSession)
+	if currentSession != "" {
+		t.Errorf("Expected DB session_id to be empty after clear, got %s", currentSession)
 	}
 }
 

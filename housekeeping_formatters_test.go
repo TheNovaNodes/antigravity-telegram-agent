@@ -47,6 +47,45 @@ func TestCleanIdleSessions_Eviction(t *testing.T) {
 	}
 }
 
+func TestCleanIdleSessions_FourHourThreshold(t *testing.T) {
+	sessionMu.Lock()
+	sRecent := &AgySession{
+		BotName:      "RecentBot",
+		ChatID:       3001,
+		UserID:       4001,
+		LastActivity: time.Now().Add(-2 * time.Hour), // 2 hours idle: should stay
+		isAlive:      true,
+	}
+	sExpired := &AgySession{
+		BotName:      "ExpiredBot",
+		ChatID:       3002,
+		UserID:       4002,
+		LastActivity: time.Now().Add(-5 * time.Hour), // 5 hours idle: should be evicted
+		isAlive:      true,
+	}
+	globalSessions["RecentBot:3001:4001"] = sRecent
+	globalSessions["ExpiredBot:3002:4002"] = sExpired
+	sessionMu.Unlock()
+
+	evicted := CleanIdleSessions(4 * time.Hour)
+	if evicted != 1 {
+		t.Errorf("Expected 1 session to be evicted for 4h threshold, got %d", evicted)
+	}
+
+	sessionMu.Lock()
+	_, recentExists := globalSessions["RecentBot:3001:4001"]
+	_, expiredExists := globalSessions["ExpiredBot:3002:4002"]
+	delete(globalSessions, "RecentBot:3001:4001")
+	sessionMu.Unlock()
+
+	if !recentExists {
+		t.Errorf("Expected 2-hour idle session to be preserved")
+	}
+	if expiredExists {
+		t.Errorf("Expected 5-hour idle session to be evicted from globalSessions")
+	}
+}
+
 func TestCleanOldFiles_DiskHygiene(t *testing.T) {
 	tempDir := t.TempDir()
 	freshFile := filepath.Join(tempDir, "fresh.txt")
