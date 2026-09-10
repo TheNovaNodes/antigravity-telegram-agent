@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSystemdSandboxingConfigInDeployScript(t *testing.T) {
@@ -75,6 +76,7 @@ WantedBy=multi-user.target
 		}
 
 		cmd := exec.Command(systemdAnalyzePath, "verify", unitFile)
+		cmd.WaitDelay = 2 * time.Second
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Errorf("systemd-analyze verify failed: %v, output: %s", err, string(output))

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestLoadEnvFile_ProductionSuccess validates loading environment variables from ENV_FILE
@@ -117,6 +118,7 @@ func TestLoadEnvFile_ProductionMissingFailsClosed(t *testing.T) {
 	}
 
 	cmd := exec.Command(os.Args[0], "-test.run=TestLoadEnvFile_ProductionMissingFailsClosed")
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = append(os.Environ(),
 		"BE_CRASHING_ENV_TEST=1",
 		"ENV_FILE=/tmp/nonexistent_env_file_for_test",
