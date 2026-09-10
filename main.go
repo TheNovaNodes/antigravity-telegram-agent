@@ -117,7 +117,9 @@ func main() {
 		log.Printf("[AccountPool] Warning: failed to initialize account pool: %v", poolErr)
 	} else {
 		log.Printf("[AccountPool] Initialized successfully with %d accounts", len(GlobalAccountPool.ListAccounts()))
-		go GlobalAccountPool.StartBackgroundReaper(context.Background(), func(acc *Account) {
+		reaperCtx, reaperCancel := context.WithCancel(context.Background())
+		defer reaperCancel()
+		go GlobalAccountPool.StartBackgroundReaper(reaperCtx, func(acc *Account) {
 			broadcastNotice := fmt.Sprintf("🔔 <b>[Account Cooldown Ended]</b> Account <code>%s</code> (<code>%s</code>) has completed cooldown and returned to the active pool.", acc.ID, acc.Email)
 			activeBotsMu.Lock()
 			bots := make([]*tgbotapi.BotAPI, len(activeBots))

@@ -47,6 +47,7 @@ func fetchModels() {
 
 	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "models")
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("Failed to fetch dynamic models: %v", err)
