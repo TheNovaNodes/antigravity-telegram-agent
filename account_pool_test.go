@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -569,3 +570,148 @@ func TestHandleUsageCommand_WithActiveAccount(t *testing.T) {
 		t.Errorf("Expected mock agy to receive HOME=%s, got: %s", targetHome, text)
 	}
 }
+
+func TestHandleUsageCommand_AllAccountsCooldown_NoRootLeak(t *testing.T) {
+	ts, sent, mu := createStrictTelegramMockServer(t)
+	defer ts.Close()
+
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("MOCK_TOKEN", ts.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatalf("Failed to create mock bot: %v", err)
+	}
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	pool.accounts["acc-cooldown"] = &Account{
+		ID:            "acc-cooldown",
+		Email:         "cooldown@example.com",
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(1 * time.Hour),
+	}
+
+	handleUsageCommand(bot, 99999)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*sent) == 0 {
+		t.Fatalf("Expected message to be sent via mock bot")
+	}
+	lastReq := (*sent)[len(*sent)-1]
+	vals, _ := url.ParseQuery(lastReq)
+	text := vals.Get("text")
+
+	if !strings.Contains(text, "All accounts in the pool are currently resting in cooldown or unavailable") {
+		t.Errorf("Expected resting message when all accounts in cooldown, got: %s", text)
+	}
+}
+
+func TestFetchAccountQuotas_AutoClearsCooldownIfHealthy(t *testing.T) {
+	tmpDir := t.TempDir()
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	targetHome := filepath.Join(tmpDir, "acc-healthy")
+	_ = os.MkdirAll(targetHome, 0755)
+
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	usageJSON := `{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.85,"reset_time":"2026-09-10T22:00:00Z"}]}]}}}`
+	script := fmt.Sprintf("#!/bin/sh\necho '%s'\n", usageJSON)
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to write mock script: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	pool.accounts["acc-healthy"] = &Account{
+		ID:            "acc-healthy",
+		Email:         "healthy@example.com",
+		HomeDir:       targetHome,
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(2 * time.Hour),
+	}
+
+	q, err := pool.FetchAccountQuotas("acc-healthy")
+	if err != nil {
+		t.Fatalf("FetchAccountQuotas failed: %v", err)
+	}
+	if q.Gemini5h.RemainingFraction != 0.85 {
+		t.Errorf("Expected 0.85 remaining fraction, got %v", q.Gemini5h.RemainingFraction)
+	}
+
+	acc, _ := pool.GetAccount("acc-healthy")
+	if acc.State != StateActive {
+		t.Errorf("Expected StateActive after auto-clear, got %v", acc.State)
+	}
+	if !acc.CooldownUntil.IsZero() {
+		t.Errorf("Expected zero CooldownUntil after auto-clear, got %v", acc.CooldownUntil)
+	}
+}
+
+func TestSession_StartReacquiresOnCooldown(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	script := "#!/bin/sh\nexec cat\n"
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to write mock agy: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	home1 := filepath.Join(tmpDir, "acc-1")
+	home2 := filepath.Join(tmpDir, "acc-2")
+	_ = os.MkdirAll(home1, 0755)
+	_ = os.MkdirAll(home2, 0755)
+
+	pool.accounts["acc-1"] = &Account{
+		ID:            "acc-1",
+		Email:         "acc1@example.com",
+		HomeDir:       home1,
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(2 * time.Hour),
+	}
+	pool.accounts["acc-2"] = &Account{
+		ID:       "acc-2",
+		Email:    "acc2@example.com",
+		HomeDir:  home2,
+		State:    StateActive,
+		LastUsed: time.Now().Add(-1 * time.Hour),
+	}
+
+	s := &AgySession{
+		AccountID:      "acc-1",
+		AccountHomeDir: home1,
+		ChatID:         8888,
+		BotName:        "trickster_gobot",
+		Conversation:   "conv-test-cooldown",
+	}
+
+	// Calling start() should detect that acc-1 is in cooldown and auto-reacquire acc-2!
+	if err := s.start(); err != nil {
+		t.Fatalf("s.start() failed: %v", err)
+	}
+	defer s.Kill()
+
+	s.mu.Lock()
+	newAccID := s.AccountID
+	newHome := s.AccountHomeDir
+	s.mu.Unlock()
+
+	if newAccID != "acc-2" {
+		t.Errorf("Expected session to reacquire acc-2, got: %s", newAccID)
+	}
+	if newHome != home2 {
+		t.Errorf("Expected session homeDir to switch to %s, got: %s", home2, newHome)
+	}
+}
+
+

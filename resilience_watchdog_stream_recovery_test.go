@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -756,3 +757,95 @@ func TestTurnWatchdog_HardDeadlineTriggeredWhenExceeded(t *testing.T) {
 		t.Errorf("Expected sent message to report hard duration deadline, got: %v", sentBodies)
 	}
 }
+
+func TestStreamRecovery_AutoFailoverToNextAccount(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	tmpDir := t.TempDir()
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	script := "#!/bin/sh\nexec cat\n"
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to write mock agy: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	home1 := filepath.Join(tmpDir, "acc-stream-1")
+	home2 := filepath.Join(tmpDir, "acc-stream-2")
+	_ = os.MkdirAll(home1, 0755)
+	_ = os.MkdirAll(home2, 0755)
+
+	pool.accounts["acc-stream-1"] = &Account{
+		ID:       "acc-stream-1",
+		Email:    "stream1@example.com",
+		HomeDir:  home1,
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+	pool.accounts["acc-stream-2"] = &Account{
+		ID:       "acc-stream-2",
+		Email:    "stream2@example.com",
+		HomeDir:  home2,
+		State:    StateActive,
+		LastUsed: time.Now().Add(-1 * time.Hour),
+	}
+
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"stream was interrupted"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	session := &AgySession{
+		BotName:         "StreamFailoverBot",
+		BotAPI:          bot,
+		ChatID:          7777,
+		UserID:          1001,
+		ActiveMessageID: 555,
+		TextBuffer:      "Partial generation before drop...",
+		StreamRetries:   2, // Retries exhausted on acc-stream-1
+		StdoutScanner:   scanner,
+		UpdateChan:      make(chan struct{}, 10),
+		AccountID:       "acc-stream-1",
+		AccountHomeDir:  home1,
+		Conversation:    "conv-stream-failover-777",
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+	defer session.Kill()
+
+	session.mu.Lock()
+	rotatedAccID := session.AccountID
+	rotatedHome := session.AccountHomeDir
+	session.mu.Unlock()
+
+	if rotatedAccID != "acc-stream-2" {
+		t.Errorf("Expected session to failover to acc-stream-2, got: %s", rotatedAccID)
+	}
+	if rotatedHome != home2 {
+		t.Errorf("Expected session home to switch to %s, got: %s", home2, rotatedHome)
+	}
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	foundFailoverNotice := false
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Stream Failover") && strings.Contains(unescaped, "acc-stream-2") {
+			foundFailoverNotice = true
+		}
+	}
+	if !foundFailoverNotice {
+		t.Errorf("Expected Stream Failover notice to be sent to Telegram, got: %v", sentBodies)
+	}
+}
+

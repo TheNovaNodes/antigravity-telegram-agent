@@ -632,7 +632,22 @@ func (s *AgySession) start() error {
 				s.mu.Unlock()
 			}
 		} else {
-			if acc, err := GlobalAccountPool.GetAccount(accID); err == nil && acc != nil {
+			acc, err := GlobalAccountPool.GetAccount(accID)
+			now := time.Now()
+			if err == nil && acc != nil && acc.State == StateCooldown && now.Before(acc.CooldownUntil) {
+				log.Printf("[AccountPool] Bound account %s is in cooldown until %s. Re-acquiring fresh account for bot %s chat %d",
+					accID, acc.CooldownUntil.Format(time.RFC3339), s.BotName, s.ChatID)
+				if freshAcc, errAcq := GlobalAccountPool.AcquireAccount(s.ChatID, s.BotName); errAcq == nil && freshAcc != nil {
+					s.mu.Lock()
+					s.AccountID = freshAcc.ID
+					s.AccountHomeDir = freshAcc.HomeDir
+					s.mu.Unlock()
+				} else {
+					s.mu.Lock()
+					s.AccountHomeDir = acc.HomeDir
+					s.mu.Unlock()
+				}
+			} else if err == nil && acc != nil {
 				s.mu.Lock()
 				s.AccountHomeDir = acc.HomeDir
 				s.mu.Unlock()
@@ -1143,6 +1158,9 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						chatID := s.ChatID
 						savedBuffer := s.TextBuffer
 						truncated := s.TextTruncated
+						uID := s.UserID
+						currentAccID := s.AccountID
+						botName := s.BotName
 						s.mu.Unlock()
 
 						if retries < 2 {
@@ -1195,50 +1213,109 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							}
 						}
 
-						// Retries exhausted or restart failed
-						s.mu.Lock()
-						s.StreamRetries = 0
-						s.ActiveMessageID = 0
-						s.ActiveTurnStart = time.Time{}
-						s.TextBuffer = ""
-						s.TextTruncated = false
-						s.mu.Unlock()
-						s.Kill()
+						// Retries exhausted on current account or restart failed.
+						// Before giving up, attempt auto-failover to next healthy account in pool (#254)!
+						streamRotated := false
+						if GlobalAccountPool != nil && currentAccID != "" && !GlobalAccountPool.IsPinned(chatID, botName) {
+							GlobalAccountPool.MarkCooldown(currentAccID, 1*time.Minute)
+							if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID, botName); err == nil && nextAcc != nil {
+								log.Printf("[StreamRecovery] Retries exhausted for account %s. Auto-rotating bot %s chat %d to %s",
+									currentAccID, botName, chatID, nextAcc.ID)
+								streamRotated = true
+								if botAPI != nil && activeID != 0 {
+									rotateNotice := fmt.Sprintf("⚠️ <b>[Stream Failover]</b> Connection severed on <code>%s</code>. Auto-switching to <code>%s</code> (%s)...",
+										currentAccID, nextAcc.ID, maskEmail(nextAcc.Email))
+									sendChunk(botAPI, chatID, activeID, rotateNotice)
+								}
 
-						if botAPI != nil {
-							retryMarkup := tgbotapi.NewInlineKeyboardMarkup(
-								tgbotapi.NewInlineKeyboardRow(
-									tgbotapi.NewInlineKeyboardButtonData("🔄 Resume task", "cmd:retry"),
-								),
-							)
-							trimmed := strings.TrimSpace(savedBuffer)
-							if trimmed != "" {
-								if truncated {
-									trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
-								}
-								trimmed += "\n\n⚠️ _[Connection to agent was temporarily interrupted (Google Cloud stream severed). Output salvaged above. Tap below to resume]_"
-								if activeID != 0 {
-									sendChunk(botAPI, chatID, activeID, trimmed, &retryMarkup)
-								} else {
-									msg := tgbotapi.NewMessage(chatID, MarkdownToTelegramHTML(trimmed))
-									msg.ParseMode = "HTML"
-									msg.ReplyMarkup = retryMarkup
-									botAPI.Send(msg)
-								}
-								sendArtifacts(botAPI, chatID, trimmed)
-							} else {
-								failNotice := "⚠️ *Connection to agent was temporarily interrupted (Google Cloud stream severed).* Tap the button below to resume."
-								if activeID != 0 {
-									sendChunk(botAPI, chatID, activeID, failNotice, &retryMarkup)
-								} else {
-									msg := tgbotapi.NewMessage(chatID, failNotice)
-									msg.ParseMode = "Markdown"
-									msg.ReplyMarkup = retryMarkup
-									botAPI.Send(msg)
+								s.Kill()
+								cleanPresenceLock(s.AccountHomeDir, convID)
+								cleanPresenceLock(nextAcc.HomeDir, convID)
+
+								s.mu.Lock()
+								s.AccountID = nextAcc.ID
+								s.AccountHomeDir = nextAcc.HomeDir
+								s.Conversation = convID
+								s.UseContinue = false
+								s.ActiveMessageID = activeID
+								s.ActiveTurnStart = time.Now()
+								s.LastActivity = time.Now()
+								s.StreamRetries = 0
+								s.TextBuffer = savedBuffer
+								s.TextTruncated = truncated
+								s.mu.Unlock()
+
+								sessKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
+								sessionMu.Lock()
+								globalSessions[sessKey] = s
+								sessionMu.Unlock()
+
+								time.Sleep(500 * time.Millisecond)
+								if err := s.start(); err == nil {
+									continuePrompt := "The streaming connection was interrupted mid-turn. Please continue your response and complete the task seamlessly from where you were interrupted."
+									payload := map[string]interface{}{
+										"event": "user",
+										"message": map[string]string{
+											"content": continuePrompt,
+										},
+									}
+									b, _ := json.Marshal(payload)
+									b = append(b, '\n')
+									s.mu.Lock()
+									if s.Stdin != nil {
+										_, _ = s.Stdin.Write(b)
+									}
+									s.mu.Unlock()
+									return
 								}
 							}
 						}
-						continue
+
+						if !streamRotated {
+							s.mu.Lock()
+							s.StreamRetries = 0
+							s.ActiveMessageID = 0
+							s.ActiveTurnStart = time.Time{}
+							s.TextBuffer = ""
+							s.TextTruncated = false
+							s.mu.Unlock()
+							s.Kill()
+
+							if botAPI != nil {
+								retryMarkup := tgbotapi.NewInlineKeyboardMarkup(
+									tgbotapi.NewInlineKeyboardRow(
+										tgbotapi.NewInlineKeyboardButtonData("🔄 Resume task", "cmd:retry"),
+									),
+								)
+								trimmed := strings.TrimSpace(savedBuffer)
+								if trimmed != "" {
+									if truncated {
+										trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+									}
+									trimmed += "\n\n⚠️ _[Connection to agent was temporarily interrupted (Google Cloud stream severed). Output salvaged above. Tap below to resume]_"
+									if activeID != 0 {
+										sendChunk(botAPI, chatID, activeID, trimmed, &retryMarkup)
+									} else {
+										msg := tgbotapi.NewMessage(chatID, MarkdownToTelegramHTML(trimmed))
+										msg.ParseMode = "HTML"
+										msg.ReplyMarkup = retryMarkup
+										botAPI.Send(msg)
+									}
+									sendArtifacts(botAPI, chatID, trimmed)
+								} else {
+									failNotice := "⚠️ *Connection to agent was temporarily interrupted (Google Cloud stream severed).* Tap the button below to resume."
+									if activeID != 0 {
+										sendChunk(botAPI, chatID, activeID, failNotice, &retryMarkup)
+									} else {
+										msg := tgbotapi.NewMessage(chatID, failNotice)
+										msg.ParseMode = "Markdown"
+										msg.ReplyMarkup = retryMarkup
+										botAPI.Send(msg)
+									}
+								}
+							}
+							continue
+						}
 					}
 
 					if isRateLimit {
@@ -1255,21 +1332,10 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						currentAccID := s.AccountID
 						s.mu.Unlock()
 
-						// Safe Parking (#204, #236): ALWAYS export current session transcript to Telegram BEFORE any rotation, killing, or state changes!
-						if botAPI != nil && chatID != 0 && isValidSessionID(convID) {
-							user := User{
-								ID:        uID,
-								SessionID: convID,
-								Model:     model,
-								Workspace: ws,
-							}
-							handleExportCommand(botAPI, chatID, uID, botName, user)
-						}
-
 						// Multi-Account Pool Auto-Failover (#216, #228, #236)
 						rotated := false
 						if GlobalAccountPool != nil && currentAccID != "" {
-							cooldownDuration := 5 * time.Hour
+							cooldownDuration := 1 * time.Minute
 							// Synchronize with exact quota reset time if available (#228)
 							if q, err := GlobalAccountPool.FetchAccountQuotas(currentAccID); err == nil && q != nil {
 								now := time.Now()
@@ -1277,6 +1343,10 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 									cooldownDuration = time.Until(q.Gemini5h.ResetTime)
 								} else if q.GeminiWeekly.RemainingFraction == 0 && !q.GeminiWeekly.ResetTime.IsZero() && now.Before(q.GeminiWeekly.ResetTime) {
 									cooldownDuration = time.Until(q.GeminiWeekly.ResetTime)
+								} else if q.Gemini5h.RemainingFraction > 0.05 {
+									// Account actually has healthy quota! This was a transient error or stream interruption.
+									// Apply brief 30-second backoff rather than punitive hours-long ban.
+									cooldownDuration = 30 * time.Second
 								}
 							}
 							GlobalAccountPool.MarkCooldown(currentAccID, cooldownDuration)
@@ -1335,6 +1405,17 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 
 						if !rotated {
 							// Tier 2 Escalation: Emergency Safe Parking (#204, #236)
+							// Trigger transcript export ONLY when all accounts in pool are in cooldown or rotation failed!
+							if botAPI != nil && chatID != 0 && isValidSessionID(convID) {
+								user := User{
+									ID:        uID,
+									SessionID: convID,
+									Model:     model,
+									Workspace: ws,
+								}
+								handleExportCommand(botAPI, chatID, uID, botName, user)
+							}
+
 							if botAPI != nil && chatID != 0 {
 								quotaNotice := "⚠️ *Google Cloud quota limit exceeded (429 / Quota Exhausted).*\n\n" +
 									"📦 All available accounts are in cooldown. Your current session has been automatically exported to the file above and safely parked.\n" +
