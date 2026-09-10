@@ -848,4 +848,3 @@ func TestStreamRecovery_AutoFailoverToNextAccount(t *testing.T) {
 		t.Errorf("Expected Stream Failover notice to be sent to Telegram, got: %v", sentBodies)
 	}
 }
-

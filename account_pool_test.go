@@ -713,5 +713,3 @@ func TestSession_StartReacquiresOnCooldown(t *testing.T) {
 		t.Errorf("Expected session homeDir to switch to %s, got: %s", home2, newHome)
 	}
 }
-
-
