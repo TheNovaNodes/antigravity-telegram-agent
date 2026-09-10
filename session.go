@@ -266,16 +266,25 @@ func getAgyPath() string {
 	if env := os.Getenv("AGY_BINARY"); env != "" {
 		return env
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "/root"
+	if p, err := exec.LookPath("agy"); err == nil {
+		return p
 	}
-	p := filepath.Join(home, ".local/bin/agy")
+	baseHome := getSystemBaseHome()
+	p := filepath.Join(baseHome, ".local/bin/agy")
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		userP := filepath.Join(home, ".local/bin/agy")
+		if _, err := os.Stat(userP); err == nil {
+			return userP
+		}
+	}
 	if fallbackAgyBinary != "" {
-		return fallbackAgyBinary
+		if _, err := os.Stat(fallbackAgyBinary); err == nil {
+			return fallbackAgyBinary
+		}
 	}
 	return p
 }
@@ -632,11 +641,27 @@ func (s *AgySession) start() error {
 	if accHome != "" {
 		var cleanEnv []string
 		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, "HOME=") {
-				cleanEnv = append(cleanEnv, e)
+			if strings.HasPrefix(e, "HOME=") ||
+				strings.HasPrefix(e, "GOPATH=") ||
+				strings.HasPrefix(e, "GOCACHE=") ||
+				strings.HasPrefix(e, "NPM_CONFIG_CACHE=") ||
+				strings.HasPrefix(e, "PIP_CACHE_DIR=") {
+				continue
 			}
+			cleanEnv = append(cleanEnv, e)
 		}
-		cmd.Env = append(cleanEnv, "HOME="+accHome)
+		goPath := getCentralSharedGoDir()
+		goCache := filepath.Join(getCentralSharedCacheDir(), "go-build")
+		npmCache := getCentralSharedNpmDir()
+		pipCache := filepath.Join(getCentralSharedCacheDir(), "pip")
+
+		cmd.Env = append(cleanEnv,
+			"HOME="+accHome,
+			"GOPATH="+goPath,
+			"GOCACHE="+goCache,
+			"NPM_CONFIG_CACHE="+npmCache,
+			"PIP_CACHE_DIR="+pipCache,
+		)
 	}
 
 	// Remove any leftover presence lock file to ensure agy can resume conversation cleanly (#236)

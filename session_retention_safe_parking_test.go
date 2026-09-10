@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -124,13 +125,21 @@ func TestEnsureSharedAccountDirectories_SymlinkCreation(t *testing.T) {
 	sharedTmp := t.TempDir()
 	expectedShared := filepath.Join(sharedTmp, "conversations")
 	t.Setenv("CONVERSATIONS_DIR", expectedShared)
+	t.Setenv("SYSTEM_HOME", sharedTmp)
 	tmpAccHome := t.TempDir()
+
+	// Create a pre-existing dummy directory in .cache to verify duplicate cleanup
+	preExistingCache := filepath.Join(tmpAccHome, ".cache", "dummy")
+	if err := os.MkdirAll(preExistingCache, 0755); err != nil {
+		t.Fatalf("Failed to create preExistingCache: %v", err)
+	}
 
 	// Call EnsureSharedAccountDirectories
 	if err := EnsureSharedAccountDirectories(tmpAccHome); err != nil {
 		t.Fatalf("EnsureSharedAccountDirectories failed: %v", err)
 	}
 
+	// 1. Verify conversations symlink
 	accConvs := filepath.Join(tmpAccHome, ".gemini", "antigravity-cli", "conversations")
 	fi, err := os.Lstat(accConvs)
 	if err != nil {
@@ -139,7 +148,6 @@ func TestEnsureSharedAccountDirectories_SymlinkCreation(t *testing.T) {
 	if fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("Expected %s to be a symlink, got mode: %v", accConvs, fi.Mode())
 	}
-
 	target, err := os.Readlink(accConvs)
 	if err != nil {
 		t.Fatalf("Failed to read symlink %s: %v", accConvs, err)
@@ -147,4 +155,99 @@ func TestEnsureSharedAccountDirectories_SymlinkCreation(t *testing.T) {
 	if target != expectedShared {
 		t.Errorf("Expected symlink target %s, got: %s", expectedShared, target)
 	}
+
+	// 2. Verify .cache, go, and .npm symlinks
+	checks := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		{".cache", filepath.Join(tmpAccHome, ".cache"), filepath.Join(sharedTmp, ".cache")},
+		{"go", filepath.Join(tmpAccHome, "go"), filepath.Join(sharedTmp, "go")},
+		{".npm", filepath.Join(tmpAccHome, ".npm"), filepath.Join(sharedTmp, ".npm")},
+	}
+
+	for _, tc := range checks {
+		info, lstatErr := os.Lstat(tc.path)
+		if lstatErr != nil {
+			t.Fatalf("Failed to lstat %s: %v", tc.path, lstatErr)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected %s to be a symlink, got mode: %v", tc.path, info.Mode())
+		}
+		linkTarget, readlinkErr := os.Readlink(tc.path)
+		if readlinkErr != nil {
+			t.Fatalf("Failed to readlink %s: %v", tc.path, readlinkErr)
+		}
+		if linkTarget != tc.expected {
+			t.Errorf("[%s] Expected symlink target %s, got: %s", tc.name, tc.expected, linkTarget)
+		}
+	}
+}
+
+func TestSession_EnvSharedCachesInjection(t *testing.T) {
+	sharedTmp := t.TempDir()
+	t.Setenv("SYSTEM_HOME", sharedTmp)
+	t.Setenv("SHARED_CACHE_DIR", filepath.Join(sharedTmp, "custom_cache"))
+	t.Setenv("SHARED_GOPATH_DIR", filepath.Join(sharedTmp, "custom_go"))
+	t.Setenv("SHARED_NPM_DIR", filepath.Join(sharedTmp, "custom_npm"))
+
+	accHome := filepath.Join(sharedTmp, "acc_home")
+	_ = os.MkdirAll(accHome, 0755)
+
+	s := &AgySession{
+		AccountHomeDir: accHome,
+	}
+
+	var cleanEnv []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "HOME=") ||
+			strings.HasPrefix(e, "GOPATH=") ||
+			strings.HasPrefix(e, "GOCACHE=") ||
+			strings.HasPrefix(e, "NPM_CONFIG_CACHE=") ||
+			strings.HasPrefix(e, "PIP_CACHE_DIR=") {
+			continue
+		}
+		cleanEnv = append(cleanEnv, e)
+	}
+
+	goPath := getCentralSharedGoDir()
+	goCache := filepath.Join(getCentralSharedCacheDir(), "go-build")
+	npmCache := getCentralSharedNpmDir()
+	pipCache := filepath.Join(getCentralSharedCacheDir(), "pip")
+
+	env := append(cleanEnv,
+		"HOME="+s.AccountHomeDir,
+		"GOPATH="+goPath,
+		"GOCACHE="+goCache,
+		"NPM_CONFIG_CACHE="+npmCache,
+		"PIP_CACHE_DIR="+pipCache,
+	)
+
+	expectedGo := filepath.Join(sharedTmp, "custom_go")
+	expectedCache := filepath.Join(sharedTmp, "custom_cache", "go-build")
+	expectedNpm := filepath.Join(sharedTmp, "custom_npm")
+	expectedPip := filepath.Join(sharedTmp, "custom_cache", "pip")
+
+	checkEnv := func(key, val string) {
+		prefix := key + "="
+		found := false
+		for _, e := range env {
+			if strings.HasPrefix(e, prefix) {
+				found = true
+				if e != prefix+val {
+					t.Errorf("Expected %s%s, got %s", prefix, val, e)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("Variable %s not found in env", key)
+		}
+	}
+
+	checkEnv("GOPATH", expectedGo)
+	checkEnv("GOCACHE", expectedCache)
+	checkEnv("NPM_CONFIG_CACHE", expectedNpm)
+	checkEnv("PIP_CACHE_DIR", expectedPip)
+	checkEnv("HOME", accHome)
 }
