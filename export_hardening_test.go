@@ -397,4 +397,3 @@ func TestHandleExportCommand_NoArtifacts_FallbackSingleTranscript(t *testing.T) 
 		}
 	}
 }
-
