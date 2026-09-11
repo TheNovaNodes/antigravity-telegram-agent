@@ -1,7 +1,7 @@
 # 🛸 Antigravity Go Telegram Bot Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-83%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-75.4%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
@@ -39,6 +39,8 @@ The core is decomposed into distinct, focused domain modules:
 | :--- | :--- |
 | [`main.go`](main.go) | Multi-bot long-polling lifecycle, signal traps, and graceful shutdown supervisor. |
 | [`handlers.go`](handlers.go) | Telegram update router, slash-command handlers (`/stop`, `/export`, etc.), interactive callback queries (`cmd:stop`, `cmd:retry`), and media downloads with `.md` drop-to-resume. |
+| [`account_pool.go`](account_pool.go) | Multi-account isolation, dynamic quota monitoring, automatic cooldown backoff & auto-recovery, and cache deduplication. |
+| [`account_handlers.go`](account_handlers.go) | Account management handlers, status dashboards, manual account switching, and `/accounts` command. |
 | [`session.go`](session.go) | `AgySession` process lifecycle, mutex-decoupled non-blocking I/O, 1200ms streaming throttler, Inactivity Turn Watchdog, Stream Auto-Recovery, and 429 Quota Safe Parking. |
 | [`subprocess_watchdog.go`](subprocess_watchdog.go) | Autonomous `/proc` scanner and reaper eliminating `SIGTTIN`/`SIGTTOU` state `T` deadlocks via two-phase `SIGCONT` + `SIGKILL`. |
 | [`storage.go`](storage.go) | SQLite schema migrations (`data/sessions_<bot>.db`), WAL mode configuration, and user CRUD. |
@@ -63,6 +65,7 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/start` | None | Displays live Agent Terminal dashboard (CWD, model, session uptime, steps count, quick action keyboard). |
 | `/model` | None | Opens interactive inline keyboard to switch the active LLM model with seamless Hot Model Swap (100% context retention). |
 | `/refresh_models`| None | Dynamically fetches the latest model list from `agy --print /models`. |
+| `/accounts` | `[status\|switch\|check]` | Multi-account quota pool dashboard, active account switching, and live quota health checks. |
 | `/usage` | None | Queries and displays current token quota and tier usage. |
 | `/clear` | None | Resets session context, terminates background tasks, and issues a fresh conversation UUID. |
 | `/resume` | None | Presents an interactive picker of previous sessions sorted by last modification time. |
