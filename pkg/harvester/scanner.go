@@ -17,6 +17,15 @@ func DiscoverSession(sessionID string) (*SessionLocation, error) {
 		return nil, fmt.Errorf("session ID cannot be empty")
 	}
 
+	// 0. Check BRAIN_DIR env override if set
+	if envBrain := os.Getenv("BRAIN_DIR"); envBrain != "" {
+		sessionDir := filepath.Clean(filepath.Join(envBrain, sessionID))
+		// #nosec G703 G304 -- sessionDir scoped under environment BRAIN_DIR
+		if stat, err := os.Stat(sessionDir); err == nil && stat.IsDir() {
+			return buildSessionLocation(sessionID, "env", envBrain, sessionDir), nil
+		}
+	}
+
 	// 1. Scan /etc/antigravity-bot/accounts/*/
 	entries, err := os.ReadDir(defaultAccountsRoot)
 	if err == nil {

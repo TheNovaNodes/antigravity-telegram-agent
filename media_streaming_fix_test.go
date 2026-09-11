@@ -185,6 +185,12 @@ func TestHandleMessagePayload_AdoptsPlaceholderID(t *testing.T) {
 	user := User{ID: 999}
 
 	session := getSession("TestBot", user, chatID, db)
+	defer func() {
+		session.Kill()
+		sessionMu.Lock()
+		delete(globalSessions, fmt.Sprintf("TestBot:%d:%d", chatID, user.ID))
+		sessionMu.Unlock()
+	}()
 	session.mu.Lock()
 	session.isAlive = true // prevent actual agy spawn
 	rPipe, wPipe, _ := os.Pipe()
@@ -247,6 +253,12 @@ func TestHandleMessagePayload_VoiceReplyChatAction(t *testing.T) {
 	user := User{ID: 888}
 
 	session := getSession("TestVoiceBot", user, chatID, db)
+	defer func() {
+		session.Kill()
+		sessionMu.Lock()
+		delete(globalSessions, fmt.Sprintf("TestVoiceBot:%d:%d", chatID, user.ID))
+		sessionMu.Unlock()
+	}()
 	session.mu.Lock()
 	session.isAlive = true
 	rPipe, wPipe, _ := os.Pipe()

@@ -23,6 +23,8 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
+
+	"engine/pkg/harvester"
 )
 
 var validSessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
@@ -495,7 +497,9 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 // handleExportCommand extracts the conversation steps from transcript.jsonl and sends a formatted Markdown file to the chat.
 func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User) {
 	if !isValidSessionID(user.SessionID) {
-		bot.Send(tgbotapi.NewMessage(chatID, "📭 No active conversation session found to export."))
+		if bot != nil && chatID != 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "📭 No active conversation session found to export."))
+		}
 		return
 	}
 	brainDir := getBrainDir()
@@ -505,7 +509,9 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	// #nosec G304 -- gosec:nri (Need Review)
 	f, err := os.Open(transcriptFile)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "📭 No conversation transcript found for the current session."))
+		if bot != nil && chatID != 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "📭 No conversation transcript found for the current session."))
+		}
 		return
 	}
 	defer f.Close()
@@ -585,7 +591,9 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	}
 
 	if stepNum == 0 {
-		bot.Send(tgbotapi.NewMessage(chatID, "📭 Transcript is currently empty."))
+		if bot != nil && chatID != 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "📭 Transcript is currently empty."))
+		}
 		return
 	}
 
@@ -593,21 +601,52 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	// #nosec G703 -- gosec:nri (Need Review)
 	_ = os.MkdirAll(exportDir, 0700)
 	safeFilename := fmt.Sprintf("session_%s.md", safePrefix(user.SessionID, 8))
+	zipFilename := fmt.Sprintf("artifacts_%s.zip", safePrefix(user.SessionID, 8))
 	if slug := sanitizeFilename(sessionTitle); slug != "" {
 		safeFilename = fmt.Sprintf("session_%s_%s.md", slug, safePrefix(user.SessionID, 8))
+		zipFilename = fmt.Sprintf("artifacts_%s_%s.zip", slug, safePrefix(user.SessionID, 8))
 	}
 	exportPath := filepath.Join(exportDir, safeFilename)
 
 	// #nosec G703 G306 -- gosec:nri (Need Review)
 	if err := os.WriteFile(exportPath, []byte(sb.String()), 0600); err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to generate export file: "+err.Error()))
+		if bot != nil && chatID != 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to generate export file: "+err.Error()))
+		}
 		return
 	}
 
-	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(exportPath))
-	doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d", sessionTitle, stepNum)
-	doc.ParseMode = "Markdown"
-	bot.Send(doc)
+	// Harvest Markdown engineering artifacts if any exist (#247)
+	var artifactZipPath string
+	var artifactBreakdown string
+	var artifactCount int
+
+	if report, err := harvester.HarvestSession(user.SessionID); err == nil && report != nil && len(report.Artifacts) > 0 {
+		artifactCount = len(report.Artifacts)
+		artifactBreakdown = harvester.FormatBreakdown(report.Artifacts)
+
+		if zPath, zErr := harvester.CreateArtifactsBundleInDir(exportDir, zipFilename, report.Artifacts); zErr == nil {
+			artifactZipPath = zPath
+		}
+	}
+
+	if bot != nil && chatID != 0 {
+		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(exportPath))
+		if artifactCount > 0 {
+			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d\n📦 *Extracted Artifacts:* %d (%s)", sessionTitle, stepNum, artifactCount, artifactBreakdown)
+		} else {
+			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d", sessionTitle, stepNum)
+		}
+		doc.ParseMode = "Markdown"
+		bot.Send(doc)
+
+		if artifactZipPath != "" {
+			zipDoc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(artifactZipPath))
+			zipDoc.Caption = fmt.Sprintf("📦 *Session Engineering Artifacts Bundle*\n🏷 *Title:* %s\n📁 *Files:* %d (%s)", sessionTitle, artifactCount, artifactBreakdown)
+			zipDoc.ParseMode = "Markdown"
+			bot.Send(zipDoc)
+		}
+	}
 }
 
 // handleTTSCommand converts text to speech using the active TTS engine and sends as audio.
