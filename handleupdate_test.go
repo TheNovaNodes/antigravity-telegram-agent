@@ -176,6 +176,8 @@ func TestHandleUpdate_Callbacks(t *testing.T) {
 	callbacks := []string{
 		"cmd:status",
 		"cmd:clear",
+		"cmd:new_session",
+		"cmd:accounts",
 		"cmd:help",
 		"cmd:usage",
 		"cmd:model",

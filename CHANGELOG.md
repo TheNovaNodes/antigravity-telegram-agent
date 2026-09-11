@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Dashboard & Session UX Enhancements**:
+  - Added active account indicator (`👤 Account: <id>`) to the `/start` terminal card with sticky lock indicator (`🔒`) when pinned.
+  - Replaced ambiguous `[🧼 Clear]` button with `[🆕 New Session]` in the `/start` inline keyboard and updated eviction notice UX.
+  - Added quick-access `[👥 Accounts]` button directly into the `/start` keyboard with callback routing (`cmd:accounts`).
+  - Added transcript compaction & stream resilience reminder (`getCompactionHint`): automatically appends an actionable recommendation to export and restart the session when `transcript.jsonl >= 500 KB` or upon mid-turn stream disruptions.
+
 ### Fixed
 - **Stream Recovery Infinite Loop & Process Race Prevention**:
   - Enforced `maxTurnFailovers = 1` and `maxTurnStreamRetries = 2` to prevent cascading infinite account rotations and account pool thrashing during upstream Google Cloud stream interruptions.
