@@ -303,14 +303,14 @@ func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
 	unknownFile := filepath.Join(agentsDir, "unknown.data")
 	unknownContent := `Bearer 123456789012345678901234567890123456`
 	os.WriteFile(unknownFile, []byte(unknownContent), 0644)
-	
+
 	// Create a binary file (contains null byte)
 	binFile := filepath.Join(agentsDir, "data.bin")
 	binContent := []byte{0x00, 0x01, 0x02, 'B', 'e', 'a', 'r', 'e', 'r', ' ', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '1', '2', '3', '4', '5', '6'}
 	os.WriteFile(binFile, binContent, 0644)
 
 	text := fmt.Sprintf("Artifacts:\n- (file://%s)\n- (file://%s)\n- (file://%s)\n- (file://%s)\n", tomlFile, sqlFile, unknownFile, binFile)
-	
+
 	sendArtifacts(bot, 12345, text)
 
 	ms.mu.Lock()
@@ -359,8 +359,16 @@ func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
 		}
 	}
 
-	if !foundToml { t.Errorf("Did not find toml file payload") }
-	if !foundSql { t.Errorf("Did not find sql file payload") }
-	if !foundUnknown { t.Errorf("Did not find unknown file payload") }
-	if !foundBin { t.Errorf("Did not find bin file payload") }
+	if !foundToml {
+		t.Errorf("Did not find toml file payload")
+	}
+	if !foundSql {
+		t.Errorf("Did not find sql file payload")
+	}
+	if !foundUnknown {
+		t.Errorf("Did not find unknown file payload")
+	}
+	if !foundBin {
+		t.Errorf("Did not find bin file payload")
+	}
 }
