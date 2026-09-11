@@ -1,4 +1,4 @@
-.PHONY: all build test test-fast race coverage fmt clean run env-check lint sast vuln
+.PHONY: all build build-harvester test test-fast race coverage fmt clean run env-check lint sast vuln
 
 BINARY_NAME=antigravity-bot-engine
 BIN_DIR=bin
@@ -6,12 +6,17 @@ BUILD_PATH=$(BIN_DIR)/$(BINARY_NAME)
 
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
-all: build
+all: build build-harvester
 
 build:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -o $(BUILD_PATH) .
 	@echo "✅ Build complete: $(BUILD_PATH)"
+
+build-harvester:
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 go build -o $(BIN_DIR)/agy-harvester ./cmd/agy-harvester
+	@echo "✅ Build complete: $(BIN_DIR)/agy-harvester"
 
 fmt:
 	gofmt -s -w .

@@ -157,11 +157,17 @@ func main() {
 	StartDiskCleanupWorker(2*time.Hour, 24*time.Hour, stopHousekeeping)
 	StartSubprocessWatchdogWorker(2*time.Second, 3*time.Second, stopHousekeeping)
 
+	// Optional Prometheus metrics server (#248)
+	metricsServer, _ := StartMetricsServer("")
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	<-sigs
 
 	log.Println("Shutting down gracefully...")
+	if metricsServer != nil {
+		_ = StopMetricsServer(metricsServer)
+	}
 	if reaperCancel != nil {
 		reaperCancel()
 	}
