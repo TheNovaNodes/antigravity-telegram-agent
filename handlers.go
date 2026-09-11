@@ -622,6 +622,7 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	var artifactCount int
 
 	if report, err := harvester.HarvestSession(user.SessionID); err == nil && report != nil && len(report.Artifacts) > 0 {
+		harvester.RecordReport(report)
 		artifactCount = len(report.Artifacts)
 		artifactBreakdown = harvester.FormatBreakdown(report.Artifacts)
 

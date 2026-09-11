@@ -135,15 +135,22 @@ func ScanBrainArtifacts(location *SessionLocation) ([]ExtractedArtifact, error) 
 
 // HarvestSession runs the complete discovery, extraction, sanitization, and deduplication pipeline.
 func HarvestSession(sessionID string) (*HarvestReport, error) {
-	start := time.Now()
-
 	loc, err := DiscoverSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
+	return HarvestLocation(loc)
+}
+
+// HarvestLocation runs harvesting directly on an already discovered SessionLocation.
+func HarvestLocation(loc *SessionLocation) (*HarvestReport, error) {
+	if loc == nil {
+		return nil, fmt.Errorf("session location cannot be nil")
+	}
+	start := time.Now()
 
 	report := &HarvestReport{
-		SessionID: sessionID,
+		SessionID: loc.SessionID,
 	}
 
 	dedupMap := make(map[string]ExtractedArtifact)
@@ -157,7 +164,7 @@ func HarvestSession(sessionID string) (*HarvestReport, error) {
 	}
 
 	// 2. Transcript replay scan
-	txArtifacts, _ := ParseAndExtractTranscriptArtifacts(loc.BrainDir, sessionID)
+	txArtifacts, _ := ParseAndExtractTranscriptArtifacts(loc.BrainDir, loc.SessionID)
 	for _, art := range txArtifacts {
 		if _, exists := dedupMap[art.SHA256]; !exists {
 			art.AccountSlug = loc.AccountSlug
