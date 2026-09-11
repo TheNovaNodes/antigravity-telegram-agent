@@ -46,6 +46,8 @@ type AgySession struct {
 	ActiveMessageID int
 	ActiveTurnStart time.Time
 	StreamRetries   int
+	TurnFailovers   int
+	cmdEpoch        uint64
 	TextBuffer      string
 	TextTruncated   bool
 	LastEdit        time.Time
@@ -320,6 +322,8 @@ func (s *AgySession) Kill() {
 	s.ActiveMessageID = 0
 	hadActiveTurn := !s.ActiveTurnStart.IsZero()
 	s.ActiveTurnStart = time.Time{}
+	s.StreamRetries = 0
+	s.TurnFailovers = 0
 	s.TextBuffer = ""
 	s.TextTruncated = false
 	s.StdoutScanner = nil
@@ -596,6 +600,8 @@ func (s *AgySession) start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.ctx = ctx
 	s.cancel = cancel
+	s.cmdEpoch++
+	myEpoch := s.cmdEpoch
 	s.mu.Unlock()
 
 	args := []string{
@@ -824,7 +830,7 @@ func (s *AgySession) start() error {
 		defer close(stdoutDone)
 		s.readStdoutLoop(scanner, ctx)
 	}()
-	go func(c *exec.Cmd) {
+	go func(c *exec.Cmd, epoch uint64) {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[PANIC RECOVERED in session cmdWait for bot %s] %v", s.BotName, r)
@@ -835,21 +841,27 @@ func (s *AgySession) start() error {
 		<-stdoutDone
 
 		s.mu.Lock()
+		// If the session has moved on to a newer generation/process (e.g. via stream recovery or restart),
+		// this exited process must NOT touch session state or send spurious error messages to Telegram!
+		if s.cmdEpoch != epoch || s.Cmd != c {
+			s.mu.Unlock()
+			return
+		}
+
 		activeMsgID := s.ActiveMessageID
 		botAPI := s.BotAPI
 		chatID := s.ChatID
-		if s.Cmd == c || s.Cmd == nil {
-			s.isAlive = false
-			s.Cmd = nil
-			s.Stdin = nil
-			s.StdoutPipe = nil
-			s.StdoutScanner = nil
-			s.ActiveMessageID = 0
-			s.ActiveTurnStart = time.Time{}
-			s.StreamRetries = 0
-			s.TextBuffer = ""
-			s.TextTruncated = false
-		}
+		s.isAlive = false
+		s.Cmd = nil
+		s.Stdin = nil
+		s.StdoutPipe = nil
+		s.StdoutScanner = nil
+		s.ActiveMessageID = 0
+		s.ActiveTurnStart = time.Time{}
+		s.StreamRetries = 0
+		s.TurnFailovers = 0
+		s.TextBuffer = ""
+		s.TextTruncated = false
 		s.mu.Unlock()
 
 		// If the process exited unexpectedly while a message was active, clean up the Telegram UI spinner
@@ -860,7 +872,7 @@ func (s *AgySession) start() error {
 			}
 			sendChunk(botAPI, chatID, activeMsgID, statusMsg)
 		}
-	}(cmd)
+	}(cmd, myEpoch)
 
 	return nil
 }
@@ -1182,6 +1194,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					if isStreamInterrupted {
 						s.mu.Lock()
 						retries := s.StreamRetries
+						turnFailovers := s.TurnFailovers
 						activeID := s.ActiveMessageID
 						convID := s.Conversation
 						botAPI := s.BotAPI
@@ -1193,21 +1206,24 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						botName := s.BotName
 						s.mu.Unlock()
 
-						if retries < 2 {
+						const maxTurnStreamRetries = 2
+						const maxTurnFailovers = 1
+
+						if retries < maxTurnStreamRetries {
 							s.mu.Lock()
 							s.StreamRetries++
 							curRetry := s.StreamRetries
 							s.mu.Unlock()
 
-							log.Printf("[StreamRecovery] Stream interrupted for bot %s (retry %d/2). Auto-continuing turn...", s.BotName, curRetry)
+							log.Printf("[StreamRecovery] Stream interrupted for bot %s (retry %d/%d). Auto-continuing turn...", s.BotName, curRetry, maxTurnStreamRetries)
 
 							if botAPI != nil && activeID != 0 {
 								var retryNotice string
 								trimmed := strings.TrimSpace(savedBuffer)
 								if trimmed != "" {
-									retryNotice = fmt.Sprintf("%s\n\n⏳ _[Network stream interrupted. Auto-recovering (attempt %d/2)...]_", trimmed, curRetry)
+									retryNotice = fmt.Sprintf("%s\n\n⏳ _[Network stream interrupted. Auto-recovering (attempt %d/%d)...]_", trimmed, curRetry, maxTurnStreamRetries)
 								} else {
-									retryNotice = fmt.Sprintf("⚠️ *Network stream was interrupted.* Auto-recovering (attempt %d/2)...", curRetry)
+									retryNotice = fmt.Sprintf("⚠️ *Network stream was interrupted.* Auto-recovering (attempt %d/%d)...", curRetry, maxTurnStreamRetries)
 								}
 								sendChunk(botAPI, chatID, activeID, retryNotice)
 							}
@@ -1221,6 +1237,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							s.Conversation = convID
 							s.TextBuffer = savedBuffer
 							s.TextTruncated = truncated
+							s.StreamRetries = curRetry
+							s.TurnFailovers = turnFailovers
 							s.mu.Unlock()
 
 							time.Sleep(1 * time.Second)
@@ -1244,13 +1262,14 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						}
 
 						// Retries exhausted on current account or restart failed.
-						// Before giving up, attempt auto-failover to next healthy account in pool (#254)!
+						// Before giving up, attempt auto-failover to next healthy account in pool (#254),
+						// guarded by maxTurnFailovers to prevent cascading infinite account rotations!
 						streamRotated := false
-						if GlobalAccountPool != nil && currentAccID != "" && !GlobalAccountPool.IsPinned(chatID, botName) {
+						if turnFailovers < maxTurnFailovers && GlobalAccountPool != nil && currentAccID != "" && !GlobalAccountPool.IsPinned(chatID, botName) {
 							GlobalAccountPool.MarkCooldown(currentAccID, 1*time.Minute)
 							if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID, botName); err == nil && nextAcc != nil {
-								log.Printf("[StreamRecovery] Retries exhausted for account %s. Auto-rotating bot %s chat %d to %s",
-									currentAccID, botName, chatID, nextAcc.ID)
+								log.Printf("[StreamRecovery] Retries exhausted for account %s. Auto-rotating bot %s chat %d to %s (turn failover %d/%d)",
+									currentAccID, botName, chatID, nextAcc.ID, turnFailovers+1, maxTurnFailovers)
 								streamRotated = true
 								if botAPI != nil && activeID != 0 {
 									rotateNotice := fmt.Sprintf("⚠️ <b>[Stream Failover]</b> Connection severed on <code>%s</code>. Auto-switching to <code>%s</code> (%s)...",
@@ -1270,7 +1289,9 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 								s.ActiveMessageID = activeID
 								s.ActiveTurnStart = time.Now()
 								s.LastActivity = time.Now()
-								s.StreamRetries = 0
+								// Limit recovery attempts on failover account to remaining turn quota
+								s.StreamRetries = maxTurnStreamRetries - 1
+								s.TurnFailovers = turnFailovers + 1
 								s.TextBuffer = savedBuffer
 								s.TextTruncated = truncated
 								s.mu.Unlock()
@@ -1304,6 +1325,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						if !streamRotated {
 							s.mu.Lock()
 							s.StreamRetries = 0
+							s.TurnFailovers = 0
 							s.ActiveMessageID = 0
 							s.ActiveTurnStart = time.Time{}
 							s.TextBuffer = ""
@@ -1352,6 +1374,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						log.Printf("[RateLimit] Genuine 429 quota exhaustion detected for bot %s", s.BotName)
 						s.mu.Lock()
 						activeID := s.ActiveMessageID
+						turnFailovers := s.TurnFailovers
 						uID := s.UserID
 						convID := s.Conversation
 						model := s.Model
@@ -1362,9 +1385,11 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						currentAccID := s.AccountID
 						s.mu.Unlock()
 
+						const maxTurnFailovers = 1
+
 						// Multi-Account Pool Auto-Failover (#216, #228, #236)
 						rotated := false
-						if GlobalAccountPool != nil && currentAccID != "" {
+						if turnFailovers < maxTurnFailovers && GlobalAccountPool != nil && currentAccID != "" {
 							cooldownDuration := 1 * time.Minute
 							// Synchronize with exact quota reset time if available (#228)
 							if q, err := GlobalAccountPool.FetchAccountQuotas(currentAccID); err == nil && q != nil {
@@ -1382,7 +1407,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							GlobalAccountPool.MarkCooldown(currentAccID, cooldownDuration)
 							if !GlobalAccountPool.IsPinned(chatID, botName) {
 								if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID, botName); err == nil && nextAcc != nil {
-									log.Printf("[AccountPool] Auto-rotating bot %s chat %d from %s to %s", botName, chatID, currentAccID, nextAcc.ID)
+									log.Printf("[AccountPool] Auto-rotating bot %s chat %d from %s to %s (turn failover %d/%d)",
+										botName, chatID, currentAccID, nextAcc.ID, turnFailovers+1, maxTurnFailovers)
 									rotated = true
 
 									if botAPI != nil && activeID != 0 {
@@ -1404,6 +1430,8 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 									s.ActiveMessageID = activeID
 									s.ActiveTurnStart = time.Now()
 									s.LastActivity = time.Now()
+									s.StreamRetries = 0
+									s.TurnFailovers = turnFailovers + 1
 									s.mu.Unlock()
 
 									sessKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
@@ -1464,6 +1492,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							s.ActiveMessageID = 0
 							s.ActiveTurnStart = time.Time{}
 							s.StreamRetries = 0
+							s.TurnFailovers = 0
 							s.TextBuffer = ""
 							s.TextTruncated = false
 							s.mu.Unlock()
@@ -1491,6 +1520,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					s.ActiveMessageID = 0
 					s.ActiveTurnStart = time.Time{}
 					s.StreamRetries = 0
+					s.TurnFailovers = 0
 					s.TextBuffer = ""
 					s.TextTruncated = false
 					s.mu.Unlock()
@@ -1562,6 +1592,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				s.ActiveMessageID = 0
 				s.ActiveTurnStart = time.Time{}
 				s.StreamRetries = 0
+				s.TurnFailovers = 0
 				s.TextBuffer = ""
 				botAPI := s.BotAPI
 				targetChatID := s.ChatID

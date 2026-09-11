@@ -891,6 +891,7 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 	s.TextBuffer = ""
 	s.TextTruncated = false
 	s.StreamRetries = 0
+	s.TurnFailovers = 0
 	s.mu.Unlock()
 
 	s.Kill()

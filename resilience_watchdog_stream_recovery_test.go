@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -846,5 +847,191 @@ func TestStreamRecovery_AutoFailoverToNextAccount(t *testing.T) {
 	}
 	if !foundFailoverNotice {
 		t.Errorf("Expected Stream Failover notice to be sent to Telegram, got: %v", sentBodies)
+	}
+}
+
+// TestStreamFailover_PreventsInfiniteRotationLoopWhenAllAccountsDrop verifies that if stream interruptions
+// persist across failover accounts, the engine enforces maxTurnFailovers (1) and does not cascade
+// into an infinite rotation storm knocking out all pool accounts.
+func TestStreamFailover_PreventsInfiniteRotationLoopWhenAllAccountsDrop(t *testing.T) {
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	tmpDir := t.TempDir()
+	home1 := filepath.Join(tmpDir, "acc-stream-1")
+	home2 := filepath.Join(tmpDir, "acc-stream-2")
+	home3 := filepath.Join(tmpDir, "acc-stream-3")
+	_ = os.MkdirAll(home1, 0755)
+	_ = os.MkdirAll(home2, 0755)
+	_ = os.MkdirAll(home3, 0755)
+
+	pool.accounts["acc-stream-1"] = &Account{
+		ID:       "acc-stream-1",
+		Email:    "stream1@example.com",
+		HomeDir:  home1,
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+	pool.accounts["acc-stream-2"] = &Account{
+		ID:       "acc-stream-2",
+		Email:    "stream2@example.com",
+		HomeDir:  home2,
+		State:    StateActive,
+		LastUsed: time.Now().Add(-1 * time.Hour),
+	}
+	pool.accounts["acc-stream-3"] = &Account{
+		ID:       "acc-stream-3",
+		Email:    "stream3@example.com",
+		HomeDir:  home3,
+		State:    StateActive,
+		LastUsed: time.Now().Add(-2 * time.Hour),
+	}
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	// Simulate already having failed over once in this turn (TurnFailovers = 1, StreamRetries = 2)
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"stream was interrupted"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	session := &AgySession{
+		BotName:         "AntiLoopBot",
+		BotAPI:          bot,
+		ChatID:          8888,
+		UserID:          1002,
+		ActiveMessageID: 777,
+		TextBuffer:      "Accumulated report before second drop",
+		StreamRetries:   2,
+		TurnFailovers:   1, // Already failed over once during this turn!
+		StdoutScanner:   scanner,
+		UpdateChan:      make(chan struct{}, 10),
+		AccountID:       "acc-stream-2",
+		AccountHomeDir:  home2,
+		Conversation:    "conv-no-cascading-loop",
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+	defer session.Kill()
+
+	// Verify that acc-stream-3 was NEVER touched or put in cooldown!
+	pool.mu.Lock()
+	acc3State := pool.accounts["acc-stream-3"].State
+	pool.mu.Unlock()
+
+	if acc3State != StateActive {
+		t.Errorf("Expected acc-stream-3 to remain StateActive, got %s", acc3State)
+	}
+
+	// Verify session salvaged buffer and cleared active message ID
+	session.mu.Lock()
+	activeID := session.ActiveMessageID
+	retries := session.StreamRetries
+	failovers := session.TurnFailovers
+	session.mu.Unlock()
+
+	if activeID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 after exhausting failover limit, got %d", activeID)
+	}
+	if retries != 0 {
+		t.Errorf("Expected StreamRetries to be reset to 0, got %d", retries)
+	}
+	if failovers != 0 {
+		t.Errorf("Expected TurnFailovers to be reset to 0, got %d", failovers)
+	}
+
+	// Verify message in Telegram contains salvaged text and retry button
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	foundSalvageText := false
+	foundRetryBtn := false
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Accumulated report before second drop") {
+			foundSalvageText = true
+		}
+		if strings.Contains(unescaped, "cmd:retry") {
+			foundRetryBtn = true
+		}
+	}
+	if !foundSalvageText {
+		t.Errorf("Expected salvaged text to be sent, got: %v", sentBodies)
+	}
+	if !foundRetryBtn {
+		t.Errorf("Expected cmd:retry button to be present, got: %v", sentBodies)
+	}
+}
+
+// TestCmdWait_EpochGuardPreventsGhostTerminationNotice verifies that an exited process from
+// a previous generation does NOT wipe session state or emit a spurious "Agent session was stopped or restarted" notice.
+func TestCmdWait_EpochGuardPreventsGhostTerminationNotice(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	session := &AgySession{
+		BotName:         "EpochGuardBot",
+		BotAPI:          bot,
+		ChatID:          9999,
+		ActiveMessageID: 1234,
+		cmdEpoch:        2, // Newer epoch than exited process
+		isAlive:         true,
+	}
+
+	// Simulate old cmd process exiting from epoch 1
+	cmd := exec.Command("/bin/sleep", "0.05")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start dummy cmd: %v", err)
+	}
+
+	stdoutDone := make(chan struct{})
+	close(stdoutDone)
+
+	done := make(chan struct{})
+	go func(c *exec.Cmd, epoch uint64) {
+		defer close(done)
+		_ = c.Wait()
+		<-stdoutDone
+
+		session.mu.Lock()
+		if session.cmdEpoch != epoch || session.Cmd != c {
+			session.mu.Unlock()
+			return
+		}
+		session.ActiveMessageID = 0
+		session.mu.Unlock()
+	}(cmd, 1) // Passed epoch 1
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for dummy process cmdWait")
+	}
+
+	session.mu.Lock()
+	activeID := session.ActiveMessageID
+	session.mu.Unlock()
+
+	if activeID != 1234 {
+		t.Errorf("Expected ActiveMessageID to remain untouched (1234), got %d", activeID)
+	}
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	for _, raw := range sentBodies {
+		unescaped, _ := url.QueryUnescape(raw)
+		if strings.Contains(unescaped, "Agent session was stopped or restarted") {
+			t.Errorf("Spurious restart notice sent by superseded process: %s", unescaped)
+		}
 	}
 }
