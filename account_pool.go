@@ -1030,7 +1030,8 @@ func (p *AccountPool) StartBackgroundReaperWithInterval(ctx context.Context, int
 				if acc.State == StateCooldown && now.After(acc.CooldownUntil) {
 					acc.State = StateActive
 					acc.CooldownUntil = time.Time{}
-					recovered = append(recovered, acc)
+					snapshot := *acc
+					recovered = append(recovered, &snapshot)
 				}
 			}
 
