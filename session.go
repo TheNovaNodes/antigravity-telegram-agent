@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"engine/pkg/harvester"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -923,27 +925,53 @@ func ExtractAllowedArtifacts(text string) []string {
 	return validPaths
 }
 
-// sendArtifacts parses the agent's response, opens verified files to prevent TOCTOU, and sends them as Telegram documents.
+// sendArtifacts parses the agent's response, opens verified files to prevent TOCTOU, scrubs secrets from text artifacts, and sends them as Telegram documents.
 func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	paths := ExtractAllowedArtifacts(text)
 	for _, realPath := range paths {
 		// #nosec G304 -- gosec:nri (Need Review)
-		f, err := os.Open(realPath)
-		if err != nil {
-			log.Printf("[Artifacts] Failed to open %s: %v", realPath, err)
+		info, err := os.Stat(realPath)
+		if err != nil || info.IsDir() {
 			continue
 		}
-		info, err := f.Stat()
-		if err != nil || info.IsDir() {
-			f.Close()
-			continue
+
+		ext := strings.ToLower(filepath.Ext(realPath))
+		isText := ext == ".md" || ext == ".txt" || ext == ".json" || ext == ".yaml" || ext == ".yml" ||
+			ext == ".csv" || ext == ".sh" || ext == ".py" || ext == ".go" || ext == ".env"
+
+		var reader io.Reader
+		var closer io.Closer
+		caption := "📦 Artifact: " + filepath.Base(realPath)
+
+		if isText {
+			// #nosec G304 -- path verified by ExtractAllowedArtifacts
+			contentBytes, readErr := os.ReadFile(realPath)
+			if readErr != nil {
+				log.Printf("[Artifacts] Failed to read text artifact %s: %v", realPath, readErr)
+				continue
+			}
+			sanitized, redactedCount := harvester.SanitizeContent(string(contentBytes))
+			if redactedCount > 0 {
+				caption += fmt.Sprintf(" (🛡️ %d secret(s) redacted)", redactedCount)
+				log.Printf("[Artifacts] Redacted %d secret(s) in artifact %s", redactedCount, realPath)
+			}
+			reader = strings.NewReader(sanitized)
+		} else {
+			// #nosec G304 -- binary artifact streaming
+			f, openErr := os.Open(realPath)
+			if openErr != nil {
+				log.Printf("[Artifacts] Failed to open binary %s: %v", realPath, openErr)
+				continue
+			}
+			reader = f
+			closer = f
 		}
 
 		doc := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
 			Name:   filepath.Base(realPath),
-			Reader: f,
+			Reader: reader,
 		})
-		doc.Caption = "📦 Artifact: " + filepath.Base(realPath)
+		doc.Caption = caption
 		if bot != nil {
 			if _, err := bot.Send(doc); err != nil {
 				log.Printf("[Artifacts] Failed to send artifact %s to chat %d: %v", realPath, chatID, err)
@@ -951,7 +979,9 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 				log.Printf("[Artifacts] Successfully sent artifact %s to chat %d", realPath, chatID)
 			}
 		}
-		f.Close()
+		if closer != nil {
+			closer.Close()
+		}
 	}
 }
 
