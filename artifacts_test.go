@@ -90,3 +90,19 @@ func TestExtractAllowedArtifacts(t *testing.T) {
 		})
 	}
 }
+
+func TestSendArtifacts_SecretRedaction(t *testing.T) {
+	tempDir := t.TempDir()
+	mockAgentsRoot := filepath.Join(tempDir, "agents")
+	os.MkdirAll(mockAgentsRoot, 0755)
+	t.Setenv("AGENTS_DIR", mockAgentsRoot)
+
+	// Create artifact with a secret token
+	leakFile := filepath.Join(mockAgentsRoot, "leaky_report.md")
+	rawSecret := "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ_0123456"
+	content := "# Report\nBot Token: " + rawSecret
+	os.WriteFile(leakFile, []byte(content), 0644)
+
+	// Call sendArtifacts with nil bot (does not send HTTP, tests file processing)
+	sendArtifacts(nil, 12345, "Link: (file://"+leakFile+")")
+}

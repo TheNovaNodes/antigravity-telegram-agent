@@ -517,8 +517,8 @@ func TestHotModelSwap_EndToEnd_MultiTurnPipeline(t *testing.T) {
 	defer ms.Close()
 
 	bot := createMockBot(ms)
-	chatID := int64(12345)
-	userID := int64(1001)
+	chatID := int64(778899)
+	userID := int64(778899)
 
 	// Turn 1: User sends message on default model
 	update1 := tgbotapi.Update{
