@@ -62,7 +62,7 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `/start` | None | Displays live Agent Terminal dashboard (CWD, model, session uptime, steps count, quick action keyboard). |
+| `/start` | None | Displays live Agent Terminal dashboard (CWD, model, active account, session uptime, steps count, quick action keyboard). |
 | `/model` | None | Opens interactive inline keyboard to switch the active LLM model with seamless Hot Model Swap (100% context retention). |
 | `/refresh_models`| None | Dynamically fetches the latest model list from `agy --print /models`. |
 | `/accounts` | `[status\|switch\|check]` | Multi-account quota pool dashboard, active account switching, and live quota health checks. |

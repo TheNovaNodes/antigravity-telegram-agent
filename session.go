@@ -231,6 +231,22 @@ func getBrainDir() string {
 	return filepath.Join(home, ".gemini/antigravity-cli/brain")
 }
 
+// getCompactionHint checks if a session transcript exceeds the compaction threshold (> 500 KB)
+// or experienced stream drops, returning an actionable recommendation footer.
+func getCompactionHint(convID string, hadStreamRecovery bool) string {
+	if isValidSessionID(convID) {
+		tPath := filepath.Join(getBrainDir(), convID, ".system_generated", "logs", "transcript.jsonl")
+		if fi, err := os.Stat(tPath); err == nil && fi.Size() >= 500*1024 {
+			kb := fi.Size() / 1024
+			return fmt.Sprintf("\n\n💡 _Сессия достигла %d КБ. Во избежание сетевых задержек рекомендуется сохранить контекст через /export и начать новую сессию ([🆕 New Session])._", kb)
+		}
+	}
+	if hadStreamRecovery {
+		return "\n\n💡 _Зафиксирован сбой сетевого стрима. Рекомендуется сохранить контекст через /export и начать новую сессию ([🆕 New Session])._"
+	}
+	return ""
+}
+
 // getProjectsDir resolves the directory for project workspaces.
 func getProjectsDir() string {
 	if env := os.Getenv("PROJECTS_DIR"); env != "" {
@@ -1559,10 +1575,16 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					response += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 				}
 				activeMsgID := s.ActiveMessageID
+				convID := s.Conversation
+				hadStreamRecovery := s.StreamRetries > 0 || s.TurnFailovers > 0
 				s.mu.Unlock()
 
 				if response == "" {
 					response = "No response from agent."
+				} else {
+					if hint := getCompactionHint(convID, hadStreamRecovery); hint != "" {
+						response += hint
+					}
 				}
 				if s.BotAPI != nil {
 					if activeMsgID == 0 {

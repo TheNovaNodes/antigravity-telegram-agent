@@ -231,6 +231,18 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user
 		}
 	}
 
+	accountStr := "default"
+	if GlobalAccountPool != nil {
+		if acc := GlobalAccountPool.GetActiveAccountForChat(chatID, botName); acc != nil {
+			accountStr = acc.ID
+			if GlobalAccountPool.IsPinned(chatID, botName) {
+				accountStr += " 🔒"
+			}
+		} else {
+			accountStr = "auto"
+		}
+	}
+
 	voiceStatus := "🔇 Disabled"
 	if user.VoiceReply {
 		voiceStatus = "🎙 Enabled"
@@ -242,11 +254,12 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user
 
 📂 *CWD:* `+"`%s`"+`
 🧠 *Model:* `+"`%s`"+`
+👤 *Account:* `+"`%s`"+`
 🎙 *Voice Reply:* %s
 
 📋 *Session:* %s
 ⏱ *Uptime:* %s
-👣 *Steps:* %d`, botName, user.Workspace, user.Model, voiceStatus, sessionTitle, uptimeStr, stepsCount)
+👣 *Steps:* %d`, botName, user.Workspace, user.Model, accountStr, voiceStatus, sessionTitle, uptimeStr, stepsCount)
 
 	m := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -254,14 +267,15 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user
 			tgbotapi.NewInlineKeyboardButtonData("📊 Usage", "cmd:usage"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🧼 Clear", "cmd:clear"),
+			tgbotapi.NewInlineKeyboardButtonData("🆕 New Session", "cmd:clear"),
 			tgbotapi.NewInlineKeyboardButtonData("🔄 Sessions", "cmd:resume"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✏️ Rename", "cmd:rename"),
+			tgbotapi.NewInlineKeyboardButtonData("👥 Accounts", "cmd:accounts"),
 			tgbotapi.NewInlineKeyboardButtonData("📄 Export", "cmd:export"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Rename", "cmd:rename"),
 			tgbotapi.NewInlineKeyboardButtonData("🆘 Help", "cmd:help"),
 		),
 	)
@@ -861,7 +875,7 @@ func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName stri
 	updateUserSession(db, userID, "")
 
 	if bot != nil {
-		respText := "🧼 Context cleared! Session evicted to cold state. Next message will start a fresh dialogue."
+		respText := "🆕 *Fresh session initiated!* Previous session parked and evicted to cold storage. Send a message to begin your new dialogue."
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
@@ -1098,8 +1112,11 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 	} else if data == "cmd:model" {
 		handleModelCommand(bot, chatID)
 		return
-	} else if data == "cmd:clear" {
+	} else if data == "cmd:clear" || data == "cmd:new_session" {
 		handleClearCommand(bot, chatID, userID, botName, user, db)
+		return
+	} else if data == "cmd:accounts" {
+		handleAccountsCommand(bot, chatID, userID, "/accounts", botName, db)
 		return
 	} else if data == "cmd:usage" {
 		handleUsageCommand(bot, chatID, botName)
