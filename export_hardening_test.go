@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -197,5 +198,202 @@ func TestDownloadTelegramMedia_SessionExportAutoPrompt(t *testing.T) {
 	}
 	if strings.Contains(formatted2, "Previous session context loaded") {
 		t.Errorf("Auto-prompt should NOT override user-supplied caption, got: %s", formatted2)
+	}
+}
+
+func TestHandleExportCommand_WithArtifacts_PackagesZipAndEnrichesCaption(t *testing.T) {
+	tempDir := t.TempDir()
+	mockAgents := filepath.Join(tempDir, "agents")
+	mockBrain := filepath.Join(tempDir, "brain")
+	t.Setenv("AGENTS_DIR", mockAgents)
+	t.Setenv("BRAIN_DIR", mockBrain)
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	sessionID := "export-artifacts-7788"
+	sessionDir := filepath.Join(mockBrain, sessionID)
+	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		t.Fatalf("Failed to create test logs dir: %v", err)
+	}
+
+	// Set session title
+	_ = os.WriteFile(filepath.Join(sessionDir, ".title"), []byte("Architecture Refactoring"), 0644)
+
+	// Create valid transcript
+	transcriptJSONL := `{"step":1,"created_at":"2026-09-05T10:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>Refactor architecture</USER_REQUEST>"}
+{"step":2,"created_at":"2026-09-05T10:00:05Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Drafting ADR..."}
+`
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(transcriptJSONL), 0644)
+
+	// Create engineering artifacts in sessionDir
+	adrContent := "# Architecture Decision Record: Pure Go Engine\n\n## Status\nAccepted\n\n## Context\nMigrating to pure Go.\n"
+	chkContent := "# Deployment Checklist\n\n- [ ] Run test suite\n- [ ] Verify SAST\n"
+	_ = os.WriteFile(filepath.Join(sessionDir, "ADR_001_Pure_Go.md"), []byte(adrContent), 0644)
+	_ = os.WriteFile(filepath.Join(sessionDir, "CHECKLIST_Deploy.md"), []byte(chkContent), 0644)
+
+	user := User{
+		ID:        888,
+		Workspace: tempDir,
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	handleExportCommand(bot, 554433, 888, "HarvesterBot", user)
+
+	// 1. Verify transcript and zip bundle files generated on disk in scratch/exports
+	expectedMdFilename := fmt.Sprintf("session_Architecture_Refactoring_%s.md", safePrefix(sessionID, 8))
+	expectedZipFilename := fmt.Sprintf("artifacts_Architecture_Refactoring_%s.zip", safePrefix(sessionID, 8))
+
+	exportDir := filepath.Join(mockAgents, "HarvesterBot", "scratch", "exports")
+	mdPath := filepath.Join(exportDir, expectedMdFilename)
+	zipPath := filepath.Join(exportDir, expectedZipFilename)
+
+	if _, err := os.Stat(mdPath); err != nil {
+		t.Fatalf("Expected transcript markdown file at %s, got error: %v", mdPath, err)
+	}
+	if _, err := os.Stat(zipPath); err != nil {
+		t.Fatalf("Expected artifacts zip bundle file at %s, got error: %v", zipPath, err)
+	}
+
+	// 2. Verify ZIP archive structure and manifest
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to open artifacts zip bundle: %v", err)
+	}
+	defer zr.Close()
+
+	zipFileMap := make(map[string]*zip.File)
+	for _, f := range zr.File {
+		zipFileMap[f.Name] = f
+	}
+
+	if _, ok := zipFileMap["artifacts/manifest.json"]; !ok {
+		t.Errorf("manifest.json missing from ZIP bundle")
+	}
+	if _, ok := zipFileMap["artifacts/adr/ADR_001_Pure_Go.md"]; !ok {
+		t.Errorf("ADR_001_Pure_Go.md missing from ZIP bundle under artifacts/adr/")
+	}
+	if _, ok := zipFileMap["artifacts/checklists/CHECKLIST_Deploy.md"]; !ok {
+		t.Errorf("CHECKLIST_Deploy.md missing from ZIP bundle under artifacts/checklists/")
+	}
+
+	// 3. Verify sent Telegram requests (transcript caption enrichment and companion ZIP delivery)
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	foundEnrichedCaption := false
+	foundZipDocument := false
+
+	for _, body := range sentBodies {
+		if strings.Contains(body, "Extracted Artifacts:") && strings.Contains(body, "ADR") {
+			foundEnrichedCaption = true
+		}
+		if strings.Contains(body, expectedZipFilename) || strings.Contains(body, "Session Engineering Artifacts Bundle") {
+			foundZipDocument = true
+		}
+	}
+
+	if !foundEnrichedCaption {
+		t.Errorf("Expected enriched transcript caption with extracted artifacts breakdown in sent bodies")
+	}
+	if !foundZipDocument {
+		t.Errorf("Expected companion ZIP document to be sent to Telegram")
+	}
+}
+
+func TestHandleExportCommand_SafeParking_HeadlessExport(t *testing.T) {
+	tempDir := t.TempDir()
+	mockAgents := filepath.Join(tempDir, "agents")
+	mockBrain := filepath.Join(tempDir, "brain")
+	t.Setenv("AGENTS_DIR", mockAgents)
+	t.Setenv("BRAIN_DIR", mockBrain)
+
+	sessionID := "safe-parking-headless-99"
+	sessionDir := filepath.Join(mockBrain, sessionID)
+	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
+	_ = os.MkdirAll(logsDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(sessionDir, ".title"), []byte("Safe Park Session"), 0644)
+	transcriptJSONL := `{"step":1,"created_at":"2026-09-05T10:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>Execute work</USER_REQUEST>"}
+{"step":2,"created_at":"2026-09-05T10:00:05Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Working..."}
+`
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(transcriptJSONL), 0644)
+	_ = os.WriteFile(filepath.Join(sessionDir, "research_metrics.md"), []byte("# Research on Metrics\nAnalysis content."), 0644)
+
+	user := User{
+		ID:        1001,
+		Workspace: tempDir,
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	// In Safe Parking with nil bot and chatID 0, it must execute cleanly without panic
+	handleExportCommand(nil, 0, 1001, "HeadlessBot", user)
+
+	exportDir := filepath.Join(mockAgents, "HeadlessBot", "scratch", "exports")
+	expectedMdFilename := fmt.Sprintf("session_Safe_Park_Session_%s.md", safePrefix(sessionID, 8))
+	expectedZipFilename := fmt.Sprintf("artifacts_Safe_Park_Session_%s.zip", safePrefix(sessionID, 8))
+
+	if _, err := os.Stat(filepath.Join(exportDir, expectedMdFilename)); err != nil {
+		t.Errorf("Headless export failed to generate markdown transcript: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(exportDir, expectedZipFilename)); err != nil {
+		t.Errorf("Headless export failed to generate artifacts zip bundle: %v", err)
+	}
+}
+
+func TestHandleExportCommand_NoArtifacts_FallbackSingleTranscript(t *testing.T) {
+	tempDir := t.TempDir()
+	mockAgents := filepath.Join(tempDir, "agents")
+	mockBrain := filepath.Join(tempDir, "brain")
+	t.Setenv("AGENTS_DIR", mockAgents)
+	t.Setenv("BRAIN_DIR", mockBrain)
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	sessionID := "empty-artifacts-55"
+	sessionDir := filepath.Join(mockBrain, sessionID)
+	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
+	_ = os.MkdirAll(logsDir, 0755)
+
+	transcriptJSONL := `{"step":1,"created_at":"2026-09-05T10:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>No files created</USER_REQUEST>"}
+{"step":2,"created_at":"2026-09-05T10:00:05Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Done."}
+`
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(transcriptJSONL), 0644)
+
+	user := User{
+		ID:        555,
+		Workspace: tempDir,
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	handleExportCommand(bot, 998877, 555, "CleanBot", user)
+
+	exportDir := filepath.Join(mockAgents, "CleanBot", "scratch", "exports")
+	expectedMdFilename := fmt.Sprintf("session_%s.md", safePrefix(sessionID, 8))
+	expectedZipFilename := fmt.Sprintf("artifacts_%s.zip", safePrefix(sessionID, 8))
+
+	if _, err := os.Stat(filepath.Join(exportDir, expectedMdFilename)); err != nil {
+		t.Errorf("Transcript markdown missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(exportDir, expectedZipFilename)); err == nil {
+		t.Errorf("Did not expect artifacts ZIP to exist when no artifacts were created")
+	}
+
+	ms.mu.Lock()
+	sentBodies := append([]string{}, ms.sentBodies...)
+	ms.mu.Unlock()
+
+	for _, body := range sentBodies {
+		if strings.Contains(body, "Extracted Artifacts:") {
+			t.Errorf("Caption unexpectedly mentioned Extracted Artifacts when count was 0")
+		}
 	}
 }

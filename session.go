@@ -1434,9 +1434,9 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						}
 
 						if !rotated {
-							// Tier 2 Escalation: Emergency Safe Parking (#204, #236)
-							// Trigger transcript export ONLY when all accounts in pool are in cooldown or rotation failed!
-							if botAPI != nil && chatID != 0 && isValidSessionID(convID) {
+							// Tier 2 Escalation: Emergency Safe Parking (#204, #236, #247)
+							// Trigger transcript & artifacts export ONLY when all accounts in pool are in cooldown or rotation failed!
+							if isValidSessionID(convID) {
 								user := User{
 									ID:        uID,
 									SessionID: convID,
