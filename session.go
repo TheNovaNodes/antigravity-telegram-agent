@@ -973,7 +973,8 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			isText = true
 		default:
 			// Fallback: inspect buffer for null bytes to detect text files
-			f, err := os.Open(realPath)
+			// #nosec G304 -- path verified by ExtractAllowedArtifacts
+			f, err := os.Open(filepath.Clean(realPath))
 			if err == nil {
 				buf := make([]byte, 512)
 				n, _ := f.Read(buf)
