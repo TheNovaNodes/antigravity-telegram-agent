@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Stream Recovery Infinite Loop & Process Race Prevention**:
+  - Enforced `maxTurnFailovers = 1` and `maxTurnStreamRetries = 2` to prevent cascading infinite account rotations and account pool thrashing during upstream Google Cloud stream interruptions.
+  - Retained `StreamRetries` across failover rotations rather than resetting to 0, bounding the total recovery budget per user turn.
+  - Introduced `cmdEpoch` generation counter in `AgySession` and `cmdWait`, ensuring that superseded subprocesses cannot corrupt active session buffers or send spurious restart notices to Telegram during recovery handoffs.
+
 ### Added
 - **FinOps CI/CD Optimization (Issue #251)**:
   - Added workflow `concurrency` cancellation (`cancel-in-progress: true`) to `.github/workflows/ci.yml`.
