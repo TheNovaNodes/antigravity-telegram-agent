@@ -27,7 +27,7 @@ flowchart TD
         Subproc -->|Stdout JSONL Stream| StdoutLoop[readStdoutLoop]
         StdoutLoop -->|Throttled Batching 1200ms| Throttler[Stream Throttler (1200ms)]
         Throttler -->|HTML Chunks / EditMessage| TG
-        Session -->|5m Turn Inactivity Deadline| Watchdog[Turn Watchdog & Buffer Salvager]
+        Session -->|15m Inactivity / 45m Hard Deadline| Watchdog[Turn Watchdog & Buffer Salvager]
         Watchdog -->|Timeout Stall / SIGKILL -pgid| Session
         Watchdog -->|Salvaged Buffer & Artifacts| TG
         StopHandler -->|Interrupt Turn / SIGKILL -pgid| Session
@@ -276,4 +276,32 @@ The engine implements a strict, fail-closed secrets handling architecture:
 2. **Fail-Closed Permissions**: The engine verifies that the environment file has strict `0600` permissions. If permissions cannot be restricted, the engine terminates immediately (`log.Fatalf`).
 3. **Explicit Dev Mode Gate**: Fallback to local `.env` files is only permitted when `ALLOW_DOTENV=1` is explicitly set in the execution environment.
 4. **Tooling Verification**: Run `make env-check` to assert that no exposed `.env` files exist in the repository tree before staging or deployments. Detailed provisioning recipes are documented in [`docs/SECRETS.md`](SECRETS.md).
+
+---
+
+## 9. Multi-Account Quota Pool Architecture
+
+To eliminate upstream rate limit deadlocks across Google Antigravity tiers, the engine integrates a production-grade multi-account supervisor ([`account_pool.go`](../account_pool.go), [`account_handlers.go`](../account_handlers.go)):
+
+```mermaid
+flowchart TD
+    Req[Incoming User Prompt] --> Session[AgySession]
+    Session --> Acquire[GlobalAccountPool.AcquireAccount]
+    Acquire --> Check{Active Account Healthy?}
+    Check -->|Quota > 5% & Active| Execute[Launch Subprocess under Account HOME]
+    Check -->|Cooldown / Quota < 5%| Rotate[Auto-Failover to Next Healthy Account]
+    Rotate --> SafePark[Safe Parking & Session Context Retention]
+    Rotate --> Execute
+    Execute --> Probe[Periodic Background Quota Probe]
+    Probe --> AutoRecover{Recovered > 5%?}
+    AutoRecover -->|Yes| Unban[Clear CooldownUntil & Restore StateActive]
+    AutoRecover -->|No| Backoff[Sane Dynamic Backoff 1m..30m]
+```
+
+### Key Capabilities:
+1. **Dynamic Account Auto-Discovery**: Automatically traverses `/etc/antigravity-bot/accounts/*/` resolving canonical homes and symlinked accounts (`acc-1`, `acc-2`, etc.).
+2. **Dynamic Quota Monitoring (`FetchAccountQuotas`)**: Periodically probes `agy --print /usage` per account, tracking token limits, remaining quotas, and tier utilization.
+3. **Stream Interruption & 429 Failover**: When mid-turn SSE sockets drop and retries are exhausted or rate limits occur, the pool dynamically migrates the session to the next available healthy account without losing conversational state.
+4. **Auto-Recovery & Sane Cooldowns**: Eliminates multi-hour lock traps by validating quota health (`> 5%`) on background probes, auto-clearing `StateCooldown` and restoring `StateActive`.
+5. **Shared Build & Module Caches**: Deduplicates Go build cache, Go module cache (`GOPATH/pkg/mod`), npm, and pip caches across account homes via dynamic symlinking to prevent disk exhaustion.
 

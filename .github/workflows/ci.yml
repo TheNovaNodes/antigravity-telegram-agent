@@ -1,10 +1,26 @@
 name: CI
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [ "master" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   pull_request:
     branches: [ "master" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
 
 jobs:
   build:
@@ -44,7 +60,17 @@ jobs:
     - name: Run Linter (go vet)
       run: make lint
 
+    - name: Cache SAST & Linter Binaries
+      id: cache-sast
+      uses: actions/cache@v4
+      with:
+        path: ~/go/bin
+        key: ${{ runner.os }}-go-sast-tools-${{ hashFiles('go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-sast-tools-
+
     - name: Install Static Analysis & SAST Tools
+      if: steps.cache-sast.outputs.cache-hit != 'true'
       run: |
         go install honnef.co/go/tools/cmd/staticcheck@latest
         go install github.com/securego/gosec/v2/cmd/gosec@latest
