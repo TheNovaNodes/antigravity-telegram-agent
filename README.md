@@ -81,6 +81,33 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 
 ---
 
+## 🌾 Harvester Subsystem (`agy-harvester`)
+
+The repository includes a standalone CLI tool `agy-harvester` to parse, classify, sanitize, and bundle conversational output and workspace artifacts from headless environments.
+
+**Build it manually:**
+```bash
+make build-harvester
+```
+
+**Available Commands:**
+*   `scan`: Passively monitors and parses `transcript.jsonl` streams in real-time.
+    ```bash
+    ./bin/agy-harvester scan --dir /root/.agents/mybot
+    ```
+*   `extract`: Packages the latest session data, runs the document taxonomy classifier, redacts secrets via the secret shield, and bundles the result into a ZIP archive with a `manifest.json`.
+    ```bash
+    ./bin/agy-harvester extract --session my_session_id --out ./exports
+    ```
+*   `doctor`: Validates Harvester's configuration, tests Prometheus metrics connectivity, and performs system health checks.
+    ```bash
+    ./bin/agy-harvester doctor
+    ```
+
+For detailed operational procedures, refer to [docs/HARVESTER_RUNBOOK.md](docs/HARVESTER_RUNBOOK.md).
+
+---
+
 ## 🛡️ Autonomous Resilience & Fault-Tolerance
 
 The engine features an enterprise-grade resilience suite engineered for 24/7 headless production:

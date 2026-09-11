@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -964,8 +965,24 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		}
 
 		ext := strings.ToLower(filepath.Ext(realPath))
-		isText := ext == ".md" || ext == ".txt" || ext == ".json" || ext == ".yaml" || ext == ".yml" ||
-			ext == ".csv" || ext == ".sh" || ext == ".py" || ext == ".go" || ext == ".env"
+		isText := false
+		switch ext {
+		case ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sh", ".py", ".go", ".env",
+			".toml", ".sql", ".ini", ".conf", ".xml", ".js", ".ts", ".jsx", ".tsx", ".rs",
+			".rb", ".cfg", ".properties", ".proto", ".graphql":
+			isText = true
+		default:
+			// Fallback: inspect buffer for null bytes to detect text files
+			f, err := os.Open(realPath)
+			if err == nil {
+				buf := make([]byte, 512)
+				n, _ := f.Read(buf)
+				f.Close()
+				if n > 0 && bytes.IndexByte(buf[:n], 0) == -1 {
+					isText = true
+				}
+			}
+		}
 
 		var reader io.Reader
 		var closer io.Closer

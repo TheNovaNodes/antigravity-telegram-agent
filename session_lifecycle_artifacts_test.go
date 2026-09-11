@@ -278,3 +278,89 @@ func TestStreamingThrottler_EmptySuppression(t *testing.T) {
 		t.Errorf("Expected 0 Telegram edits/messages when TextBuffer is empty, got %d: %v", len(messageCalls), messageCalls)
 	}
 }
+
+func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	tempDir := t.TempDir()
+	agentsDir := filepath.Join(tempDir, "agents")
+	os.MkdirAll(agentsDir, 0755)
+	t.Setenv("AGENTS_DIR", agentsDir)
+
+	// Create a .toml file with a secret
+	tomlFile := filepath.Join(agentsDir, "config.toml")
+	tomlContent := `api_key = "sk-ant-12345678901234567890"`
+	os.WriteFile(tomlFile, []byte(tomlContent), 0644)
+
+	// Create a .sql file with a secret
+	sqlFile := filepath.Join(agentsDir, "dump.sql")
+	sqlContent := `INSERT INTO tokens VALUES ('ghp_123456789012345678901234567890123456');`
+	os.WriteFile(sqlFile, []byte(sqlContent), 0644)
+
+	// Create an unknown extension file that is text with a secret
+	unknownFile := filepath.Join(agentsDir, "unknown.data")
+	unknownContent := `Bearer 123456789012345678901234567890123456`
+	os.WriteFile(unknownFile, []byte(unknownContent), 0644)
+	
+	// Create a binary file (contains null byte)
+	binFile := filepath.Join(agentsDir, "data.bin")
+	binContent := []byte{0x00, 0x01, 0x02, 'B', 'e', 'a', 'r', 'e', 'r', ' ', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '1', '2', '3', '4', '5', '6'}
+	os.WriteFile(binFile, binContent, 0644)
+
+	text := fmt.Sprintf("Artifacts:\n- (file://%s)\n- (file://%s)\n- (file://%s)\n- (file://%s)\n", tomlFile, sqlFile, unknownFile, binFile)
+	
+	sendArtifacts(bot, 12345, text)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	// 4 files sent
+	if len(ms.sentBodies) < 4 {
+		t.Fatalf("Expected 4 files to be sent, got %d", len(ms.sentBodies))
+	}
+
+	foundToml := false
+	foundSql := false
+	foundUnknown := false
+	foundBin := false
+
+	for _, body := range ms.sentBodies {
+		if strings.Contains(body, "config.toml") {
+			foundToml = true
+			if strings.Contains(body, "sk-ant-12345678901234567890") {
+				t.Errorf("toml file secret was not sanitized: %s", body)
+			}
+			if !strings.Contains(body, "[REDACTED_SECRET:ANTHROPIC_KEY]") {
+				t.Errorf("toml file secret missing redacted string: %s", body)
+			}
+		} else if strings.Contains(body, "dump.sql") {
+			foundSql = true
+			if strings.Contains(body, "ghp_123456789012345678901234567890123456") {
+				t.Errorf("sql file secret was not sanitized: %s", body)
+			}
+			if !strings.Contains(body, "[REDACTED_SECRET:GITHUB_PAT]") {
+				t.Errorf("sql file secret missing redacted string: %s", body)
+			}
+		} else if strings.Contains(body, "unknown.data") {
+			foundUnknown = true
+			if strings.Contains(body, "Bearer 123456789012345678901234567890123456") {
+				t.Errorf("unknown file secret was not sanitized: %s", body)
+			}
+			if !strings.Contains(body, "[REDACTED_SECRET:BEARER_TOKEN]") {
+				t.Errorf("unknown file secret missing redacted string: %s", body)
+			}
+		} else if strings.Contains(body, "data.bin") {
+			foundBin = true
+			if strings.Contains(body, "[REDACTED_SECRET:BEARER_TOKEN]") {
+				t.Errorf("binary file content was tampered with, should be sent as raw binary: %s", body)
+			}
+		}
+	}
+
+	if !foundToml { t.Errorf("Did not find toml file payload") }
+	if !foundSql { t.Errorf("Did not find sql file payload") }
+	if !foundUnknown { t.Errorf("Did not find unknown file payload") }
+	if !foundBin { t.Errorf("Did not find bin file payload") }
+}

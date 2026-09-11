@@ -26,8 +26,8 @@ else
     chmod 0600 "${PROD_ENV_FILE}"
 fi
 
-echo "🔨 Building antigravity-bot-engine..."
-make build
+echo "🔨 Building antigravity-bot-engine and agy-harvester..."
+make all
 
 SERVICE_FILE="/etc/systemd/system/antigravity-bot-engine.service"
 

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Harvester Subsystem & CLI (`agy-harvester`) (Issues #244, #245, #246, #247, #248, #258, #259, #260)**:
+  - **`pkg/harvester`**: Added core streaming transcript parser, document taxonomy classifier, secret shield sanitizer, and ZIP bundler with `manifest.json`.
+  - **`cmd/agy-harvester`**: Added standalone CLI for headless environment harvesting with `scan`, `extract`, and `doctor` commands.
+  - **Telemetry**: Integrated Prometheus exporter metrics for Harvester batch operations.
+  - **Documentation**: Added operational runbook at `docs/HARVESTER_RUNBOOK.md`.
 - **Dashboard & Session UX Enhancements**:
   - Added active account indicator (`👤 Account: <id>`) to the `/start` terminal card with sticky lock indicator (`🔒`) when pinned.
   - Replaced ambiguous `[🧼 Clear]` button with `[🆕 New Session]` in the `/start` inline keyboard and updated eviction notice UX.
