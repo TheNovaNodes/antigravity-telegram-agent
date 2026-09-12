@@ -289,6 +289,7 @@ func TestHandleMessagePayload_VoiceReplyChatAction(t *testing.T) {
 }
 
 func TestDispatchUpdate_ConcurrentSafety(t *testing.T) {
+	t.Setenv("AGY_BINARY", "cat")
 	db := setupTestDB(t)
 	defer db.Close()
 
@@ -316,7 +317,7 @@ func TestDispatchUpdate_ConcurrentSafety(t *testing.T) {
 					MessageID: idx + 100,
 					Chat:      &tgbotapi.Chat{ID: chatID},
 					From:      &tgbotapi.User{ID: 12345},
-					Text:      fmt.Sprintf("/status %d", idx),
+					Text:      "/help",
 				},
 			}
 			dispatchUpdate(bot, update, db)
