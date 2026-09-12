@@ -857,7 +857,68 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 	}
 }
 
-// handleClearCommand evicts the active session into cold state and resets conversation context.
+// getEcosystemInboxDir returns the configured or default sanitary inbox directory for exhumed artifacts.
+func getEcosystemInboxDir() string {
+	if env := os.Getenv("ECOSYSTEM_INBOX_DIR"); env != "" {
+		return env
+	}
+	return "/root/projects/TheNovaNodes/ecosystem-docs/inbox"
+}
+
+// performSessionExhumation executes the post-mortem exhumation hook:
+// filters artifacts with 4 sieves, sanitizes tokens, moves files to inbox/,
+// and delivers documents directly to Telegram (No-ZIP UX).
+func performSessionExhumation(bot *tgbotapi.BotAPI, chatID int64, sessionID, botName string) int {
+	inboxDir := getEcosystemInboxDir()
+	report, err := harvester.ExhumeSession(sessionID, botName, inboxDir, harvester.DefaultMinMaturityBytes)
+	if err != nil {
+		log.Printf("[Exhumation] Session %s exhumation error: %v", sessionID, err)
+		return 0
+	}
+	if report == nil || len(report.Artifacts) == 0 {
+		return 0
+	}
+
+	if bot != nil && chatID != 0 {
+		for _, art := range report.Artifacts {
+			docName := filepath.Base(art.Path)
+			if !strings.HasSuffix(strings.ToLower(docName), ".md") {
+				docName += ".md"
+			}
+
+			emoji := "📦"
+			switch art.Kind {
+			case harvester.KindADR, harvester.KindRFC, harvester.KindDoc:
+				emoji = "📄"
+			case harvester.KindResearch:
+				emoji = "🔬"
+			case harvester.KindChecklist, harvester.KindSpec:
+				emoji = "📋"
+			}
+
+			caption := fmt.Sprintf("%s *Артефакт сессии:* %s", emoji, art.Title)
+			if art.RedactedCount > 0 {
+				caption += fmt.Sprintf("\n🛡️ _Redacted %d secret(s)_", art.RedactedCount)
+			}
+
+			doc := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
+				Name:   docName,
+				Reader: strings.NewReader(art.Content),
+			})
+			doc.Caption = caption
+			doc.ParseMode = "Markdown"
+			if _, sendErr := bot.Send(doc); sendErr != nil {
+				log.Printf("[Exhumation] Failed to send artifact document %s to chat %d: %v", docName, chatID, sendErr)
+			} else {
+				log.Printf("[Exhumation] Successfully delivered artifact %s to chat %d", docName, chatID)
+			}
+		}
+	}
+
+	return len(report.Artifacts)
+}
+
+// handleClearCommand evicts the active session into cold state, exhumes artifacts to inbox, and resets conversation context.
 func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User, db *sql.DB) {
 	sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, userID)
 
@@ -872,10 +933,25 @@ func handleClearCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName stri
 		session.Kill()
 	}
 
+	targetSessionID := user.SessionID
+	if targetSessionID == "" && session != nil {
+		targetSessionID = session.Conversation
+	}
+
+	var exhumedCount int
+	if isValidSessionID(targetSessionID) {
+		exhumedCount = performSessionExhumation(bot, chatID, targetSessionID, botName)
+	}
+
 	updateUserSession(db, userID, "")
 
 	if bot != nil {
-		respText := "🆕 *Fresh session initiated!* Previous session parked and evicted to cold storage. Send a message to begin your new dialogue."
+		var respText string
+		if exhumedCount > 0 {
+			respText = fmt.Sprintf("🆕 *Fresh session initiated!*\n📦 Exhumed and alienated *%d* artifact(s) to `inbox/`.\nPrevious session parked and evicted to cold storage. Send a message to begin your new dialogue.", exhumedCount)
+		} else {
+			respText = "🆕 *Fresh session initiated!* Previous session parked and evicted to cold storage. Send a message to begin your new dialogue."
+		}
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
