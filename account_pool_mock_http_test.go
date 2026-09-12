@@ -75,7 +75,7 @@ func TestAccountPool_FetchEmailForToken_Scenarios(t *testing.T) {
 		}, nil
 	})
 
-	email, err = pool.FetchEmailForToken("token-expired")
+	_, err = pool.FetchEmailForToken("token-expired")
 	if err == nil {
 		t.Fatalf("expected error for 401 Unauthorized, got nil")
 	}
@@ -89,7 +89,7 @@ func TestAccountPool_FetchEmailForToken_Scenarios(t *testing.T) {
 		}, nil
 	})
 
-	email, err = pool.FetchEmailForToken("token-ratelimited")
+	_, err = pool.FetchEmailForToken("token-ratelimited")
 	if err == nil {
 		t.Fatalf("expected error for 429 Too Many Requests, got nil")
 	}
@@ -103,7 +103,7 @@ func TestAccountPool_FetchEmailForToken_Scenarios(t *testing.T) {
 		}, nil
 	})
 
-	email, err = pool.FetchEmailForToken("token-google-500")
+	_, err = pool.FetchEmailForToken("token-google-500")
 	if err == nil {
 		t.Fatalf("expected error for 500 Internal Server Error, got nil")
 	}
@@ -117,7 +117,7 @@ func TestAccountPool_FetchEmailForToken_Scenarios(t *testing.T) {
 		}, nil
 	})
 
-	email, err = pool.FetchEmailForToken("token-malformed-json")
+	_, err = pool.FetchEmailForToken("token-malformed-json")
 	if err == nil {
 		t.Fatalf("expected error for malformed JSON, got nil")
 	}
@@ -127,7 +127,7 @@ func TestAccountPool_FetchEmailForToken_Scenarios(t *testing.T) {
 		return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: errors.New("connection reset by peer")}
 	})
 
-	email, err = pool.FetchEmailForToken("token-network-drop")
+	_, err = pool.FetchEmailForToken("token-network-drop")
 	if err == nil {
 		t.Fatalf("expected error for network failure, got nil")
 	}

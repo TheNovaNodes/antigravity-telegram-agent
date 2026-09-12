@@ -59,14 +59,6 @@ func (h *httptestServerHelper) getLastSentText() string {
 	return vals.Get("text")
 }
 
-func (h *httptestServerHelper) getAllSentBodies() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	copied := make([]string, len(*h.sent))
-	copy(copied, *h.sent)
-	return copied
-}
-
 func TestHandleAccountsCommand_NilPool(t *testing.T) {
 	db, bot, helper := setupTestDBAndBot(t)
 	defer helper.Close()
