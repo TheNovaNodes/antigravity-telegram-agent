@@ -30,7 +30,7 @@ func TestParseTranscriptStream_Reconstruction(t *testing.T) {
 			{
 				Name: "write_to_file",
 				Arguments: map[string]interface{}{
-					"TargetFile":  "/root/ADR_001.md",
+					"TargetFile":  "/home/user/ADR_001.md",
 					"CodeContent": "# ADR 001\nStatus: PROPOSED\nContext: initial",
 				},
 			},
@@ -48,7 +48,7 @@ func TestParseTranscriptStream_Reconstruction(t *testing.T) {
 			{
 				Name: "replace_file_content",
 				Arguments: map[string]interface{}{
-					"TargetFile":         "/root/ADR_001.md",
+					"TargetFile":         "/home/user/ADR_001.md",
 					"TargetContent":      "Status: PROPOSED",
 					"ReplacementContent": "Status: ACCEPTED",
 				},
@@ -67,7 +67,7 @@ func TestParseTranscriptStream_Reconstruction(t *testing.T) {
 			{
 				Name: "write_to_file",
 				Arguments: map[string]interface{}{
-					"TargetFile":  "/root/main.go",
+					"TargetFile":  "/home/user/main.go",
 					"CodeContent": "package main",
 				},
 			},
@@ -85,7 +85,7 @@ func TestParseTranscriptStream_Reconstruction(t *testing.T) {
 		t.Fatalf("expected exactly 1 reconstructed markdown doc, got %d", len(docs))
 	}
 
-	content := docs["/root/ADR_001.md"]
+	content := docs["/home/user/ADR_001.md"]
 	if !strings.Contains(content, "Status: ACCEPTED") {
 		t.Fatalf("expected modified content with 'Status: ACCEPTED', got: %s", content)
 	}
@@ -106,7 +106,7 @@ func TestParseTranscriptStream_Benchmark1000Steps(t *testing.T) {
 				{
 					Name: "write_to_file",
 					Arguments: map[string]interface{}{
-						"TargetFile":  fmt.Sprintf("/root/doc_%d.md", i),
+						"TargetFile":  fmt.Sprintf("/home/user/doc_%d.md", i),
 						"CodeContent": fmt.Sprintf("# Auto-generated Report %d\nDetails here...", i),
 					},
 				},

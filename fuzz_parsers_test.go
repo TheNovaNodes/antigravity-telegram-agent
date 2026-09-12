@@ -50,7 +50,7 @@ func FuzzMarkdownToTelegramHTML(f *testing.F) {
 
 // FuzzCleanTextForTTS fuzzes the speech synthesis text preprocessing pipeline.
 func FuzzCleanTextForTTS(f *testing.F) {
-	f.Add("Hello **user**! Here is a command: `/workspace /root/projects`.")
+	f.Add("Hello **user**! Here is a command: `/workspace ~/projects`.")
 	f.Add("Check [NovaNodes](https://thenovanodes.com) or contact @admin.")
 	f.Add("```bash\nrm -rf /tmp/cache\n```\nDone with cleanup.")
 	f.Add("Emojis: 🎭 🤖 💬 ⚡ 🚀 📦 and symbols: *** --- ___")

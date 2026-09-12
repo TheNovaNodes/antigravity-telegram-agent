@@ -60,14 +60,14 @@ func TestSanitizeContent_RedTeamTokens(t *testing.T) {
 }
 
 func TestSanitizeContent_HostPathRelinker(t *testing.T) {
-	input := "See artifact at /etc/antigravity-bot/accounts/acc-1/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/report.md and fallback /root/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/summary.md"
+	input := "See artifact at /etc/antigravity-bot/accounts/acc-1/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/report.md and fallback /home/user/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/summary.md and macos /Users/alex/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/notes.md"
 	sanitized, _ := SanitizeContent(input)
 
-	if strings.Contains(sanitized, "/etc/antigravity-bot") || strings.Contains(sanitized, "/root/.gemini") {
+	if strings.Contains(sanitized, "/etc/antigravity-bot") || strings.Contains(sanitized, "/home/user/.gemini") || strings.Contains(sanitized, "/Users/alex/.gemini") {
 		t.Fatalf("host paths were not relinked: %s", sanitized)
 	}
 
-	if !strings.Contains(sanitized, "./artifacts/report.md") || !strings.Contains(sanitized, "./artifacts/summary.md") {
+	if !strings.Contains(sanitized, "./artifacts/report.md") || !strings.Contains(sanitized, "./artifacts/summary.md") || !strings.Contains(sanitized, "./artifacts/notes.md") {
 		t.Fatalf("expected relative artifacts link, got: %s", sanitized)
 	}
 }
