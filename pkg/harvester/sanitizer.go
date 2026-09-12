@@ -54,6 +54,16 @@ var secretRules = []secretRule{
 		Regex:   regexp.MustCompile(`\bsk_[a-zA-Z0-9_]{20,}\b`),
 		Replace: "[REDACTED_SECRET:API_KEY]",
 	},
+	{
+		Name:    "GOOGLE_API_KEY",
+		Regex:   regexp.MustCompile(`\bAIza[0-9A-Za-z-_]{30,40}\b`),
+		Replace: "[REDACTED_SECRET:GOOGLE_API_KEY]",
+	},
+	{
+		Name:    "JWT_TOKEN",
+		Regex:   regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
+		Replace: "[REDACTED_SECRET:JWT_TOKEN]",
+	},
 }
 
 var hostPathRegex = regexp.MustCompile(`(?:/etc/antigravity-bot/accounts/[^/]+/\.gemini/antigravity-cli/brain/[0-9a-fA-F-]+/|/root/\.gemini/antigravity-cli/brain/[0-9a-fA-F-]+/)`)

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Session Artifacts Post-Mortem Exhumation Hook (Issue #269)**:
+  - Implemented automatic exhumation hook on `[🆕 New Session]` and `/clear` in accordance with the Session Artifacts Manifesto (`SESSION_ARTIFACTS_MANIFESTO.md`).
+  - Added 4-sieve anti-garbage filtering in `pkg/harvester/exhumation.go` (strict `.md`, maturity threshold `>= 200B`, ignore `scratch/`, ignore service masks `*.tmp`, `*.bak`, `*.orig`, `draft_*`, `test_*`, and require `UserFacing == true`).
+  - Added No-ZIP Telegram delivery: directly delivers exhumed Markdown documents with emoji classification and clean captions.
+  - Implemented artifact alienation (`Move, not Copy`): moves documents to `ecosystem-docs/inbox/<YYYY-MM-DD>_<bot_name>_<slug>.md` and cleans up sidecar `.metadata.json` so no orphaned files remain in session storage (`agy-harvester doctor` clean).
+  - Extended Secret Shield to redact Google API keys (`AIza...`) and JWT tokens.
 - **Harvester Subsystem & CLI (`agy-harvester`) (Issues #244, #245, #246, #247, #248, #258, #259, #260)**:
   - **`pkg/harvester`**: Added core streaming transcript parser, document taxonomy classifier, secret shield sanitizer, and ZIP bundler with `manifest.json`.
   - **`cmd/agy-harvester`**: Added standalone CLI for headless environment harvesting with `scan`, `extract`, and `doctor` commands.

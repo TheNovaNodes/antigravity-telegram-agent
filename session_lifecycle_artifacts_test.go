@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -370,5 +372,340 @@ func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
 	}
 	if !foundBin {
 		t.Errorf("Did not find bin file payload")
+	}
+}
+
+func TestHandleClearCommand_PostMortemExhumation_DirectTelegramDeliveryAndAlienation(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	tmpDir := t.TempDir()
+	brainDir := filepath.Join(tmpDir, "brain")
+	inboxDir := filepath.Join(tmpDir, "inbox")
+	sessionID := "sess-exhume-live-101"
+	sessionPath := filepath.Join(brainDir, sessionID)
+
+	if err := os.MkdirAll(sessionPath, 0755); err != nil {
+		t.Fatalf("failed to create session dir: %v", err)
+	}
+
+	t.Setenv("BRAIN_DIR", brainDir)
+	t.Setenv("ECOSYSTEM_INBOX_DIR", inboxDir)
+
+	// Create mature RFC artifact (>200 bytes) with a secret token
+	rfcPath := filepath.Join(sessionPath, "RFC_001_swarm_protocol.md")
+	rfcContent := `# Request For Comments: Swarm Multi-Agent Protocol
+
+## Motivation
+Autonomous agents need reliable, zero-copy communication protocols.
+Any sensitive keys like AIzaSyDummySecretGoogleAPIKey123456789 must be scrubbed before delivery.
+
+## Proposal
+Define canonical state machine events for agent collaboration and artifact exhumation.`
+	if err := os.WriteFile(rfcPath, []byte(rfcContent), 0644); err != nil {
+		t.Fatalf("failed to write RFC: %v", err)
+	}
+
+	// Sidecar metadata
+	meta := struct {
+		Summary    string
+		UserFacing bool
+	}{
+		Summary:    "RFC for Swarm protocol.",
+		UserFacing: true,
+	}
+	metaBytes, _ := json.Marshal(meta)
+	if err := os.WriteFile(rfcPath+".metadata.json", metaBytes, 0644); err != nil {
+		t.Fatalf("failed to write sidecar metadata: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE users (user_id INTEGER PRIMARY KEY, workspace TEXT, model TEXT, first_start INTEGER, session_id TEXT, voice_reply INTEGER);`); err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (user_id, workspace, model, first_start, session_id, voice_reply) VALUES (3001, '/root', 'gemini-3.8-flash-high', 0, 'sess-exhume-live-101', 0);`); err != nil {
+		t.Fatalf("failed to insert user: %v", err)
+	}
+
+	user := User{
+		ID:        3001,
+		Workspace: "/root",
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	chatID := int64(888777)
+	botName := "TricksterBot"
+
+	// Call handleClearCommand
+	handleClearCommand(bot, chatID, 3001, botName, user, db)
+
+	// 1. Verify user session in DB is reset to empty
+	var updatedSessionID string
+	if err := db.QueryRow("SELECT session_id FROM users WHERE user_id = 3001").Scan(&updatedSessionID); err != nil {
+		t.Fatalf("failed to query updated session_id: %v", err)
+	}
+	if updatedSessionID != "" {
+		t.Errorf("expected session_id in DB to be empty after clear, got %q", updatedSessionID)
+	}
+
+	// 2. Verify source artifact was moved out of brainDir (Move, not Copy)
+	if _, err := os.Stat(rfcPath); !os.IsNotExist(err) {
+		t.Errorf("expected source artifact %s to be removed from sessionDir, but it still exists", rfcPath)
+	}
+	if _, err := os.Stat(rfcPath + ".metadata.json"); !os.IsNotExist(err) {
+		t.Errorf("expected sidecar metadata %s to be removed from sessionDir, but it still exists", rfcPath+".metadata.json")
+	}
+
+	// 3. Verify destination file exists in inboxDir
+	inboxEntries, err := os.ReadDir(inboxDir)
+	if err != nil || len(inboxEntries) != 1 {
+		t.Fatalf("expected 1 file in inboxDir, got %d (err: %v)", len(inboxEntries), err)
+	}
+
+	inboxFile := filepath.Join(inboxDir, inboxEntries[0].Name())
+	inboxContent, err := os.ReadFile(inboxFile)
+	if err != nil {
+		t.Fatalf("failed to read inbox file: %v", err)
+	}
+
+	// 4. Verify Secret Shield: secret was scrubbed in inbox file
+	if strings.Contains(string(inboxContent), "AIzaSyDummySecretGoogleAPIKey123456789") {
+		t.Errorf("secret token leaked into inbox file!")
+	}
+	if !strings.Contains(string(inboxContent), "[REDACTED_SECRET:GOOGLE_API_KEY]") {
+		t.Errorf("missing redacted marker in inbox file!")
+	}
+
+	// 5. Verify Telegram messages sent: document delivery and clear confirmation
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	foundDoc := false
+	foundNotice := false
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(body, "RFC_001_swarm_protocol.md") || strings.Contains(unescaped, "RFC_001_swarm_protocol.md") {
+			foundDoc = true
+			if !strings.Contains(unescaped, "Артефакт сессии") && !strings.Contains(body, "Артефакт сессии") {
+				t.Errorf("document caption missing 'Артефакт сессии', got: %s", unescaped)
+			}
+			if strings.Contains(body, "AIzaSyDummySecretGoogleAPIKey123456789") || strings.Contains(unescaped, "AIzaSyDummySecretGoogleAPIKey123456789") {
+				t.Errorf("secret token leaked into Telegram document delivery!")
+			}
+		}
+		if strings.Contains(unescaped, "Exhumed and alienated *1* artifact(s)") || strings.Contains(body, "Exhumed and alienated *1* artifact(s)") {
+			foundNotice = true
+		}
+	}
+
+	if !foundDoc {
+		t.Errorf("expected direct Telegram document delivery for exhumed artifact")
+	}
+	if !foundNotice {
+		t.Errorf("expected eviction notification mentioning exhumed artifact count")
+	}
+}
+
+func TestHandleClearCommand_AntiGarbageSieves(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	tmpDir := t.TempDir()
+	brainDir := filepath.Join(tmpDir, "brain")
+	inboxDir := filepath.Join(tmpDir, "inbox")
+	sessionID := "sess-trash-202"
+	sessionPath := filepath.Join(brainDir, sessionID)
+	scratchDir := filepath.Join(sessionPath, "scratch")
+
+	if err := os.MkdirAll(scratchDir, 0755); err != nil {
+		t.Fatalf("failed to create scratch dir: %v", err)
+	}
+
+	t.Setenv("BRAIN_DIR", brainDir)
+	t.Setenv("ECOSYSTEM_INBOX_DIR", inboxDir)
+
+	// Sieve 1: Non-markdown file
+	os.WriteFile(filepath.Join(sessionPath, "worker.py"), []byte(strings.Repeat("print('hello')\n", 30)), 0644)
+
+	// Sieve 2: Inside scratch/
+	os.WriteFile(filepath.Join(scratchDir, "scratch_notes.md"), []byte(strings.Repeat("scratch content\n", 30)), 0644)
+
+	// Sieve 3: Below maturity threshold (<200 bytes)
+	os.WriteFile(filepath.Join(sessionPath, "stub.md"), []byte("# Title\nShort stub.\n"), 0644)
+
+	// Sieve 4: Service mask
+	os.WriteFile(filepath.Join(sessionPath, "draft_arch.md"), []byte(strings.Repeat("draft content\n", 30)), 0644)
+
+	// Sieve 5: UserFacing is false
+	internalPath := filepath.Join(sessionPath, "internal.md")
+	os.WriteFile(internalPath, []byte(strings.Repeat("internal content\n", 30)), 0644)
+	meta := struct {
+		UserFacing bool
+	}{UserFacing: false}
+	mBytes, _ := json.Marshal(meta)
+	os.WriteFile(internalPath+".metadata.json", mBytes, 0644)
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE users (user_id INTEGER PRIMARY KEY, workspace TEXT, model TEXT, first_start INTEGER, session_id TEXT, voice_reply INTEGER);`); err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (user_id, workspace, model, first_start, session_id, voice_reply) VALUES (3002, '/root', 'gemini-3.8-flash-high', 0, 'sess-trash-202', 0);`); err != nil {
+		t.Fatalf("failed to insert user: %v", err)
+	}
+
+	user := User{
+		ID:        3002,
+		Workspace: "/root",
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	handleClearCommand(bot, 888777, 3002, "TricksterBot", user, db)
+
+	// Verify NO files were alienated to inbox
+	if entries, err := os.ReadDir(inboxDir); err == nil && len(entries) > 0 {
+		t.Errorf("expected 0 files in inboxDir, got %d: %v", len(entries), entries)
+	}
+
+	// Verify standard clean response without artifact mentions
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	for _, body := range ms.sentBodies {
+		if strings.Contains(body, "Exhumed and alienated") {
+			t.Errorf("did not expect exhumation notice when all files are garbage, got: %s", body)
+		}
+		if strings.Contains(body, "Артефакт сессии") {
+			t.Errorf("did not expect any artifact document to be delivered to Telegram, got: %s", body)
+		}
+	}
+}
+
+func TestHandleClearCommand_EmptyOrInvalidSession_Graceful(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE users (user_id INTEGER PRIMARY KEY, workspace TEXT, model TEXT, first_start INTEGER, session_id TEXT, voice_reply INTEGER);`); err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (user_id, workspace, model, first_start, session_id, voice_reply) VALUES (3003, '/root', 'gemini-3.8-flash-high', 0, '', 0);`); err != nil {
+		t.Fatalf("failed to insert user: %v", err)
+	}
+
+	user := User{
+		ID:        3003,
+		Workspace: "/root",
+		Model:     "gemini-3.8-flash-high",
+		SessionID: "",
+	}
+
+	// Must not panic with empty session ID
+	handleClearCommand(bot, 888777, 3003, "TricksterBot", user, db)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	foundInit := false
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Fresh session initiated") || strings.Contains(body, "Fresh session initiated") {
+			foundInit = true
+		}
+	}
+	if !foundInit {
+		t.Errorf("expected fresh session initiation message")
+	}
+}
+
+func TestHandleClearCommand_InboxCollisionAvoidance(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	tmpDir := t.TempDir()
+	brainDir := filepath.Join(tmpDir, "brain")
+	inboxDir := filepath.Join(tmpDir, "inbox")
+	sessionID := "sess-collision-303"
+	sessionPath := filepath.Join(brainDir, sessionID)
+
+	if err := os.MkdirAll(sessionPath, 0755); err != nil {
+		t.Fatalf("failed to create session dir: %v", err)
+	}
+	if err := os.MkdirAll(inboxDir, 0755); err != nil {
+		t.Fatalf("failed to create inbox dir: %v", err)
+	}
+
+	t.Setenv("BRAIN_DIR", brainDir)
+	t.Setenv("ECOSYSTEM_INBOX_DIR", inboxDir)
+
+	// Pre-create an existing file with the exact name that would be generated
+	today := time.Now().UTC().Format("2006-01-02")
+	existingTarget := filepath.Join(inboxDir, fmt.Sprintf("%s_tricksterbot_spec_engine.md", today))
+	if err := os.WriteFile(existingTarget, []byte("pre-existing content"), 0644); err != nil {
+		t.Fatalf("failed to write pre-existing file: %v", err)
+	}
+
+	// Create the artifact in session
+	artPath := filepath.Join(sessionPath, "spec_engine.md")
+	content := "# Specification: Engine Architecture\n" + strings.Repeat("detailed requirements and specifications\n", 10)
+	if err := os.WriteFile(artPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write session artifact: %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE users (user_id INTEGER PRIMARY KEY, workspace TEXT, model TEXT, first_start INTEGER, session_id TEXT, voice_reply INTEGER);`); err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (user_id, workspace, model, first_start, session_id, voice_reply) VALUES (3004, '/root', 'gemini-3.8-flash-high', 0, 'sess-collision-303', 0);`); err != nil {
+		t.Fatalf("failed to insert user: %v", err)
+	}
+
+	user := User{
+		ID:        3004,
+		Workspace: "/root",
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	handleClearCommand(bot, 888777, 3004, "TricksterBot", user, db)
+
+	// Verify pre-existing file was NOT overwritten
+	preExistingBytes, err := os.ReadFile(existingTarget)
+	if err != nil {
+		t.Fatalf("pre-existing file missing: %v", err)
+	}
+	if string(preExistingBytes) != "pre-existing content" {
+		t.Errorf("pre-existing file was overwritten!")
+	}
+
+	// Verify disambiguated new file was created in inbox
+	entries, err := os.ReadDir(inboxDir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("expected 2 files in inboxDir (1 existing + 1 exhumed disambiguated), got %d: %v", len(entries), entries)
 	}
 }
