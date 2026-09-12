@@ -256,11 +256,11 @@ All hardcoded filesystem paths and credentials are decoupled and configurable vi
 | :--- | :--- | :--- |
 | `BOT_TOKENS` | `""` | Comma-separated list of Telegram Bot API tokens. |
 | `ALLOWED_ADMIN_IDS` | `""` | Comma-separated list of authorized Telegram User IDs (Fail-Fast enforced at startup). |
-| `AGENTS_DIR` | `/root/.agents` (or `~/.agents`) | Base directory containing agent workspaces and download scratchpads. |
-| `BRAIN_DIR` | `/root/.gemini/antigravity-cli/brain` (or `~/.gemini/antigravity-cli/brain`) | Storage for agent conversation logs, titles, and step histories. |
-| `PROJECTS_DIR` | `/root/projects` | Base directory for project codebases and sandbox boundaries (`isPathUnderRoot`). |
+| `AGENTS_DIR` | `~/.agents` | Base directory containing agent workspaces and download scratchpads. |
+| `BRAIN_DIR` | `~/.gemini/antigravity-cli/brain` | Storage for agent conversation logs, titles, and step histories. |
+| `PROJECTS_DIR` | `~/projects` | Base directory for project codebases and sandbox boundaries (`isPathUnderRoot`). |
 | `DATA_DIR` | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
-| `AGY_BINARY` | `~/.local/bin/agy` (or `/root/.local/bin/agy` or `PATH`) | Path to Antigravity CLI executable (defaults to `~/.local/bin/agy`). |
+| `AGY_BINARY` | `~/.local/bin/agy` (or `PATH`) | Path to Antigravity CLI executable (defaults to `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | `""` | Comma/newline separated list of ElevenLabs API keys (supports automatic rotation). |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable base URL for testing and reverse proxies. |
 | `ENV_FILE` | `/etc/antigravity-bot/env` | Production secrets environment file. |

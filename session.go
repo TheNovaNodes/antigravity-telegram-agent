@@ -215,7 +215,7 @@ func getAgentsDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "/root"
+		home = os.TempDir()
 	}
 	return filepath.Join(home, ".agents")
 }
@@ -227,7 +227,7 @@ func getBrainDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "/root"
+		home = os.TempDir()
 	}
 	return filepath.Join(home, ".gemini/antigravity-cli/brain")
 }
@@ -255,7 +255,7 @@ func getProjectsDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "/root"
+		home = os.TempDir()
 	}
 	return filepath.Join(home, "projects")
 }

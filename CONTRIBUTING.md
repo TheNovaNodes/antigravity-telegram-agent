@@ -15,7 +15,7 @@ This repository follows the **Strict Git Flow (ПРАВИЛА КРОВИ)**:
 ### Prerequisites
 - Go 1.22+
 - SQLite3
-- Antigravity CLI binary (`agy`) installed in your `PATH` or at `/root/.local/bin/agy`.
+- Antigravity CLI binary (`agy`) installed in your `PATH` or at `~/.local/bin/agy`.
 
 ### Step 1: Clone the Repo
 ```bash
