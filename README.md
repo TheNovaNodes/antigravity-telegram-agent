@@ -1,7 +1,7 @@
 # 🛸 Antigravity Go Telegram Bot Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-75.4%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-75.8%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
@@ -72,12 +72,13 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/export` | None | Compiles and sends full conversation transcript as a clean Markdown document. |
 | `/rename` | `<name>` | Renames the current session in brain storage (`.title`). |
 | `/workspace` | `<path>` | Switches working directory (sandboxed under `AGENTS_DIR` with symlink traversal checks). |
-| `/voice` | `[on\|off]`| Toggles persistent voice responses generated via ElevenLabs TTS. |
+| `/voice` | `[on\|off]`| Toggles persistent voice responses generated via multiple engines (Edge-TTS, Piper, ElevenLabs, Hybrid). |
 | `/tts` | `<text>` | Synthesizes arbitrary text into speech and sends as a voice note. |
+| `/tts_engine` | `[hybrid\|edge\|piper\|elevenlabs]` | View or switch the active Text-To-Speech engine. |
 | `/stop` (or `/cancel`) | None | Gracefully interrupts active execution turn, terminates subprocess process group (`SIGTERM`/`SIGKILL`), salvages output buffer, and preserves conversation context. |
 | `/help` | None | Displays comprehensive command reference. |
-| `/grill_me` (or `/grill-me`) | None | Triggers interactive interview slash-command in Antigravity CLI (auto-aliased for Telegram command syntax). |
-| `/teamwork_preview` (or `/teamwork-preview`) | None | Triggers multi-agent collaboration preview (auto-aliased for Telegram command syntax). |
+| `/grill_me` (or `/grill-me`) | None | Triggers interactive interview slash-command in Antigravity CLI (registered as bot command in `main.go`, auto-aliased and normalized in `handlers.go`). |
+| `/teamwork_preview` (or `/teamwork-preview`) | None | Triggers multi-agent collaboration preview (registered as bot command in `main.go`, auto-aliased and normalized in `handlers.go`). |
 
 ---
 
@@ -130,8 +131,9 @@ The engine supports flexible configuration through environment variables:
 | :--- | :--- | :--- | :--- |
 | `BOT_TOKENS` | String | `""` | Comma-separated list of Telegram Bot API tokens. |
 | `ALLOWED_ADMIN_IDS` | String | `""` | Comma-separated list of authorized Telegram User IDs (Fail-Fast enforced at startup). |
-| `TURN_INACTIVITY_TIMEOUT_MINUTES` | Integer | `15` | Maximum duration of silence allowed before the turn watchdog salvages buffer and kills process. |
-| `TURN_HARD_DEADLINE_MINUTES` | Integer | `45` | Absolute maximum duration for an active turn as a runaway failsafe. |
+| `TURN_INACTIVITY_TIMEOUT_MINUTES` | Integer | `15` | Inactivity timeout before watchdog salvages buffer (default 15). |
+| `TURN_TIMEOUT_MINUTES` | Integer | `15` | Inactivity timeout before watchdog salvages buffer (default 15). |
+| `TURN_HARD_DEADLINE_MINUTES` | Integer | `45` | Absolute hard turn deadline (default 45). |
 | `AGENTS_DIR` | String | `~/.agents` | Base directory containing agent workspaces and download scratchpads. |
 | `BRAIN_DIR` | String | `~/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
 | `PROJECTS_DIR` | String | `~/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
@@ -139,6 +141,20 @@ The engine supports flexible configuration through environment variables:
 | `AGY_BINARY` | String | `~/.local/bin/agy` | Absolute path to the Antigravity CLI binary (defaults to `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
 | `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |
+| `TTS_ENGINE` | String | `hybrid` | TTS engine selection (`hybrid` [default], `edge`, `piper`, `elevenlabs`). |
+| `EDGE_TTS_VOICE` | String | `ru-RU-DmitryNeural` | Voice name for Edge-TTS (default `ru-RU-DmitryNeural`). |
+| `PIPER_PATH` | String | `""` | Absolute path to the Piper TTS binary. |
+| `PIPER_MODEL` | String | `""` | Absolute path to the Piper ONNX voice model. |
+| `METRICS_ADDR` | String | `""` | Prometheus metrics bind address (e.g. `:9090`). |
+| `METRICS_PORT` | String | `""` | Prometheus metrics port fallback. |
+| `ACCOUNTS_DIR` | String | `~/.gemini/antigravity-cli/accounts` | Multi-account pool base directory (default `~/.gemini/antigravity-cli/accounts` or `/etc/antigravity-bot/accounts`). |
+| `CONVERSATIONS_DIR` | String | `""` | Custom conversation logs directory. |
+| `SYSTEM_HOME` | String | `""` | Fallback host home directory when isolating account environments. |
+| `SHARED_CACHE_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
+| `SHARED_GOPATH_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
+| `SHARED_NPM_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
+| `SESSION_MAX_IDLE` | Duration | `4h` | Duration before idle session eviction and state archiving (default `4h`). |
+| `ALLOW_DOTENV` | Integer | `0` | Development flag (`1`) allowing `.env` fallback instead of fail-closed `ENV_FILE` requirement. |
 
 ---
 
