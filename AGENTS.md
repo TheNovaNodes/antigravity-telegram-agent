@@ -15,7 +15,7 @@
 4. **Verification Without Absurdity:**
    - Always verify changes with native project tools (`go test -v ./...`, `go vet ./...`).
 
-## Part 2: Repository Specific Directives (antigravity-go-tg-bot-agent)
+## Part 2: Repository Specific Directives (antigravity-telegram-agent)
 - **Engine Architecture:** Headless Linux multi-bot daemon with account pooling and auto-rotation.
 - **Session Lifecycle:** Never wipe `session_id` destructively during account rotation. Clean memory safely without unbinding user session state.
 - **Watchdog Guardrails:** 15m inactivity TTL, 45m hard deadline per turn. If a turn stalls, harvest and salvage stdout buffer and artifacts before cleanup.

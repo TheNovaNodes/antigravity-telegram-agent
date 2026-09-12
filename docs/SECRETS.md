@@ -1,6 +1,6 @@
 # 🔐 Secrets Management & Production Hardening Guide
 
-This document outlines standard operational practices for provisioning, storing, and rotating credentials for `antigravity-go-tg-bot-agent`.
+This document outlines standard operational practices for provisioning, storing, and rotating credentials for `antigravity-telegram-agent`.
 
 ---
 

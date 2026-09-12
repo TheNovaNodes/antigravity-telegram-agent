@@ -1,7 +1,7 @@
-# ISSUES TRIAGE MATRIX: Antigravity Bot Agent
+# ISSUES TRIAGE MATRIX: Antigravity Telegram Agent
 
 ## 1. Executive Overview
-- **Repository:** `TheNovaNodes/antigravity-go-tg-bot-agent`
+- **Repository:** `TheNovaNodes/antigravity-telegram-agent`
 - **Total Open Issues Analysed:** 8 (#243, #244, #245, #246, #247, #248, #249, #251)
 - **Distribution:**
   - 1 FinOps/CI Optimization RFC (#251)
