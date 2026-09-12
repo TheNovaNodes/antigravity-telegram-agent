@@ -1,7 +1,7 @@
-# 🛸 Antigravity Go Telegram Bot Agent
+# 🛸 Antigravity Telegram Agent
 
-[![CI](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-75.8%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent/actions)
+[![CI](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/Coverage-75.8%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
@@ -15,8 +15,8 @@ Get the agent gateway up and running immediately:
 
 ```bash
 # 1. Clone & enter directory
-git clone https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent.git
-cd antigravity-go-tg-bot-agent
+git clone https://github.com/TheNovaNodes/antigravity-telegram-agent.git
+cd antigravity-telegram-agent
 
 # 2. Setup your .env file
 echo 'BOT_TOKENS="your:telegram_token"' > .env

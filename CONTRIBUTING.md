@@ -19,8 +19,8 @@ This repository follows the **Strict Git Flow (ПРАВИЛА КРОВИ)**:
 
 ### Step 1: Clone the Repo
 ```bash
-git clone https://github.com/TheNovaNodes/antigravity-go-tg-bot-agent.git
-cd antigravity-go-tg-bot-agent
+git clone https://github.com/TheNovaNodes/antigravity-telegram-agent.git
+cd antigravity-telegram-agent
 ```
 
 ### Step 2: Configure Environment

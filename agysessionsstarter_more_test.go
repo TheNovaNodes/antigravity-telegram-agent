@@ -186,7 +186,7 @@ func TestSendChunk_NilBot(t *testing.T) {
 
 func TestSendArtifacts_NilBot(t *testing.T) {
 	// Should not panic when bot is nil
-	sendArtifacts(nil, 1234, "Generated file: [output](file:///root/.agents/test/output.txt)")
+	sendArtifacts(nil, 1234, "Generated file: [output](file:///home/user/.agents/test/output.txt)")
 }
 
 func TestHandleUpdate_Empty(t *testing.T) {

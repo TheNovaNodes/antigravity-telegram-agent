@@ -97,7 +97,11 @@ func ExtractDocumentTitle(path string, content string) string {
 	name := strings.TrimSuffix(base, ext)
 	name = strings.ReplaceAll(name, "_", " ")
 	name = strings.ReplaceAll(name, "-", " ")
-	return titleCase(name)
+	title := titleCase(name)
+	if title == "" || title == "." || title == "/" {
+		return "Untitled Document"
+	}
+	return title
 }
 
 func titleCase(s string) string {
