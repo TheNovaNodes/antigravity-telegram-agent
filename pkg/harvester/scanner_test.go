@@ -62,7 +62,7 @@ func TestDiscoverSession_And_ScanBrainArtifacts(t *testing.T) {
 				Name: "write_to_file",
 				Arguments: map[string]interface{}{
 					"TargetFile":  filepath.Join(brainDir, "checklist_deploy.md"),
-					"CodeContent": "- [ ] Deploy step 1\n- [ ] Deploy step 2 with token ghp_111111111122222222223333333333444444\n- [ ] Step 3",
+					"CodeContent": "- [ ] Deploy step 1\n- [ ] Deploy step 2 with token ghp_mocktoken11111122222222223333333333444444\n- [ ] Step 3",
 				},
 			},
 		},

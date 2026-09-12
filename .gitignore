@@ -1,6 +1,19 @@
 # Environment & Secrets
 .env
 *.env.local
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+*.cer
+credentials.json
+token.json
+tokens/
+*.token
+.secrets*
+id_rsa*
+id_ed25519*
 
 # Databases & Runtime Data
 data/
@@ -18,6 +31,9 @@ new_engine
 antigravity-bot-engine
 agysessionsstarter
 test_build
+*.tar.gz
+*.tgz
+*.dump
 
 # Test & Coverage Artifacts
 *.out

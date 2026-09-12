@@ -1,0 +1,7 @@
+[allowlist]
+paths = [
+  "pkg/harvester/sanitizer_test.go",
+  "pkg/harvester/scanner_test.go",
+  "pkg/harvester/exhumation_test.go",
+  "session_lifecycle_artifacts_test.go"
+]
