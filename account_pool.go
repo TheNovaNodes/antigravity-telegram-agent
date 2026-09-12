@@ -116,7 +116,7 @@ func getAccountsDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "/root"
+		home = os.TempDir()
 	}
 	return filepath.Join(home, ".antigravity-bot", "accounts")
 }
@@ -128,7 +128,7 @@ func getSharedConversationsDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "/root"
+		home = os.TempDir()
 	}
 	return filepath.Join(home, ".gemini", "antigravity-cli", "conversations")
 }
@@ -140,7 +140,7 @@ func getSystemBaseHome() string {
 	if h := os.Getenv("HOME"); h != "" && !strings.Contains(h, "/accounts/") {
 		return h
 	}
-	return "/root"
+	return os.TempDir()
 }
 
 func getCentralSharedCacheDir() string {
@@ -906,7 +906,7 @@ func DeriveAccountIDFromEmail(email string) string {
 func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "/root"
+		home = os.TempDir()
 	}
 	sourceTokenPath := filepath.Clean(filepath.Join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"))
 	// #nosec G304 G703 -- gosec:nri (Need Review)

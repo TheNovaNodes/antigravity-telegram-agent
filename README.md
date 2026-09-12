@@ -93,7 +93,7 @@ make build-harvester
 **Available Commands:**
 *   `scan`: Passively monitors and parses `transcript.jsonl` streams in real-time.
     ```bash
-    ./bin/agy-harvester scan --dir /root/.agents/mybot
+    ./bin/agy-harvester scan --dir ~/.agents/mybot
     ```
 *   `extract`: Packages the latest session data, runs the document taxonomy classifier, redacts secrets via the secret shield, and bundles the result into a ZIP archive with a `manifest.json`.
     ```bash
@@ -132,9 +132,9 @@ The engine supports flexible configuration through environment variables:
 | `ALLOWED_ADMIN_IDS` | String | `""` | Comma-separated list of authorized Telegram User IDs (Fail-Fast enforced at startup). |
 | `TURN_INACTIVITY_TIMEOUT_MINUTES` | Integer | `15` | Maximum duration of silence allowed before the turn watchdog salvages buffer and kills process. |
 | `TURN_HARD_DEADLINE_MINUTES` | Integer | `45` | Absolute maximum duration for an active turn as a runaway failsafe. |
-| `AGENTS_DIR` | String | `/root/.agents` | Base directory containing agent workspaces and download scratchpads. |
-| `BRAIN_DIR` | String | `/root/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
-| `PROJECTS_DIR` | String | `/root/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
+| `AGENTS_DIR` | String | `~/.agents` | Base directory containing agent workspaces and download scratchpads. |
+| `BRAIN_DIR` | String | `~/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
+| `PROJECTS_DIR` | String | `~/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
 | `DATA_DIR` | String | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
 | `AGY_BINARY` | String | `~/.local/bin/agy` | Absolute path to the Antigravity CLI binary (defaults to `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |

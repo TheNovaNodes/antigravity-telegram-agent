@@ -46,7 +46,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 func TestGetAgentsDir(t *testing.T) {
 	dir := getAgentsDir()
 	home, err := os.UserHomeDir()
-	expected := "/root/.agents"
+	expected := filepath.Join(os.TempDir(), ".agents")
 	if err == nil {
 		expected = filepath.Join(home, ".agents")
 	}

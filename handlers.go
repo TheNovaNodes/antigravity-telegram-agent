@@ -770,7 +770,7 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 	newWS := strings.TrimSpace(parts[1])
 	cleanPath := filepath.Clean(newWS)
 	if !filepath.IsAbs(cleanPath) {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: path must be absolute (e.g. `/root/projects/app`)"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: path must be absolute (e.g. `/opt/projects/app`)"))
 		return
 	}
 	realPath, evalErr := filepath.EvalSymlinks(cleanPath)

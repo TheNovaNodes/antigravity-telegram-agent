@@ -45,8 +45,8 @@ WorkingDirectory=${ROOT_DIR}
 ExecStart=${ROOT_DIR}/bin/antigravity-bot-engine
 EnvironmentFile=${PROD_ENV_FILE}
 Environment="ENV_FILE=${PROD_ENV_FILE}"
-Environment="HOME=/root"
-Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
+Environment="HOME=${HOME:-/root}"
+Environment="PATH=${PATH:-/usr/local/bin:/usr/bin:/bin}"
 Restart=always
 RestartSec=3
 
