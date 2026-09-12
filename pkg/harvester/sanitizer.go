@@ -66,7 +66,7 @@ var secretRules = []secretRule{
 	},
 }
 
-var hostPathRegex = regexp.MustCompile(`(?:/etc/antigravity-bot/accounts/[^/]+/\.gemini/antigravity-cli/brain/[0-9a-fA-F-]+/|(?:/root|/home/[^/]+|~)/\.gemini/antigravity-cli/brain/[0-9a-fA-F-]+/)`)
+var hostPathRegex = regexp.MustCompile(`(?:/etc/antigravity-bot/accounts/[^/]+/\.gemini/antigravity-cli/brain/[0-9a-fA-F-]+/|(?:/root|/(?:home|Users)/[^/]+|~)/\.gemini/antigravity-cli/brain/[0-9a-fA-F-]+/)`)
 
 // SanitizeContent scrubs sensitive secrets and relinks internal host paths.
 // Returns the sanitized string and the count of redactions performed.

@@ -178,7 +178,14 @@ func ExhumeSession(sessionID, botName, inboxDir string, minSize int) (*Exhumatio
 		if env := os.Getenv("ECOSYSTEM_INBOX_DIR"); env != "" {
 			inboxDir = env
 		} else {
-			inboxDir = filepath.Join(os.Getenv("HOME"), "projects/TheNovaNodes/ecosystem-docs/inbox")
+			home, err := os.UserHomeDir()
+			if err != nil || home == "" {
+				home = os.Getenv("HOME")
+			}
+			if home == "" {
+				home = "/root"
+			}
+			inboxDir = filepath.Join(home, "projects/TheNovaNodes/ecosystem-docs/inbox")
 		}
 	}
 	inboxDir = filepath.Clean(inboxDir)
