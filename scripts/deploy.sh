@@ -34,7 +34,7 @@ SERVICE_FILE="/etc/systemd/system/antigravity-bot-engine.service"
 echo "⚙️ Installing systemd unit: ${SERVICE_FILE}..."
 cat << SVC > "${SERVICE_FILE}"
 [Unit]
-Description=Antigravity Go Telegram Bot Engine (Multi-Agent Swarm)
+Description=Antigravity Telegram Agent (Multi-Agent Swarm)
 After=network.target
 StartLimitIntervalSec=60s
 StartLimitBurst=5
