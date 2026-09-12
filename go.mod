@@ -8,6 +8,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/wujunwei928/edge-tts-go v0.0.2
+	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.58.0
 	modernc.org/sqlite v1.58.0
 )
