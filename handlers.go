@@ -862,7 +862,7 @@ func getEcosystemInboxDir() string {
 	if env := os.Getenv("ECOSYSTEM_INBOX_DIR"); env != "" {
 		return env
 	}
-	return "/root/projects/TheNovaNodes/ecosystem-docs/inbox"
+	return filepath.Join(os.Getenv("HOME"), "projects/TheNovaNodes/ecosystem-docs/inbox")
 }
 
 // performSessionExhumation executes the post-mortem exhumation hook:

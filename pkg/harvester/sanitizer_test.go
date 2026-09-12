@@ -60,10 +60,10 @@ func TestSanitizeContent_RedTeamTokens(t *testing.T) {
 }
 
 func TestSanitizeContent_HostPathRelinker(t *testing.T) {
-	input := "See artifact at /etc/antigravity-bot/accounts/acc-1/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/report.md and fallback /root/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/summary.md"
+	input := "See artifact at /etc/antigravity-bot/accounts/acc-1/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/report.md and fallback /home/user/.gemini/antigravity-cli/brain/123e4567-e89b-12d3-a456-426614174000/summary.md"
 	sanitized, _ := SanitizeContent(input)
 
-	if strings.Contains(sanitized, "/etc/antigravity-bot") || strings.Contains(sanitized, "/root/.gemini") {
+	if strings.Contains(sanitized, "/etc/antigravity-bot") || strings.Contains(sanitized, "/home/user/.gemini") {
 		t.Fatalf("host paths were not relinked: %s", sanitized)
 	}
 

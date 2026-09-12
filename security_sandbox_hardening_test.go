@@ -17,14 +17,14 @@ func TestIsPathUnderRoot(t *testing.T) {
 		root     string
 		expected bool
 	}{
-		{"Empty path", "", "/root/projects", false},
-		{"Empty root", "/root/projects", "", false},
-		{"Exact match", "/root/projects", "/root/projects", true},
-		{"Valid subfile", "/root/projects/app/main.go", "/root/projects", true},
-		{"Valid nested subdir", "/root/projects/deep/nested/dir/file.txt", "/root/projects", true},
-		{"Traversal escaping root", "/root/projects/../../etc/passwd", "/root/projects", false},
-		{"Prefix name collision", "/root/projects-fake/file.txt", "/root/projects", false},
-		{"Relative traversal escaping root", "../../../../../etc/passwd", "/root/projects", false},
+		{"Empty path", "", "/home/user/projects", false},
+		{"Empty root", "/home/user/projects", "", false},
+		{"Exact match", "/home/user/projects", "/home/user/projects", true},
+		{"Valid subfile", "/home/user/projects/app/main.go", "/home/user/projects", true},
+		{"Valid nested subdir", "/home/user/projects/deep/nested/dir/file.txt", "/home/user/projects", true},
+		{"Traversal escaping root", "/home/user/projects/../../etc/passwd", "/home/user/projects", false},
+		{"Prefix name collision", "/home/user/projects-fake/file.txt", "/home/user/projects", false},
+		{"Relative traversal escaping root", "../../../../../etc/passwd", "/home/user/projects", false},
 	}
 
 	for _, tc := range tests {
