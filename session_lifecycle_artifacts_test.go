@@ -293,12 +293,12 @@ func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
 
 	// Create a .toml file with a secret
 	tomlFile := filepath.Join(agentsDir, "config.toml")
-	tomlContent := `api_key = "sk-ant-12345678901234567890"`
+	tomlContent := `api_key = "sk-ant-mocktoken890123456789"`
 	os.WriteFile(tomlFile, []byte(tomlContent), 0644)
 
 	// Create a .sql file with a secret
 	sqlFile := filepath.Join(agentsDir, "dump.sql")
-	sqlContent := `INSERT INTO tokens VALUES ('ghp_123456789012345678901234567890123456');`
+	sqlContent := `INSERT INTO tokens VALUES ('ghp_mocktoken89012345678901234567890123456');`
 	os.WriteFile(sqlFile, []byte(sqlContent), 0644)
 
 	// Create an unknown extension file that is text with a secret
@@ -331,7 +331,7 @@ func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
 	for _, body := range ms.sentBodies {
 		if strings.Contains(body, "config.toml") {
 			foundToml = true
-			if strings.Contains(body, "sk-ant-12345678901234567890") {
+			if strings.Contains(body, "sk-ant-mocktoken890123456789") {
 				t.Errorf("toml file secret was not sanitized: %s", body)
 			}
 			if !strings.Contains(body, "[REDACTED_SECRET:ANTHROPIC_KEY]") {
@@ -339,7 +339,7 @@ func TestSendArtifacts_SanitizesSecretsInAllTextTypes(t *testing.T) {
 			}
 		} else if strings.Contains(body, "dump.sql") {
 			foundSql = true
-			if strings.Contains(body, "ghp_123456789012345678901234567890123456") {
+			if strings.Contains(body, "ghp_mocktoken89012345678901234567890123456") {
 				t.Errorf("sql file secret was not sanitized: %s", body)
 			}
 			if !strings.Contains(body, "[REDACTED_SECRET:GITHUB_PAT]") {

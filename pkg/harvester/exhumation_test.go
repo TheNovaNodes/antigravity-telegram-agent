@@ -153,7 +153,7 @@ func TestExhumeSession_FullLifecycle(t *testing.T) {
 
 ## Context
 We are designing a zero-downtime multi-agent platform for Telegram.
-All state transitions must be cleanly audited and secret tokens like ghp_111111111122222222223333333333444444 must be redacted.
+All state transitions must be cleanly audited and secret tokens like ghp_mocktoken11111122222222223333333333444444 must be redacted.
 
 ## Consequences
 High stability and 100% compliance with strict git flow.`
@@ -225,7 +225,7 @@ High stability and 100% compliance with strict git flow.`
 	if err != nil {
 		t.Fatalf("failed to read destination inbox file: %v", err)
 	}
-	if strings.Contains(string(destContent), "ghp_111111111122222222223333333333444444") {
+	if strings.Contains(string(destContent), "ghp_mocktoken11111122222222223333333333444444") {
 		t.Errorf("secret token was not sanitized in destination file!")
 	}
 	if !strings.Contains(string(destContent), "[REDACTED_SECRET:GITHUB_PAT]") {
