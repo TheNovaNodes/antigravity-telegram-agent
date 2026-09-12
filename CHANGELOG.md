@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `paths-ignore` for documentation and markdown files (`**.md`, `docs/**`, `.gitignore`, `LICENSE`).
   - Added caching for SAST tools (`staticcheck`, `gosec`, `govulncheck`) to avoid recompilation on every run.
 - **Documentation & Security Policy**:
-  - Added `.github/SECURITY.md` defining vulnerability disclosure standards.
+  - Added `SECURITY.md` defining vulnerability disclosure standards.
   - Added Multi-Account Pool architecture and `/accounts` command reference to `README.md` and `docs/ARCHITECTURE.md`.
   - Updated statement coverage metrics to reflect real benchmark (75.4%).
 

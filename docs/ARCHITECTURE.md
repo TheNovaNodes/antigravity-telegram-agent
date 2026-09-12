@@ -43,9 +43,9 @@ flowchart TD
     end
 
     subgraph TTS ["Audio Engine"]
-        StdoutLoop -.->|VoiceReply Enabled| ElevenLabs[ElevenLabs TTS Multi-Key]
-        CmdHandler -.->|/tts Command| ElevenLabs
-        ElevenLabs -->|Voice Note OGG/MP3| TG
+        StdoutLoop -.->|VoiceReply Enabled| AudioPipeline[Multi-Engine Audio Pipeline (Edge-TTS, Piper, ElevenLabs, Hybrid)]
+        CmdHandler -.->|/tts Command| AudioPipeline
+        AudioPipeline -->|Voice Note OGG/MP3| TG
     end
 ```
 
@@ -138,7 +138,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleExportCommand` | Compiles full conversation transcript JSONL into a clean Markdown file attachment. | Validates session ID format (`isValidSessionID`), writes export file to scratch space. |
 | `handleClearCommand` | Session context reset for clean startup. | Cleans session state in DB and memory, launches fresh process without uninitialized conversation ID flags. |
 | `handleStopCommand` | Gracefully interrupts active turn without clearing conversation context. | Mutex-decoupled state extraction, `s.Kill()` process group termination, output buffer salvaging, and artifact delivery. |
-| `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`). Routes `/stop` and `/cancel`. |
+| `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`), which are registered as bot commands in `main.go` and normalized in `handlers.go`. Routes `/stop` and `/cancel`. |
 | `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*` including `cmd:stop` [Turn Interruption] and `cmd:retry` [Stream Recovery]). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, and voices. Detects session export files (`session_*.md`) and auto-injects context reload prompts for drop-to-resume. | URL scheme & host validation (HTTP/HTTPS only), HTTP status check, 100 MB hard limit, and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding, per-turn voice reply mode without latching, and clean prompt retry on Stdin error. |

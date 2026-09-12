@@ -4,7 +4,7 @@
 
 The **Harvester Pipeline** prevents architectural degradation, knowledge amnesia, and uncommitted documentation loss across the NovaNodes multi-account ecosystem.
 
-During agent coding turns, markdown artifacts (ADRs, RFCs, research documents, specs, deployment checklists) are frequently generated in ephemeral session directories (`/etc/antigravity-bot/accounts/*/brain/<sessionID>/`). The Harvester guarantees:
+During agent coding turns, markdown artifacts (ADRs, RFCs, research documents, specs, deployment checklists) are frequently generated in ephemeral session directories (`<ACCOUNTS_DIR>/*/brain/<sessionID>/`). The Harvester guarantees:
 1. **Zero-Leakage Sanitization**: Intercepts and redacts GitHub PATs, Telegram Bot tokens, JWTs, SSH private keys, and API tokens before exposure.
 2. **Deterministic Taxonomy**: Automatic categorization into `ADR`, `RFC`, `RESEARCH`, `CHECKLIST`, `SPEC`, and `DOC`.
 3. **Structured Packaging**: Bundling with `manifest.json` into taxonomy-organized ZIP archives.
