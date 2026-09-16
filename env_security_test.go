@@ -213,3 +213,37 @@ func TestBuildChildEnv_SentinelSecretsEliminated(t *testing.T) {
 		t.Errorf("Expected build caches (GOPATH, GOCACHE, NPM, PIP) to be set, got %+v", envMap)
 	}
 }
+
+// TestBuildChildEnv_EmptyAccountHomeFallback verifies that when accountHome is empty,
+// buildChildEnv still constructs a safe allowlisted environment (never nil), sets a safe fallback HOME,
+// includes SHELL if present, and never leaks supervisor secrets (#282).
+func TestBuildChildEnv_EmptyAccountHomeFallback(t *testing.T) {
+	t.Setenv("SENTINEL_LEAK_CHECK", "top_secret_value")
+	t.Setenv("SYSTEM_HOME", "/custom/sys/home")
+	t.Setenv("SHELL", "/bin/bash")
+
+	childEnv := buildChildEnv("")
+	if childEnv == nil {
+		t.Fatal("buildChildEnv(\"\") returned nil, which would cause exec.Cmd to inherit os.Environ()!")
+	}
+
+	envMap := make(map[string]string)
+	for _, entry := range childEnv {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if _, exists := envMap["SENTINEL_LEAK_CHECK"]; exists {
+		t.Errorf("Critical leak: SENTINEL_LEAK_CHECK was inherited in child environment!")
+	}
+
+	if envMap["HOME"] != "/custom/sys/home" {
+		t.Errorf("Expected fallback HOME=/custom/sys/home, got %s", envMap["HOME"])
+	}
+
+	if envMap["SHELL"] != "/bin/bash" {
+		t.Errorf("Expected SHELL=/bin/bash, got %s", envMap["SHELL"])
+	}
+}

@@ -189,8 +189,25 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		scanner := bufio.NewScanner(strings.NewReader(errorPayload))
-		// Should suppress error without panicking on nil BotAPI
+		// Append a valid step_update JSON payload to ensure the loop continues
+		validPayload := `{"event": "step_update", "step_update": {"text_delta": "hello"}}` + "\n"
+		scanner := bufio.NewScanner(strings.NewReader(errorPayload + validPayload))
+
+		// Run loop (will read error, continue, read step_update, and block on context)
+		// We'll close context asynchronously to allow readStdoutLoop to finish reading lines
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+
 		s.readStdoutLoop(scanner, ctx)
+
+		// Assert that the UpdateChan received an update, proving readStdoutLoop did not exit on the error
+		select {
+		case <-s.UpdateChan:
+			// Success! The step_update was processed.
+		default:
+			t.Errorf("readStdoutLoop aborted prematurely on error without processing subsequent step_update")
+		}
 	})
 }

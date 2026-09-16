@@ -13,6 +13,7 @@ var safePassthroughKeys = []string{
 	"USER",
 	"LOGNAME",
 	"SYSTEM_HOME",
+	"SHELL",
 	"TMPDIR",
 	"TMP",
 	"TEMP",
@@ -67,6 +68,12 @@ func buildChildEnv(accountHome string, extraVars ...map[string]string) []string 
 		envMap["GOCACHE"] = filepath.Join(getCentralSharedCacheDir(), "go-build")
 		envMap["NPM_CONFIG_CACHE"] = getCentralSharedNpmDir()
 		envMap["PIP_CACHE_DIR"] = filepath.Join(getCentralSharedCacheDir(), "pip")
+	} else {
+		fallbackHome := os.Getenv("SYSTEM_HOME")
+		if fallbackHome == "" {
+			fallbackHome = "/tmp"
+		}
+		envMap["HOME"] = fallbackHome
 	}
 
 	// 5. Apply any extra variables supplied by caller

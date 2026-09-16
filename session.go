@@ -686,9 +686,7 @@ func (s *AgySession) start() error {
 	accHome := s.AccountHomeDir
 	convID := s.Conversation
 	s.mu.Unlock()
-	if accHome != "" {
-		cmd.Env = buildChildEnv(accHome)
-	}
+	cmd.Env = buildChildEnv(accHome)
 
 	// Remove any leftover presence lock file to ensure agy can resume conversation cleanly (#236)
 	cleanPresenceLock(accHome, convID)
@@ -1210,7 +1208,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					if activeMsgID == 0 && !hadActiveTurn && bufEmpty {
 						log.Printf("[Session] Suppressed background teardown/idle error for bot %s (activeMsgID=0): %s",
 							s.BotName, errMsg)
-						return
+						continue
 					}
 
 					isStreamInterrupted, isRateLimit, isPrintTimeout := ClassifyAgentError(errMsg)
