@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestTextBuffer_CapAndFlag verifies that AgySession stops appending deltas once maxTextBufferBytes
@@ -149,3 +150,48 @@ func BenchmarkTextBuffer_Append(b *testing.B) {
 		session.mu.Unlock()
 	}
 }
+
+// TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead verifies that when a session
+// is already dead (isAlive == false) or was idle (ActiveTurnStart is zero), any incoming
+// ERROR result (e.g. stream input cancelled: context canceled) is suppressed without
+// dispatching false-positive errors to Telegram (#281).
+func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
+	errorPayload := `{"event": "result", "result": {"status": "ERROR", "error": "stream input cancelled: context canceled"}}` + "\n"
+
+	// Case 1: Session is dead (!isAlive)
+	t.Run("DeadSessionSuppressed", func(t *testing.T) {
+		s := &AgySession{
+			BotName:         "DeadBot",
+			isAlive:         false,
+			ActiveTurnStart: time.Time{},
+			ActiveMessageID: 0,
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		scanner := bufio.NewScanner(strings.NewReader(errorPayload))
+		// Should return immediately without panics or sending to nil BotAPI
+		s.readStdoutLoop(scanner, ctx)
+	})
+
+	// Case 2: Session is alive but completely idle (ActiveTurnStart is zero)
+	t.Run("IdleSessionSuppressed", func(t *testing.T) {
+		s := &AgySession{
+			BotName:         "IdleBot",
+			isAlive:         true,
+			ActiveTurnStart: time.Time{},
+			ActiveMessageID: 0,
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		scanner := bufio.NewScanner(strings.NewReader(errorPayload))
+		// Should suppress error without panicking on nil BotAPI
+		s.readStdoutLoop(scanner, ctx)
+	})
+}
+

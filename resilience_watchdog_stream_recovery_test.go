@@ -187,6 +187,24 @@ func TestErrorClassification_StreamInterruptionAndRateLimit(t *testing.T) {
 			wantRateLimit:       false,
 			wantPrintTimeout:    true,
 		},
+		{
+			errMsg:              "stream input cancelled: context canceled",
+			wantStreamInterrupt: true,
+			wantRateLimit:       false,
+			wantPrintTimeout:    false,
+		},
+		{
+			errMsg:              "context canceled",
+			wantStreamInterrupt: true,
+			wantRateLimit:       false,
+			wantPrintTimeout:    false,
+		},
+		{
+			errMsg:              "context cancelled",
+			wantStreamInterrupt: true,
+			wantRateLimit:       false,
+			wantPrintTimeout:    false,
+		},
 	}
 
 	for _, tc := range tests {

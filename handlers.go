@@ -456,14 +456,7 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 			}
 			return
 		}
-		var cleanEnv []string
-		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, "HOME=") {
-				cleanEnv = append(cleanEnv, e)
-			}
-		}
-		cleanEnv = append(cleanEnv, "HOME="+acc.HomeDir)
-		cmd.Env = cleanEnv
+		cmd.Env = buildChildEnv(acc.HomeDir)
 		accountHeader = fmt.Sprintf(" [%s (%s)]", acc.ID, acc.Email)
 	}
 

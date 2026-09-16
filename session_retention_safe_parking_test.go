@@ -199,30 +199,7 @@ func TestSession_EnvSharedCachesInjection(t *testing.T) {
 		AccountHomeDir: accHome,
 	}
 
-	var cleanEnv []string
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "HOME=") ||
-			strings.HasPrefix(e, "GOPATH=") ||
-			strings.HasPrefix(e, "GOCACHE=") ||
-			strings.HasPrefix(e, "NPM_CONFIG_CACHE=") ||
-			strings.HasPrefix(e, "PIP_CACHE_DIR=") {
-			continue
-		}
-		cleanEnv = append(cleanEnv, e)
-	}
-
-	goPath := getCentralSharedGoDir()
-	goCache := filepath.Join(getCentralSharedCacheDir(), "go-build")
-	npmCache := getCentralSharedNpmDir()
-	pipCache := filepath.Join(getCentralSharedCacheDir(), "pip")
-
-	env := append(cleanEnv,
-		"HOME="+s.AccountHomeDir,
-		"GOPATH="+goPath,
-		"GOCACHE="+goCache,
-		"NPM_CONFIG_CACHE="+npmCache,
-		"PIP_CACHE_DIR="+pipCache,
-	)
+	env := buildChildEnv(s.AccountHomeDir)
 
 	expectedGo := filepath.Join(sharedTmp, "custom_go")
 	expectedCache := filepath.Join(sharedTmp, "custom_cache", "go-build")

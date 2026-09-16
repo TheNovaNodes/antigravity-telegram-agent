@@ -305,3 +305,29 @@ flowchart TD
 4. **Auto-Recovery & Sane Cooldowns**: Eliminates multi-hour lock traps by validating quota health (`> 5%`) on background probes, auto-clearing `StateCooldown` and restoring `StateActive`.
 5. **Shared Build & Module Caches**: Deduplicates Go build cache, Go module cache (`GOPATH/pkg/mod`), npm, and pip caches across account homes via dynamic symlinking to prevent disk exhaustion.
 
+---
+
+## 10. Child Process Isolation & Teardown Lifecycle Hardening
+
+To satisfy enterprise DevSecOps standards and eliminate phantom error leakage across supervisor life cycles:
+
+```mermaid
+flowchart TD
+    Supervisor["Supervisor Daemon (/etc/antigravity-bot/env)"] -->|BOT_TOKENS, ADMIN_IDS, Keys| SupervisorMemory[Protected Supervisor Memory]
+    Supervisor -->|Trigger Subprocess| EnvBuilder["buildChildEnv(accHome) Allowlist"]
+    EnvBuilder -->|Strict Baseline: LANG, LC_ALL, TZ, TERM| ChildEnv[Child Process Environment]
+    EnvBuilder -->|Preserve Host PATH, SYSTEM_HOME, USER, TMPDIR| ChildEnv
+    EnvBuilder -->|Isolated HOME, GOPATH, GOCACHE, NPM, PIP| ChildEnv
+    ChildEnv --> ChildProcess["Child Process (agy / tools)"]
+    SupervisorMemory -.->|BLOCKED / NEVER INHERITED| ChildProcess
+```
+
+### 1. Strict `safeEnv` Allowlist (`buildChildEnv`):
+- **Elimination of Supervisor Secret Inheritance (#282)**: Replaced vulnerable `os.Environ()` denylist copying with a strict construction allowlist. Subprocesses spawned for agent sessions, quota diagnostics, or account management inherit only explicit baseline variables (`LANG=C.UTF-8`, `LC_ALL=C.UTF-8`, `TZ=UTC`, `TERM=xterm-256color`) and verified host variables (`PATH`, `USER`, `LOGNAME`, `SYSTEM_HOME`, `TMPDIR`, `AGY_BINARY`, `SSH_AUTH_SOCK`, network/SSL proxies).
+- **Zero Credential Bleed**: Sensitive tokens (`BOT_TOKENS`, `ALL_TOKENS`, `ALLOWED_ADMIN_IDS`, `ELEVENLABS_API_KEY`, database URLs, OAuth credentials) reside exclusively in supervisor memory and are never exposed to child processes or subagents.
+
+### 2. Teardown & Idle Error Suppression (#281):
+- **Phantom Error Suppression**: When the supervisor terminates or restarts (e.g. system upgrades or container restarts), closing `stdin` on `--input-format stream-json` causes `agy` to exit with `stream input cancelled: context canceled`.
+- **Turn-Aware Lifecycle Guard**: In `readStdoutLoop`, incoming error events are checked against active turn state (`!s.isAlive || s.ActiveTurnStart.IsZero()`). Teardown artifacts from idle or stopping sessions are logged internally and suppressed, eliminating false-positive `❌ Error from agent` messages in Telegram. Active turn errors continue to trigger auto-recovery (`StreamRecovery`) and user notices without interruption.
+
+
