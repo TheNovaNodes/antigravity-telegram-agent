@@ -213,4 +213,3 @@ func TestBuildChildEnv_SentinelSecretsEliminated(t *testing.T) {
 		t.Errorf("Expected build caches (GOPATH, GOCACHE, NPM, PIP) to be set, got %+v", envMap)
 	}
 }
-

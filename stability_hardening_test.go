@@ -194,4 +194,3 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		s.readStdoutLoop(scanner, ctx)
 	})
 }
-
