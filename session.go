@@ -1199,15 +1199,16 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					default:
 					}
 					s.mu.Lock()
+					isAlive := s.isAlive
 					activeMsgID := s.ActiveMessageID
 					hadActiveTurn := !s.ActiveTurnStart.IsZero()
 					bufEmpty := s.TextBuffer == ""
 					s.mu.Unlock()
 
-					// Suppress phantom error dispatch if session was completely idle without active turn or buffered content (#281)
-					if activeMsgID == 0 && !hadActiveTurn && bufEmpty {
-						log.Printf("[Session] Suppressed background teardown/idle error for bot %s (activeMsgID=0): %s",
-							s.BotName, errMsg)
+					// Suppress phantom error dispatch if session is already dead or completely idle without active turn or buffered content (#281)
+					if (!isAlive || (activeMsgID == 0 && !hadActiveTurn)) && bufEmpty {
+						log.Printf("[Session] Suppressed background teardown/idle error for bot %s (isAlive=%v, activeMsgID=%d): %s",
+							s.BotName, isAlive, activeMsgID, errMsg)
 						continue
 					}
 
@@ -1567,11 +1568,16 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						if s.BotAPI != nil {
 							if activeMsgID != 0 {
 								sendChunk(s.BotAPI, s.ChatID, activeMsgID, displayErr)
+							} else if hadActiveTurn {
+								msg := tgbotapi.NewMessage(s.ChatID, MarkdownToTelegramHTML(displayErr))
+								msg.ParseMode = "HTML"
+								s.BotAPI.Send(msg)
 							} else {
-								log.Printf("[Session] Suppressed idle error dispatch to chat %d (activeMsgID=0, empty buffer): %s", s.ChatID, errMsg)
+								log.Printf("[Session] Suppressed idle error dispatch to chat %d (activeMsgID=0, idle): %s", s.ChatID, errMsg)
 							}
 						}
 					}
+
 					continue
 				}
 				s.mu.Lock()

@@ -61,13 +61,9 @@ func buildChildEnv(accountHome string, extraVars ...map[string]string) []string 
 		}
 	}
 
-	// 4. Isolated account profile & cache directories
+	// 4. Isolated account profile & unified cache directories
 	if accountHome != "" {
 		envMap["HOME"] = accountHome
-		envMap["GOPATH"] = getCentralSharedGoDir()
-		envMap["GOCACHE"] = filepath.Join(getCentralSharedCacheDir(), "go-build")
-		envMap["NPM_CONFIG_CACHE"] = getCentralSharedNpmDir()
-		envMap["PIP_CACHE_DIR"] = filepath.Join(getCentralSharedCacheDir(), "pip")
 	} else {
 		fallbackHome := os.Getenv("SYSTEM_HOME")
 		if fallbackHome == "" {
@@ -75,6 +71,10 @@ func buildChildEnv(accountHome string, extraVars ...map[string]string) []string 
 		}
 		envMap["HOME"] = fallbackHome
 	}
+	envMap["GOPATH"] = getCentralSharedGoDir()
+	envMap["GOCACHE"] = filepath.Join(getCentralSharedCacheDir(), "go-build")
+	envMap["NPM_CONFIG_CACHE"] = getCentralSharedNpmDir()
+	envMap["PIP_CACHE_DIR"] = filepath.Join(getCentralSharedCacheDir(), "pip")
 
 	// 5. Apply any extra variables supplied by caller
 	for _, extras := range extraVars {

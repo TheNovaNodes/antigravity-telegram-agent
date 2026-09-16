@@ -436,6 +436,7 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "--print", "/usage")
 	cmd.WaitDelay = 2 * time.Second
+	cmd.Env = buildChildEnv("")
 
 	var accountHeader string
 	if GlobalAccountPool != nil {

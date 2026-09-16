@@ -151,6 +151,18 @@ func BenchmarkTextBuffer_Append(b *testing.B) {
 	}
 }
 
+func getSentTelegramMessages(ms *mockServer) []string {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	var msgs []string
+	for i, req := range ms.sentRequests {
+		if strings.Contains(req.URL.Path, "sendMessage") {
+			msgs = append(msgs, ms.sentBodies[i])
+		}
+	}
+	return msgs
+}
+
 // TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead verifies that when a session
 // is already dead (isAlive == false) or was idle (ActiveTurnStart is zero), any incoming
 // ERROR result (e.g. stream input cancelled: context canceled) is suppressed without
@@ -158,12 +170,18 @@ func BenchmarkTextBuffer_Append(b *testing.B) {
 func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 	errorPayload := `{"event": "result", "result": {"status": "ERROR", "error": "stream input cancelled: context canceled"}}` + "\n"
 
-	// Case 1: Session is dead (!isAlive)
+	// Case 1: Session is dead (!isAlive) - must NEVER dispatch to Telegram even if turn was marked active
 	t.Run("DeadSessionSuppressed", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
 		s := &AgySession{
 			BotName:         "DeadBot",
 			isAlive:         false,
-			ActiveTurnStart: time.Time{},
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveTurnStart: time.Now().Add(-5 * time.Second),
 			ActiveMessageID: 0,
 			UpdateChan:      make(chan struct{}, 10),
 		}
@@ -172,15 +190,25 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		defer cancel()
 
 		scanner := bufio.NewScanner(strings.NewReader(errorPayload))
-		// Should return immediately without panics or sending to nil BotAPI
 		s.readStdoutLoop(scanner, ctx)
+
+		sentMsgs := getSentTelegramMessages(ms)
+		if len(sentMsgs) != 0 {
+			t.Errorf("Expected 0 messages sent for dead session, got %d", len(sentMsgs))
+		}
 	})
 
-	// Case 2: Session is alive but completely idle (ActiveTurnStart is zero)
+	// Case 2: Session is alive but completely idle (ActiveTurnStart is zero) - must suppress and continue loop
 	t.Run("IdleSessionSuppressed", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
 		s := &AgySession{
 			BotName:         "IdleBot",
 			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
 			ActiveTurnStart: time.Time{},
 			ActiveMessageID: 0,
 			UpdateChan:      make(chan struct{}, 10),
@@ -193,8 +221,6 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		validPayload := `{"event": "step_update", "step_update": {"text_delta": "hello"}}` + "\n"
 		scanner := bufio.NewScanner(strings.NewReader(errorPayload + validPayload))
 
-		// Run loop (will read error, continue, read step_update, and block on context)
-		// We'll close context asynchronously to allow readStdoutLoop to finish reading lines
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			cancel()
@@ -202,12 +228,53 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 
 		s.readStdoutLoop(scanner, ctx)
 
+		sentMsgs := getSentTelegramMessages(ms)
+		if len(sentMsgs) != 0 {
+			t.Errorf("Expected 0 messages sent for idle session, got %d", len(sentMsgs))
+		}
+
 		// Assert that the UpdateChan received an update, proving readStdoutLoop did not exit on the error
 		select {
 		case <-s.UpdateChan:
 			// Success! The step_update was processed.
 		default:
 			t.Errorf("readStdoutLoop aborted prematurely on error without processing subsequent step_update")
+		}
+	})
+
+	// Case 3: Turn was active (ActiveTurnStart set) but activeMsgID == 0 (e.g. Telegram spinner send failed)
+	// Non-recoverable error MUST be dispatched to user via tgbotapi.NewMessage instead of being silently swallowed.
+	t.Run("ActiveTurnErrorDispatchedWhenMsgIDZero", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		fatalErrorPayload := `{"event": "result", "result": {"status": "ERROR", "error": "fatal internal execution error"}}` + "\n"
+
+		s := &AgySession{
+			BotName:         "ActiveTurnBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveTurnStart: time.Now().Add(-2 * time.Second),
+			ActiveMessageID: 0, // Spinner was not created/delivered
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		scanner := bufio.NewScanner(strings.NewReader(fatalErrorPayload))
+		s.readStdoutLoop(scanner, ctx)
+
+		sentMsgs := getSentTelegramMessages(ms)
+		if len(sentMsgs) == 0 {
+			t.Fatalf("Silent Turn Drop: Expected error message to be dispatched to Telegram when turn was active, got 0 messages")
+		}
+
+		decoded, _ := url.QueryUnescape(sentMsgs[0])
+		if !strings.Contains(decoded, "fatal internal execution error") {
+			t.Errorf("Expected error message to contain 'fatal internal execution error', got %q", decoded)
 		}
 	})
 }
