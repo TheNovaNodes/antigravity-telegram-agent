@@ -169,6 +169,9 @@ func ClassifyAgentError(errMsg string) (isStreamInterrupt, isRateLimit, isPrintT
 	errLower := strings.ToLower(errMsg)
 	isStreamInterrupt = strings.Contains(errLower, "stream was interrupted") ||
 		strings.Contains(errLower, "stream interrupted") ||
+		strings.Contains(errLower, "stream input cancelled") ||
+		strings.Contains(errLower, "context canceled") ||
+		strings.Contains(errLower, "context cancelled") ||
 		strings.Contains(errLower, "connection reset")
 
 	isPrintTimeout = strings.Contains(errLower, "timeout waiting for response")
@@ -683,31 +686,7 @@ func (s *AgySession) start() error {
 	accHome := s.AccountHomeDir
 	convID := s.Conversation
 	s.mu.Unlock()
-	if accHome != "" {
-		var cleanEnv []string
-		for _, e := range os.Environ() {
-			if strings.HasPrefix(e, "HOME=") ||
-				strings.HasPrefix(e, "GOPATH=") ||
-				strings.HasPrefix(e, "GOCACHE=") ||
-				strings.HasPrefix(e, "NPM_CONFIG_CACHE=") ||
-				strings.HasPrefix(e, "PIP_CACHE_DIR=") {
-				continue
-			}
-			cleanEnv = append(cleanEnv, e)
-		}
-		goPath := getCentralSharedGoDir()
-		goCache := filepath.Join(getCentralSharedCacheDir(), "go-build")
-		npmCache := getCentralSharedNpmDir()
-		pipCache := filepath.Join(getCentralSharedCacheDir(), "pip")
-
-		cmd.Env = append(cleanEnv,
-			"HOME="+accHome,
-			"GOPATH="+goPath,
-			"GOCACHE="+goCache,
-			"NPM_CONFIG_CACHE="+npmCache,
-			"PIP_CACHE_DIR="+pipCache,
-		)
-	}
+	cmd.Env = buildChildEnv(accHome)
 
 	// Remove any leftover presence lock file to ensure agy can resume conversation cleanly (#236)
 	cleanPresenceLock(accHome, convID)
@@ -1220,8 +1199,18 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 					default:
 					}
 					s.mu.Lock()
+					isAlive := s.isAlive
 					activeMsgID := s.ActiveMessageID
+					hadActiveTurn := !s.ActiveTurnStart.IsZero()
+					bufEmpty := s.TextBuffer == ""
 					s.mu.Unlock()
+
+					// Suppress phantom error dispatch if session is already dead or completely idle without active turn or buffered content (#281)
+					if (!isAlive || (activeMsgID == 0 && !hadActiveTurn)) && bufEmpty {
+						log.Printf("[Session] Suppressed background teardown/idle error for bot %s (isAlive=%v, activeMsgID=%d): %s",
+							s.BotName, isAlive, activeMsgID, errMsg)
+						continue
+					}
 
 					isStreamInterrupted, isRateLimit, isPrintTimeout := ClassifyAgentError(errMsg)
 
@@ -1577,14 +1566,18 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						}
 					} else {
 						if s.BotAPI != nil {
-							if activeMsgID == 0 {
-								msg := tgbotapi.NewMessage(s.ChatID, displayErr)
+							if activeMsgID != 0 {
+								sendChunk(s.BotAPI, s.ChatID, activeMsgID, displayErr)
+							} else if hadActiveTurn {
+								msg := tgbotapi.NewMessage(s.ChatID, MarkdownToTelegramHTML(displayErr))
+								msg.ParseMode = "HTML"
 								s.BotAPI.Send(msg)
 							} else {
-								sendChunk(s.BotAPI, s.ChatID, activeMsgID, displayErr)
+								log.Printf("[Session] Suppressed idle error dispatch to chat %d (activeMsgID=0, idle): %s", s.ChatID, errMsg)
 							}
 						}
 					}
+
 					continue
 				}
 				s.mu.Lock()

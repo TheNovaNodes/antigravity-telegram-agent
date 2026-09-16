@@ -818,7 +818,7 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "-p", "/usage", "--output-format", "json")
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Env = append(os.Environ(), "HOME="+acc.HomeDir)
+	cmd.Env = buildChildEnv(acc.HomeDir)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute usage command: %w", err)

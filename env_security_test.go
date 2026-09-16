@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -129,4 +130,120 @@ func TestLoadEnvFile_ProductionMissingFailsClosed(t *testing.T) {
 		return // Succeeded in crashing fail-closed
 	}
 	t.Fatalf("Expected loadEnvFile to exit with non-zero in production when ENV_FILE is missing, got: %v", err)
+}
+
+// TestBuildChildEnv_SentinelSecretsEliminated verifies that sensitive supervisor secrets
+// (BOT_TOKENS, ALL_TOKENS, ALLOWED_ADMIN_IDS, API keys, passwords, database URLs) are NEVER
+// inherited by child CLI environments (#282).
+func TestBuildChildEnv_SentinelSecretsEliminated(t *testing.T) {
+	sentinels := map[string]string{
+		"BOT_TOKENS":                 "12345:tokenA,67890:tokenB",
+		"ALL_TOKENS":                 "secret_telegram_token",
+		"ALLOWED_ADMIN_IDS":          "999999,888888",
+		"ELEVENLABS_API_KEY":         "el_live_secret_key_abcdef123456",
+		"SENTINEL_SUPERVISOR_SECRET": "super_sensitive_password_xyz",
+		"DATABASE_URL":               "postgres://admin:password@localhost/db",
+		"NEXTCLOUD_PASSWORD":         "nextcloud_top_secret",
+		"GITHUB_TOKEN":               "ghp_sentinel_leaked_token_12345",
+	}
+
+	for k, v := range sentinels {
+		t.Setenv(k, v)
+	}
+
+	tempHome := t.TempDir()
+	customTmp := filepath.Join(tempHome, "tmp")
+	_ = os.MkdirAll(customTmp, 0700)
+
+	// Also ensure safe passthrough variables can pass through cleanly
+	t.Setenv("USER", "sentinel-bot-runner")
+	t.Setenv("SYSTEM_HOME", "/custom/system/home")
+	t.Setenv("TMPDIR", customTmp)
+
+	childEnv := buildChildEnv(tempHome, map[string]string{"EXTRA_TEST_FLAG": "enabled"})
+
+	// Convert slice to map for fast lookup
+	envMap := make(map[string]string)
+	for _, entry := range childEnv {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// 1. Assert ZERO sensitive sentinels leaked
+	for k := range sentinels {
+		if val, exists := envMap[k]; exists {
+			t.Errorf("CRITICAL LEAK: Sensitive variable %s leaked into child environment: %q", k, val)
+		}
+	}
+
+	// 2. Assert safe baseline variables are present
+	if envMap["HOME"] != tempHome {
+		t.Errorf("Expected HOME=%s, got %s", tempHome, envMap["HOME"])
+	}
+	if envMap["LANG"] != "C.UTF-8" {
+		t.Errorf("Expected LANG=C.UTF-8, got %s", envMap["LANG"])
+	}
+	if envMap["LC_ALL"] != "C.UTF-8" {
+		t.Errorf("Expected LC_ALL=C.UTF-8, got %s", envMap["LC_ALL"])
+	}
+	if envMap["TZ"] != "UTC" {
+		t.Errorf("Expected TZ=UTC, got %s", envMap["TZ"])
+	}
+	if envMap["TERM"] != "xterm-256color" {
+		t.Errorf("Expected TERM=xterm-256color, got %s", envMap["TERM"])
+	}
+	if envMap["USER"] != "sentinel-bot-runner" {
+		t.Errorf("Expected USER=sentinel-bot-runner, got %s", envMap["USER"])
+	}
+	if envMap["SYSTEM_HOME"] != "/custom/system/home" {
+		t.Errorf("Expected SYSTEM_HOME=/custom/system/home, got %s", envMap["SYSTEM_HOME"])
+	}
+	if envMap["TMPDIR"] != customTmp {
+		t.Errorf("Expected TMPDIR=%s, got %s", customTmp, envMap["TMPDIR"])
+	}
+	if envMap["EXTRA_TEST_FLAG"] != "enabled" {
+		t.Errorf("Expected EXTRA_TEST_FLAG=enabled, got %s", envMap["EXTRA_TEST_FLAG"])
+	}
+	if envMap["PATH"] == "" {
+		t.Errorf("Expected PATH to be non-empty")
+	}
+	if envMap["GOPATH"] == "" || envMap["GOCACHE"] == "" || envMap["NPM_CONFIG_CACHE"] == "" || envMap["PIP_CACHE_DIR"] == "" {
+		t.Errorf("Expected build caches (GOPATH, GOCACHE, NPM, PIP) to be set, got %+v", envMap)
+	}
+}
+
+// TestBuildChildEnv_EmptyAccountHomeFallback verifies that when accountHome is empty,
+// buildChildEnv still constructs a safe allowlisted environment (never nil), sets a safe fallback HOME,
+// includes SHELL if present, and never leaks supervisor secrets (#282).
+func TestBuildChildEnv_EmptyAccountHomeFallback(t *testing.T) {
+	t.Setenv("SENTINEL_LEAK_CHECK", "top_secret_value")
+	t.Setenv("SYSTEM_HOME", "/custom/sys/home")
+	t.Setenv("SHELL", "/bin/bash")
+
+	childEnv := buildChildEnv("")
+	if childEnv == nil {
+		t.Fatal("buildChildEnv(\"\") returned nil, which would cause exec.Cmd to inherit os.Environ()!")
+	}
+
+	envMap := make(map[string]string)
+	for _, entry := range childEnv {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if _, exists := envMap["SENTINEL_LEAK_CHECK"]; exists {
+		t.Errorf("Critical leak: SENTINEL_LEAK_CHECK was inherited in child environment!")
+	}
+
+	if envMap["HOME"] != "/custom/sys/home" {
+		t.Errorf("Expected fallback HOME=/custom/sys/home, got %s", envMap["HOME"])
+	}
+
+	if envMap["SHELL"] != "/bin/bash" {
+		t.Errorf("Expected SHELL=/bin/bash, got %s", envMap["SHELL"])
+	}
 }

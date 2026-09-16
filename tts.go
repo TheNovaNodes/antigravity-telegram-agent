@@ -250,6 +250,7 @@ func GenerateVoicePiperTTS(text string, modelPath string) ([]byte, string, error
 	// #nosec G204 -- gosec:nri (Need Review)
 	piperCmd := exec.CommandContext(ctx, piperPath, "-m", modelPath, "-f", "-")
 	piperCmd.WaitDelay = 2 * time.Second
+	piperCmd.Env = buildChildEnv("")
 	piperCmd.Stdin = strings.NewReader(cleanText)
 	piperCmd.Dir = filepath.Dir(piperPath)
 
@@ -270,7 +271,9 @@ func GenerateVoicePiperTTS(text string, modelPath string) ([]byte, string, error
 		// #nosec G204 -- gosec:nri (Need Review)
 		opusCmd := exec.CommandContext(ctx, opusencPath, "--quiet", "-", "-")
 		opusCmd.WaitDelay = 2 * time.Second
+		opusCmd.Env = buildChildEnv("")
 		opusCmd.Stdin = &wavBuf
+
 		var oggBuf bytes.Buffer
 		var opusErr bytes.Buffer
 		opusCmd.Stdout = &oggBuf
