@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -163,6 +165,28 @@ func getSentTelegramMessages(ms *mockServer) []string {
 	return msgs
 }
 
+func getSentTelegramMessagesOrEdits(ms *mockServer) []string {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	var msgs []string
+	for i, req := range ms.sentRequests {
+		if strings.Contains(req.URL.Path, "sendMessage") || strings.Contains(req.URL.Path, "editMessageText") {
+			msgs = append(msgs, ms.sentBodies[i])
+		}
+	}
+	return msgs
+}
+
+func getAllSentTelegramBodies(ms *mockServer) []string {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	var msgs []string
+	for _, b := range ms.sentBodies {
+		msgs = append(msgs, b)
+	}
+	return msgs
+}
+
 // TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead verifies that when a session
 // is already dead (isAlive == false) or was idle (ActiveTurnStart is zero), any incoming
 // ERROR result (e.g. stream input cancelled: context canceled) is suppressed without
@@ -276,5 +300,193 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		if !strings.Contains(decoded, "fatal internal execution error") {
 			t.Errorf("Expected error message to contain 'fatal internal execution error', got %q", decoded)
 		}
+	})
+}
+
+// TestSession_GracefulShutdown verifies that during supervisor daemon shutdown,
+// in-flight turns are salvaged, planned maintenance disclaimers are delivered,
+// and processes are terminated cleanly without race conditions or raw error leakage (#284).
+func TestSession_GracefulShutdown(t *testing.T) {
+	// Case 1: Active turn with partial text buffer and truncation flag
+	t.Run("PartialBufferSalvagedWithMaintenanceDisclaimer", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		s := &AgySession{
+			BotName:         "ShutdownBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 101,
+			ActiveTurnStart: time.Now().Add(-1 * time.Second),
+			TextBuffer:      "Partial output generated before restart",
+			TextTruncated:   true,
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		s.GracefulShutdown()
+
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown, got isAlive=true")
+		}
+		if s.ActiveMessageID != 0 {
+			t.Errorf("Expected ActiveMessageID to be 0 after GracefulShutdown, got %d", s.ActiveMessageID)
+		}
+		if s.TextBuffer != "" {
+			t.Errorf("Expected TextBuffer to be cleared after GracefulShutdown, got %q", s.TextBuffer)
+		}
+
+		sentMsgs := getSentTelegramMessagesOrEdits(ms)
+		if len(sentMsgs) == 0 {
+			t.Fatalf("Expected maintenance disclaimer message to be delivered, got 0")
+		}
+
+		foundDisclaimer := false
+		foundPartial := false
+		foundTruncated := false
+
+		for _, raw := range sentMsgs {
+			dec, _ := url.QueryUnescape(raw)
+			if strings.Contains(dec, "Service restarted: daemon maintenance in progress") {
+				foundDisclaimer = true
+			}
+			if strings.Contains(dec, "Partial output generated before restart") {
+				foundPartial = true
+			}
+			if strings.Contains(dec, "Response truncated: buffer exceeded 1MB limit") {
+				foundTruncated = true
+			}
+		}
+
+		if !foundDisclaimer {
+			t.Errorf("Expected maintenance disclaimer in sent messages, got: %v", sentMsgs)
+		}
+		if !foundPartial {
+			t.Errorf("Expected partial output to be salvaged, got: %v", sentMsgs)
+		}
+		if !foundTruncated {
+			t.Errorf("Expected truncation notice in sent messages, got: %v", sentMsgs)
+		}
+	})
+
+	// Case 2: Active turn with empty text buffer (turn just started)
+	t.Run("EmptyBufferMaintenanceDisclaimer", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		s := &AgySession{
+			BotName:         "ShutdownEmptyBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 202,
+			ActiveTurnStart: time.Now(),
+			TextBuffer:      "",
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		s.GracefulShutdown()
+
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown")
+		}
+		if s.ActiveMessageID != 0 {
+			t.Errorf("Expected ActiveMessageID to be 0 after GracefulShutdown")
+		}
+
+		sentMsgs := getSentTelegramMessagesOrEdits(ms)
+		if len(sentMsgs) == 0 {
+			t.Fatalf("Expected disclaimer message to be delivered, got 0")
+		}
+
+		foundDisclaimer := false
+		for _, raw := range sentMsgs {
+			dec, _ := url.QueryUnescape(raw)
+			if strings.Contains(dec, "Service restarted (planned maintenance)") && strings.Contains(dec, "Turn execution was interrupted") {
+				foundDisclaimer = true
+			}
+		}
+
+		if !foundDisclaimer {
+			t.Errorf("Expected planned maintenance disclaimer, got: %v", sentMsgs)
+		}
+	})
+
+	// Case 3: Idle session without active message (no spurious message sent)
+	t.Run("IdleSessionNoOp", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		s := &AgySession{
+			BotName:         "IdleBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 0,
+			ActiveTurnStart: time.Time{},
+			TextBuffer:      "",
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		s.GracefulShutdown()
+
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown")
+		}
+
+		sentMsgs := getSentTelegramMessagesOrEdits(ms)
+		if len(sentMsgs) != 0 {
+			t.Errorf("Expected 0 Telegram messages for idle session shutdown, got %d: %v", len(sentMsgs), sentMsgs)
+		}
+	})
+
+	// Case 4: Idempotency and subprocess termination
+	t.Run("IdempotentAndSubprocessTermination", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		cmd := exec.Command("sleep", "30")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("Failed to start test sleep subprocess: %v", err)
+		}
+		waitDone := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(waitDone)
+		}()
+
+		s := &AgySession{
+			BotName:         "SubprocBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 303,
+			ActiveTurnStart: time.Now(),
+			TextBuffer:      "Subprocess output",
+			Cmd:             cmd,
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		s.GracefulShutdown()
+
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown")
+		}
+
+		select {
+		case <-waitDone:
+			// Process terminated cleanly
+		case <-time.After(1 * time.Second):
+			t.Errorf("Expected subprocess PID %d to be terminated by GracefulShutdown", cmd.Process.Pid)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+
+		// Second call must be idempotent and not panic
+		s.GracefulShutdown()
 	})
 }

@@ -63,6 +63,7 @@ type AgySession struct {
 	AccountHomeDir  string
 }
 
+
 // getTurnTimeout returns the maximum duration of complete inactivity allowed before the turn watchdog triggers.
 // Defaults to 15 minutes, configurable via TURN_INACTIVITY_TIMEOUT_MINUTES or TURN_TIMEOUT_MINUTES.
 func getTurnTimeout() time.Duration {
@@ -398,6 +399,37 @@ func (s *AgySession) Kill() {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}
 	}
+}
+
+// GracefulShutdown salvages the active turn buffer and notifies the user before terminating the process (#284).
+func (s *AgySession) GracefulShutdown() {
+	s.mu.Lock()
+	activeID := s.ActiveMessageID
+	savedBuf := s.TextBuffer
+	trunc := s.TextTruncated
+	botAPI := s.BotAPI
+	chatID := s.ChatID
+	ws := s.Workspace
+	s.ActiveMessageID = 0
+	s.TextBuffer = ""
+	s.mu.Unlock()
+
+	if botAPI != nil && activeID != 0 {
+		trimmed := strings.TrimSpace(savedBuf)
+		if trimmed != "" {
+			if trunc {
+				trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+			}
+			trimmed += "\n\n🔄 _[Service restarted: daemon maintenance in progress. Context preserved — please resend your message in a few seconds]_"
+			sendChunk(botAPI, chatID, activeID, trimmed)
+			sendArtifacts(botAPI, chatID, trimmed, ws)
+		} else {
+			notice := "🔄 *Service restarted (planned maintenance).*\nTurn execution was interrupted. Session context is preserved — please resend your message in a few seconds."
+			sendChunk(botAPI, chatID, activeID, notice)
+		}
+	}
+
+	s.Kill()
 }
 
 // GetConversation safely returns the active conversation ID under mutex lock.

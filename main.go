@@ -180,7 +180,7 @@ func main() {
 	}
 	activeBotsMu.Unlock()
 
-	// 2. Kill and clean up all active agent processes
+	// 2. Gracefully terminate and salvage in-flight turns for all active agent processes (#284)
 	sessionMu.Lock()
 	sessionsToKill := make([]*AgySession, 0, len(globalSessions))
 	for _, s := range globalSessions {
@@ -189,7 +189,7 @@ func main() {
 	sessionMu.Unlock()
 
 	for _, s := range sessionsToKill {
-		s.Kill()
+		s.GracefulShutdown()
 	}
 
 	// 3. Await clean exit of all bot polling loops
