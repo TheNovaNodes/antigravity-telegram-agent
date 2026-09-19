@@ -709,3 +709,214 @@ func TestHandleClearCommand_InboxCollisionAvoidance(t *testing.T) {
 		t.Fatalf("expected 2 files in inboxDir (1 existing + 1 exhumed disambiguated), got %d: %v", len(entries), entries)
 	}
 }
+
+func TestGetProjectsDir_ResolutionPriority(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. Explicit PROJECTS_DIR takes highest precedence
+	customProjects := filepath.Join(tempDir, "custom_projects")
+	t.Setenv("PROJECTS_DIR", customProjects)
+	t.Setenv("SYSTEM_HOME", filepath.Join(tempDir, "sysroot"))
+	t.Setenv("HOME", filepath.Join(tempDir, "etc/antigravity-bot/accounts/user"))
+	if got := getProjectsDir(); got != customProjects {
+		t.Errorf("Expected PROJECTS_DIR %s, got %s", customProjects, got)
+	}
+
+	// 2. Unset PROJECTS_DIR -> resolves via SYSTEM_HOME when daemon runs under multi-account HOME
+	t.Setenv("PROJECTS_DIR", "")
+	expectedSysProjects := filepath.Join(tempDir, "sysroot", "projects")
+	if got := getProjectsDir(); got != expectedSysProjects {
+		t.Errorf("Expected SYSTEM_HOME projects %s, got %s", expectedSysProjects, got)
+	}
+
+	// 3. Fallback when neither PROJECTS_DIR nor SYSTEM_HOME is set, standard HOME
+	t.Setenv("SYSTEM_HOME", "")
+	standardHome := filepath.Join(tempDir, "home", "developer")
+	t.Setenv("HOME", standardHome)
+	expectedDevProjects := filepath.Join(standardHome, "projects")
+	if got := getProjectsDir(); got != expectedDevProjects {
+		t.Errorf("Expected standard HOME projects %s, got %s", expectedDevProjects, got)
+	}
+}
+
+func TestExtractAllowedArtifacts_MultiAccountDaemonAndSystemHome(t *testing.T) {
+	tempDir := t.TempDir()
+	sysHome := filepath.Join(tempDir, "root")
+	accountHome := filepath.Join(tempDir, "etc", "antigravity-bot", "accounts", "thedoctormes")
+
+	sysProjectsDir := filepath.Join(sysHome, "projects", "fxlab-landing")
+	accountAgentsDir := filepath.Join(accountHome, ".agents", "trickster_gobot")
+	forbiddenDir := filepath.Join(tempDir, "etc", "security")
+
+	if err := os.MkdirAll(sysProjectsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(accountAgentsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(forbiddenDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PROJECTS_DIR", "")
+	t.Setenv("SYSTEM_HOME", sysHome)
+	t.Setenv("HOME", accountHome)
+
+	// Create test artifacts
+	projFile := filepath.Join(sysProjectsDir, "report.md")
+	if err := os.WriteFile(projFile, []byte("# FXLab Report\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	agentFile := filepath.Join(accountAgentsDir, "memory.json")
+	if err := os.WriteFile(agentFile, []byte(`{"status":"active"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	forbiddenFile := filepath.Join(forbiddenDir, "shadow")
+	if err := os.WriteFile(forbiddenFile, []byte("root:*:19000:0:99999:7:::"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	text := fmt.Sprintf("Turn Output:\n- [Project Report](file://%s)\n- [Agent Memory](file://%s)\n- [Forbidden](file://%s)\n",
+		projFile, agentFile, forbiddenFile)
+
+	allowed := ExtractAllowedArtifacts(text)
+
+	found := make(map[string]bool)
+	for _, p := range allowed {
+		found[p] = true
+	}
+
+	if !found[projFile] {
+		t.Errorf("Expected project file under SYSTEM_HOME %s to be allowed, but it was blocked", projFile)
+	}
+	if !found[agentFile] {
+		t.Errorf("Expected agent file under account HOME %s to be allowed, but it was blocked", agentFile)
+	}
+	if found[forbiddenFile] {
+		t.Errorf("Expected forbidden file %s to be strictly blocked by LFI sandbox, but it was allowed", forbiddenFile)
+	}
+	if len(allowed) != 2 {
+		t.Errorf("Expected exactly 2 allowed artifacts, got %d: %v", len(allowed), allowed)
+	}
+}
+
+func TestExtractAllowedArtifacts_SessionWorkspaceScoped(t *testing.T) {
+	tempDir := t.TempDir()
+	customWS := filepath.Join(tempDir, "opt", "isolated-repo")
+	otherDir := filepath.Join(tempDir, "opt", "private-data")
+
+	if err := os.MkdirAll(customWS, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	wsFile := filepath.Join(customWS, "generated_script.py")
+	otherFile := filepath.Join(otherDir, "secrets.env")
+
+	if err := os.WriteFile(wsFile, []byte("print('hello')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherFile, []byte("KEY=123\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	text := fmt.Sprintf("Files:\n- [Script](file://%s)\n- [Secret](file://%s)\n", wsFile, otherFile)
+
+	// 1. Without passing workspace, customWS is outside standard roots and should be blocked
+	allowedNoExtra := ExtractAllowedArtifacts(text)
+	for _, p := range allowedNoExtra {
+		if p == wsFile {
+			t.Errorf("Expected %s to be blocked when workspace is not passed", wsFile)
+		}
+	}
+
+	// 2. When passing customWS as extraRoots (session.Workspace), wsFile is allowed, otherFile remains blocked
+	allowedWithWS := ExtractAllowedArtifacts(text, customWS)
+	found := make(map[string]bool)
+	for _, p := range allowedWithWS {
+		found[p] = true
+	}
+
+	if !found[wsFile] {
+		t.Errorf("Expected workspace-scoped artifact %s to be allowed", wsFile)
+	}
+	if found[otherFile] {
+		t.Errorf("Expected non-workspace artifact %s to remain blocked", otherFile)
+	}
+}
+
+func TestExtractAllowedArtifacts_TempDirEscapeBlocked(t *testing.T) {
+	tempDir := t.TempDir()
+	accountHome := filepath.Join(tempDir, "etc", "antigravity-bot", "accounts", "thedoctormes")
+	if err := os.MkdirAll(accountHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// SYSTEM_HOME unset, HOME has /accounts/ -> getSystemBaseHome() falls back to os.TempDir()
+	t.Setenv("PROJECTS_DIR", "")
+	t.Setenv("SYSTEM_HOME", "")
+	t.Setenv("HOME", accountHome)
+
+	tmpProjectsDir := filepath.Join(os.TempDir(), "projects")
+	if err := os.MkdirAll(tmpProjectsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile := filepath.Join(tmpProjectsDir, "malicious_injected.txt")
+	if err := os.WriteFile(tmpFile, []byte("injected content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile)
+
+	text := fmt.Sprintf("Report: [Escape File](file://%s)\n", tmpFile)
+	allowed := ExtractAllowedArtifacts(text)
+	for _, p := range allowed {
+		if p == tmpFile {
+			t.Errorf("Security boundary failed: file in /tmp/projects %s was allowed when baseHome is TempDir", tmpFile)
+		}
+	}
+}
+
+func TestExtractAllowedArtifacts_RelativePathsResolution(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	subDir := filepath.Join(workspaceDir, "docs")
+	outsideDir := filepath.Join(tempDir, "outside")
+
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	relFile := filepath.Join(subDir, "report.md")
+	traversalFile := filepath.Join(outsideDir, "secret.txt")
+
+	if err := os.WriteFile(relFile, []byte("# Relative Doc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(traversalFile, []byte("forbidden\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Relative link and traversal attempt
+	text := "Check output:\n- [Doc](docs/report.md)\n- [Traversal](../outside/secret.txt)\n"
+
+	allowed := ExtractAllowedArtifacts(text, workspaceDir)
+
+	found := make(map[string]bool)
+	for _, p := range allowed {
+		found[p] = true
+	}
+
+	if !found[relFile] {
+		t.Errorf("Expected relative file docs/report.md to be resolved against workspace %s, but it was not", workspaceDir)
+	}
+	if found[traversalFile] {
+		t.Errorf("Expected path traversal ../outside/secret.txt to be strictly blocked, but it was allowed")
+	}
+}

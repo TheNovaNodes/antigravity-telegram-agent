@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,6 +130,16 @@ func TestHandleWorkspaceCommand_Security(t *testing.T) {
 	botName := "TestBot"
 	user := User{ID: 3001, Workspace: "/initial", Model: "gemini-3.7-flash-high"}
 
+	sessionKey := fmt.Sprintf("%s:%d:%d", botName, int64(12345), user.ID)
+	defer func() {
+		sessionMu.Lock()
+		if s, ok := globalSessions[sessionKey]; ok {
+			s.Kill()
+			delete(globalSessions, sessionKey)
+		}
+		sessionMu.Unlock()
+	}()
+
 	// 1. Valid workspace in PROJECTS_DIR
 	validProj := filepath.Join(projectsDir, "my_app")
 	os.MkdirAll(validProj, 0755)
@@ -156,5 +167,41 @@ func TestHandleWorkspaceCommand_Security(t *testing.T) {
 	db.QueryRow("SELECT workspace FROM users WHERE user_id = 3001").Scan(&ws3)
 	if ws3 != validProj {
 		t.Errorf("Expected workspace update to /etc to be blocked, but DB was changed to %s", ws3)
+	}
+
+	// 4. Valid workspace in SYSTEM_HOME projects and sysBotOffice
+	sysHome := filepath.Join(tempDir, "sysroot")
+	sysProj := filepath.Join(sysHome, "projects", "sys_app")
+	sysOffice := filepath.Join(sysHome, ".agents", botName)
+	os.MkdirAll(sysProj, 0755)
+	os.MkdirAll(sysOffice, 0755)
+	t.Setenv("SYSTEM_HOME", sysHome)
+
+	handleWorkspaceCommand(bot, 12345, 3001, "/workspace "+sysProj, botName, user, db)
+	var ws4 string
+	db.QueryRow("SELECT workspace FROM users WHERE user_id = 3001").Scan(&ws4)
+	if ws4 != sysProj {
+		t.Errorf("Expected workspace update to sysProjectsDir %s, got %s", sysProj, ws4)
+	}
+
+	handleWorkspaceCommand(bot, 12345, 3001, "/workspace "+sysOffice, botName, user, db)
+	var ws5 string
+	db.QueryRow("SELECT workspace FROM users WHERE user_id = 3001").Scan(&ws5)
+	if ws5 != sysOffice {
+		t.Errorf("Expected workspace update to sysBotOffice %s, got %s", sysOffice, ws5)
+	}
+
+	// 5. Block /tmp/projects escape when baseHome falls back to os.TempDir()
+	t.Setenv("SYSTEM_HOME", "")
+	t.Setenv("HOME", filepath.Join(tempDir, "etc/antigravity-bot/accounts/user"))
+	tmpProjects := filepath.Join(os.TempDir(), "projects", "fake_proj")
+	os.MkdirAll(tmpProjects, 0755)
+	defer os.RemoveAll(tmpProjects)
+
+	handleWorkspaceCommand(bot, 12345, 3001, "/workspace "+tmpProjects, botName, user, db)
+	var ws6 string
+	db.QueryRow("SELECT workspace FROM users WHERE user_id = 3001").Scan(&ws6)
+	if ws6 == tmpProjects {
+		t.Errorf("Security boundary failed: /workspace allowed escape to /tmp/projects %s", tmpProjects)
 	}
 }

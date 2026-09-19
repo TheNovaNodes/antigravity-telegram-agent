@@ -154,7 +154,7 @@ func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duratio
 			}
 			trimmed += reasonNotice
 			sendChunk(botAPI, cID, activeMsgID, trimmed)
-			sendArtifacts(botAPI, cID, trimmed)
+			sendArtifacts(botAPI, cID, trimmed, s.Workspace)
 		} else {
 			sendChunk(botAPI, cID, activeMsgID, stalledMsg)
 		}
@@ -255,6 +255,13 @@ func getCompactionHint(convID string, hadStreamRecovery bool) string {
 func getProjectsDir() string {
 	if env := os.Getenv("PROJECTS_DIR"); env != "" {
 		return env
+	}
+	baseHome := getSystemBaseHome()
+	if baseHome != "" && baseHome != os.TempDir() {
+		return filepath.Join(baseHome, "projects")
+	}
+	if fi, err := os.Stat("/root/projects"); err == nil && fi.IsDir() {
+		return "/root/projects"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -881,7 +888,7 @@ func (s *AgySession) Restart() {
 
 // ExtractAllowedArtifacts parses the agent's markdown text for local file links (file:// and markdown paths),
 // normalizes the paths, evaluates symlinks, checks them against the LFI whitelists (Fail-Closed), and verifies files exist.
-func ExtractAllowedArtifacts(text string) []string {
+func ExtractAllowedArtifacts(text string, extraRoots ...string) []string {
 	var validPaths []string
 	seen := make(map[string]bool)
 	re := regexp.MustCompile(`(?:\[[^\]]*\]\((?:file://)?([^)\s]+)\)|\(file://([^)\s]+)\))`)
@@ -890,6 +897,13 @@ func ExtractAllowedArtifacts(text string) []string {
 	agentsDir := getAgentsDir()
 	brainDir := getBrainDir()
 	projectsDir := getProjectsDir()
+	baseHome := getSystemBaseHome()
+	var sysProjectsDir, sysAgentsDir, sysBrainDir string
+	if baseHome != "" && baseHome != os.TempDir() {
+		sysProjectsDir = filepath.Join(baseHome, "projects")
+		sysAgentsDir = filepath.Join(baseHome, ".agents")
+		sysBrainDir = filepath.Join(baseHome, ".gemini", "antigravity-cli", "brain")
+	}
 
 	for _, match := range matches {
 		filePath := match[1]
@@ -909,13 +923,46 @@ func ExtractAllowedArtifacts(text string) []string {
 
 		realPath, err := filepath.EvalSymlinks(cleanPath)
 		if err != nil {
-			continue
+			// If relative path, try resolving against extraRoots (session.Workspace) and projectsDir
+			if !filepath.IsAbs(filePath) {
+				resolved := false
+				var candidateRoots []string
+				candidateRoots = append(candidateRoots, extraRoots...)
+				candidateRoots = append(candidateRoots, projectsDir)
+				for _, root := range candidateRoots {
+					if strings.TrimSpace(root) == "" {
+						continue
+					}
+					cand := filepath.Join(root, filePath)
+					if rp, e := filepath.EvalSymlinks(cand); e == nil {
+						realPath = rp
+						err = nil
+						resolved = true
+						break
+					}
+				}
+				if !resolved {
+					continue
+				}
+			} else {
+				continue
+			}
 		}
 
 		// Fail-Closed: Verify that realPath is strictly contained inside allowed roots
 		isAllowed := isPathUnderRoot(realPath, agentsDir) ||
+			(sysAgentsDir != "" && isPathUnderRoot(realPath, sysAgentsDir)) ||
 			isPathUnderRoot(realPath, brainDir) ||
-			isPathUnderRoot(realPath, projectsDir)
+			(sysBrainDir != "" && isPathUnderRoot(realPath, sysBrainDir)) ||
+			isPathUnderRoot(realPath, projectsDir) ||
+			(sysProjectsDir != "" && isPathUnderRoot(realPath, sysProjectsDir))
+
+		for _, extra := range extraRoots {
+			if strings.TrimSpace(extra) != "" && isPathUnderRoot(realPath, extra) {
+				isAllowed = true
+				break
+			}
+		}
 
 		if !isAllowed {
 			log.Printf("ExtractAllowedArtifacts: blocked attempt to send file outside allowed root: %s", realPath)
@@ -934,8 +981,8 @@ func ExtractAllowedArtifacts(text string) []string {
 }
 
 // sendArtifacts parses the agent's response, opens verified files to prevent TOCTOU, scrubs secrets from text artifacts, and sends them as Telegram documents.
-func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string) {
-	paths := ExtractAllowedArtifacts(text)
+func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string, extraRoots ...string) {
+	paths := ExtractAllowedArtifacts(text, extraRoots...)
 	for _, realPath := range paths {
 		// #nosec G304 -- gosec:nri (Need Review)
 		info, err := os.Stat(realPath)
@@ -1376,7 +1423,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 										msg.ReplyMarkup = retryMarkup
 										botAPI.Send(msg)
 									}
-									sendArtifacts(botAPI, chatID, trimmed)
+									sendArtifacts(botAPI, chatID, trimmed, s.Workspace)
 								} else {
 									failNotice := "⚠️ *Connection to agent was temporarily interrupted (Google Cloud stream severed).* Tap the button below to resume."
 									if activeID != 0 {
@@ -1562,7 +1609,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							} else {
 								sendChunk(s.BotAPI, s.ChatID, activeMsgID, trimmed)
 							}
-							sendArtifacts(s.BotAPI, s.ChatID, trimmed)
+							sendArtifacts(s.BotAPI, s.ChatID, trimmed, s.Workspace)
 						}
 					} else {
 						if s.BotAPI != nil {
@@ -1615,7 +1662,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							}
 						}
 					}
-					sendArtifacts(s.BotAPI, s.ChatID, response)
+					sendArtifacts(s.BotAPI, s.ChatID, response, s.Workspace)
 				}
 
 				// Mirror Protocol: Trigger TTS on final response
