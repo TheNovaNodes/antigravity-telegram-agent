@@ -164,6 +164,7 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	<-sigs
 
+	SetDaemonShuttingDown()
 	log.Println("Shutting down gracefully...")
 	if metricsServer != nil {
 		_ = StopMetricsServer(metricsServer)

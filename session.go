@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,6 +62,23 @@ type AgySession struct {
 	isAlive         bool
 	AccountID       string
 	AccountHomeDir  string
+}
+
+var isDaemonShuttingDown atomic.Bool
+
+// SetDaemonShuttingDown marks that the supervisor daemon has received a termination signal (SIGINT/SIGTERM).
+func SetDaemonShuttingDown() {
+	isDaemonShuttingDown.Store(true)
+}
+
+// ResetDaemonShuttingDown resets the daemon shutdown status (used primarily for test isolation).
+func ResetDaemonShuttingDown() {
+	isDaemonShuttingDown.Store(false)
+}
+
+// IsDaemonShuttingDown reports whether the supervisor daemon is currently exiting.
+func IsDaemonShuttingDown() bool {
+	return isDaemonShuttingDown.Load()
 }
 
 // getTurnTimeout returns the maximum duration of complete inactivity allowed before the turn watchdog triggers.
@@ -172,7 +190,9 @@ func ClassifyAgentError(errMsg string) (isStreamInterrupt, isRateLimit, isPrintT
 		strings.Contains(errLower, "stream input cancelled") ||
 		strings.Contains(errLower, "context canceled") ||
 		strings.Contains(errLower, "context cancelled") ||
-		strings.Contains(errLower, "connection reset")
+		strings.Contains(errLower, "connection reset") ||
+		errLower == "interrupted" ||
+		strings.Contains(errLower, "process interrupted")
 
 	isPrintTimeout = strings.Contains(errLower, "timeout waiting for response")
 
@@ -870,6 +890,9 @@ func (s *AgySession) start() error {
 		// If the process exited unexpectedly while a message was active, clean up the Telegram UI spinner
 		if activeMsgID != 0 && botAPI != nil {
 			statusMsg := "⚠️ *Agent session was stopped or restarted.* Please resend your message."
+			if IsDaemonShuttingDown() {
+				statusMsg = "🔄 *Service restarted (planned maintenance).*\nTurn execution was interrupted. Session context is preserved — please resend your message in a few seconds."
+			}
 			if err != nil {
 				log.Printf("[Process exited for bot %s] %v", s.BotName, err)
 			}
@@ -1257,6 +1280,44 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 						log.Printf("[Session] Suppressed background teardown/idle error for bot %s (isAlive=%v, activeMsgID=%d): %s",
 							s.BotName, isAlive, activeMsgID, errMsg)
 						continue
+					}
+
+					// If the daemon is actively shutting down, suppress raw error dispatch and deliver maintenance disclaimer (#284)
+					if IsDaemonShuttingDown() {
+						log.Printf("[Session] Supervisor shutting down: handling mid-turn daemon restart for bot %s (chatID %d, activeMsgID %d, hadActiveTurn=%v): %s",
+							s.BotName, s.ChatID, activeMsgID, hadActiveTurn, errMsg)
+
+						s.mu.Lock()
+						savedBuf := s.TextBuffer
+						trunc := s.TextTruncated
+						botAPI := s.BotAPI
+						chatID := s.ChatID
+						ws := s.Workspace
+						s.ActiveMessageID = 0
+						s.ActiveTurnStart = time.Time{}
+						s.StreamRetries = 0
+						s.TurnFailovers = 0
+						s.TextBuffer = ""
+						s.TextTruncated = false
+						s.mu.Unlock()
+
+						s.Kill()
+
+						if botAPI != nil && activeMsgID != 0 {
+							trimmed := strings.TrimSpace(savedBuf)
+							if trimmed != "" {
+								if trunc {
+									trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+								}
+								trimmed += "\n\n🔄 _[Service restarted: daemon maintenance in progress. Context preserved — please resend your message in a few seconds]_"
+								sendChunk(botAPI, chatID, activeMsgID, trimmed)
+								sendArtifacts(botAPI, chatID, trimmed, ws)
+							} else {
+								shutdownNotice := "🔄 *Service restarted (planned maintenance).*\nTurn execution was interrupted. Session context is preserved — please resend your message in a few seconds."
+								sendChunk(botAPI, chatID, activeMsgID, shutdownNotice)
+							}
+						}
+						return
 					}
 
 					isStreamInterrupted, isRateLimit, isPrintTimeout := ClassifyAgentError(errMsg)

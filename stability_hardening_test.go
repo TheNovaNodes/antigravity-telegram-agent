@@ -163,6 +163,16 @@ func getSentTelegramMessages(ms *mockServer) []string {
 	return msgs
 }
 
+func getAllSentTelegramBodies(ms *mockServer) []string {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	var msgs []string
+	for _, b := range ms.sentBodies {
+		msgs = append(msgs, b)
+	}
+	return msgs
+}
+
 // TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead verifies that when a session
 // is already dead (isAlive == false) or was idle (ActiveTurnStart is zero), any incoming
 // ERROR result (e.g. stream input cancelled: context canceled) is suppressed without
@@ -275,6 +285,123 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		decoded, _ := url.QueryUnescape(sentMsgs[0])
 		if !strings.Contains(decoded, "fatal internal execution error") {
 			t.Errorf("Expected error message to contain 'fatal internal execution error', got %q", decoded)
+		}
+	})
+}
+
+// TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer verifies that during daemon shutdown (SIGINT/SIGTERM),
+// mid-turn agent interruption does NOT dispatch a raw "Error from agent: interrupted" message, but instead
+// cleanly delivers the English planned maintenance disclaimer and salvages buffered output (#284).
+func TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer(t *testing.T) {
+	SetDaemonShuttingDown()
+	defer ResetDaemonShuttingDown()
+
+	// Case 1: Active turn with partial text buffer
+	t.Run("PartialBufferSalvageWithShutdownDisclaimer", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		errPayload := `{"event": "result", "result": {"status": "ERROR", "error": "interrupted"}}` + "\n"
+
+		s := &AgySession{
+			BotName:         "ShutdownBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 101,
+			ActiveTurnStart: time.Now().Add(-1 * time.Second),
+			TextBuffer:      "Partial output generated before restart",
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		scanner := bufio.NewScanner(strings.NewReader(errPayload))
+		s.readStdoutLoop(scanner, ctx)
+
+		sentMsgs := getAllSentTelegramBodies(ms)
+		if len(sentMsgs) == 0 {
+			t.Fatalf("Expected disclaimer message to be delivered, got 0")
+		}
+
+		foundDisclaimer := false
+		foundPartial := false
+		foundRawError := false
+
+		for _, raw := range sentMsgs {
+			dec, _ := url.QueryUnescape(raw)
+			if strings.Contains(dec, "Service restarted: daemon maintenance in progress") {
+				foundDisclaimer = true
+			}
+			if strings.Contains(dec, "Partial output generated before restart") {
+				foundPartial = true
+			}
+			if strings.Contains(dec, "Error from agent: interrupted") {
+				foundRawError = true
+			}
+		}
+
+		if !foundDisclaimer {
+			t.Errorf("Expected maintenance disclaimer in sent messages, got: %v", sentMsgs)
+		}
+		if !foundPartial {
+			t.Errorf("Expected partial output to be salvaged, got: %v", sentMsgs)
+		}
+		if foundRawError {
+			t.Errorf("Raw error leaked during shutdown: %v", sentMsgs)
+		}
+	})
+
+	// Case 2: Active turn with empty buffer (turn just started)
+	t.Run("EmptyBufferShutdownDisclaimer", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		errPayload := `{"event": "result", "result": {"status": "ERROR", "error": "interrupted"}}` + "\n"
+
+		s := &AgySession{
+			BotName:         "ShutdownEmptyBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 202,
+			ActiveTurnStart: time.Now(),
+			TextBuffer:      "",
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		scanner := bufio.NewScanner(strings.NewReader(errPayload))
+		s.readStdoutLoop(scanner, ctx)
+
+		sentMsgs := getAllSentTelegramBodies(ms)
+		if len(sentMsgs) == 0 {
+			t.Fatalf("Expected disclaimer message to be delivered, got 0")
+		}
+
+		foundDisclaimer := false
+		foundRawError := false
+
+		for _, raw := range sentMsgs {
+			dec, _ := url.QueryUnescape(raw)
+			if strings.Contains(dec, "Service restarted (planned maintenance)") {
+				foundDisclaimer = true
+			}
+			if strings.Contains(dec, "Error from agent: interrupted") {
+				foundRawError = true
+			}
+		}
+
+		if !foundDisclaimer {
+			t.Errorf("Expected planned maintenance disclaimer, got: %v", sentMsgs)
+		}
+		if foundRawError {
+			t.Errorf("Raw error leaked during shutdown: %v", sentMsgs)
 		}
 	})
 }
