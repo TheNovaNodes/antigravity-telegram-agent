@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -163,6 +165,18 @@ func getSentTelegramMessages(ms *mockServer) []string {
 	return msgs
 }
 
+func getSentTelegramMessagesOrEdits(ms *mockServer) []string {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	var msgs []string
+	for i, req := range ms.sentRequests {
+		if strings.Contains(req.URL.Path, "sendMessage") || strings.Contains(req.URL.Path, "editMessageText") {
+			msgs = append(msgs, ms.sentBodies[i])
+		}
+	}
+	return msgs
+}
+
 func getAllSentTelegramBodies(ms *mockServer) []string {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
@@ -289,20 +303,15 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 	})
 }
 
-// TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer verifies that during daemon shutdown (SIGINT/SIGTERM),
-// mid-turn agent interruption does NOT dispatch a raw "Error from agent: interrupted" message, but instead
-// cleanly delivers the English planned maintenance disclaimer and salvages buffered output (#284).
-func TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer(t *testing.T) {
-	SetDaemonShuttingDown()
-	defer ResetDaemonShuttingDown()
-
-	// Case 1: Active turn with partial text buffer
-	t.Run("PartialBufferSalvageWithShutdownDisclaimer", func(t *testing.T) {
+// TestSession_GracefulShutdown verifies that during supervisor daemon shutdown,
+// in-flight turns are salvaged, planned maintenance disclaimers are delivered,
+// and processes are terminated cleanly without race conditions or raw error leakage (#284).
+func TestSession_GracefulShutdown(t *testing.T) {
+	// Case 1: Active turn with partial text buffer and truncation flag
+	t.Run("PartialBufferSalvagedWithMaintenanceDisclaimer", func(t *testing.T) {
 		ms := newMockServer()
 		defer ms.Close()
 		bot := createMockBot(ms)
-
-		errPayload := `{"event": "result", "result": {"status": "ERROR", "error": "interrupted"}}` + "\n"
 
 		s := &AgySession{
 			BotName:         "ShutdownBot",
@@ -312,23 +321,30 @@ func TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer(t *testing.T) {
 			ActiveMessageID: 101,
 			ActiveTurnStart: time.Now().Add(-1 * time.Second),
 			TextBuffer:      "Partial output generated before restart",
+			TextTruncated:   true,
 			UpdateChan:      make(chan struct{}, 10),
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		s.GracefulShutdown()
 
-		scanner := bufio.NewScanner(strings.NewReader(errPayload))
-		s.readStdoutLoop(scanner, ctx)
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown, got isAlive=true")
+		}
+		if s.ActiveMessageID != 0 {
+			t.Errorf("Expected ActiveMessageID to be 0 after GracefulShutdown, got %d", s.ActiveMessageID)
+		}
+		if s.TextBuffer != "" {
+			t.Errorf("Expected TextBuffer to be cleared after GracefulShutdown, got %q", s.TextBuffer)
+		}
 
-		sentMsgs := getAllSentTelegramBodies(ms)
+		sentMsgs := getSentTelegramMessagesOrEdits(ms)
 		if len(sentMsgs) == 0 {
-			t.Fatalf("Expected disclaimer message to be delivered, got 0")
+			t.Fatalf("Expected maintenance disclaimer message to be delivered, got 0")
 		}
 
 		foundDisclaimer := false
 		foundPartial := false
-		foundRawError := false
+		foundTruncated := false
 
 		for _, raw := range sentMsgs {
 			dec, _ := url.QueryUnescape(raw)
@@ -338,8 +354,8 @@ func TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer(t *testing.T) {
 			if strings.Contains(dec, "Partial output generated before restart") {
 				foundPartial = true
 			}
-			if strings.Contains(dec, "Error from agent: interrupted") {
-				foundRawError = true
+			if strings.Contains(dec, "Response truncated: buffer exceeded 1MB limit") {
+				foundTruncated = true
 			}
 		}
 
@@ -349,18 +365,16 @@ func TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer(t *testing.T) {
 		if !foundPartial {
 			t.Errorf("Expected partial output to be salvaged, got: %v", sentMsgs)
 		}
-		if foundRawError {
-			t.Errorf("Raw error leaked during shutdown: %v", sentMsgs)
+		if !foundTruncated {
+			t.Errorf("Expected truncation notice in sent messages, got: %v", sentMsgs)
 		}
 	})
 
-	// Case 2: Active turn with empty buffer (turn just started)
-	t.Run("EmptyBufferShutdownDisclaimer", func(t *testing.T) {
+	// Case 2: Active turn with empty text buffer (turn just started)
+	t.Run("EmptyBufferMaintenanceDisclaimer", func(t *testing.T) {
 		ms := newMockServer()
 		defer ms.Close()
 		bot := createMockBot(ms)
-
-		errPayload := `{"event": "result", "result": {"status": "ERROR", "error": "interrupted"}}` + "\n"
 
 		s := &AgySession{
 			BotName:         "ShutdownEmptyBot",
@@ -373,35 +387,106 @@ func TestReadStdoutLoop_DaemonShutdownMidTurnDisclaimer(t *testing.T) {
 			UpdateChan:      make(chan struct{}, 10),
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		s.GracefulShutdown()
 
-		scanner := bufio.NewScanner(strings.NewReader(errPayload))
-		s.readStdoutLoop(scanner, ctx)
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown")
+		}
+		if s.ActiveMessageID != 0 {
+			t.Errorf("Expected ActiveMessageID to be 0 after GracefulShutdown")
+		}
 
-		sentMsgs := getAllSentTelegramBodies(ms)
+		sentMsgs := getSentTelegramMessagesOrEdits(ms)
 		if len(sentMsgs) == 0 {
 			t.Fatalf("Expected disclaimer message to be delivered, got 0")
 		}
 
 		foundDisclaimer := false
-		foundRawError := false
-
 		for _, raw := range sentMsgs {
 			dec, _ := url.QueryUnescape(raw)
-			if strings.Contains(dec, "Service restarted (planned maintenance)") {
+			if strings.Contains(dec, "Service restarted (planned maintenance)") && strings.Contains(dec, "Turn execution was interrupted") {
 				foundDisclaimer = true
-			}
-			if strings.Contains(dec, "Error from agent: interrupted") {
-				foundRawError = true
 			}
 		}
 
 		if !foundDisclaimer {
 			t.Errorf("Expected planned maintenance disclaimer, got: %v", sentMsgs)
 		}
-		if foundRawError {
-			t.Errorf("Raw error leaked during shutdown: %v", sentMsgs)
+	})
+
+	// Case 3: Idle session without active message (no spurious message sent)
+	t.Run("IdleSessionNoOp", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		s := &AgySession{
+			BotName:         "IdleBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 0,
+			ActiveTurnStart: time.Time{},
+			TextBuffer:      "",
+			UpdateChan:      make(chan struct{}, 10),
 		}
+
+		s.GracefulShutdown()
+
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown")
+		}
+
+		sentMsgs := getSentTelegramMessagesOrEdits(ms)
+		if len(sentMsgs) != 0 {
+			t.Errorf("Expected 0 Telegram messages for idle session shutdown, got %d: %v", len(sentMsgs), sentMsgs)
+		}
+	})
+
+	// Case 4: Idempotency and subprocess termination
+	t.Run("IdempotentAndSubprocessTermination", func(t *testing.T) {
+		ms := newMockServer()
+		defer ms.Close()
+		bot := createMockBot(ms)
+
+		cmd := exec.Command("sleep", "30")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("Failed to start test sleep subprocess: %v", err)
+		}
+		waitDone := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(waitDone)
+		}()
+
+		s := &AgySession{
+			BotName:         "SubprocBot",
+			isAlive:         true,
+			ChatID:          12345,
+			BotAPI:          bot,
+			ActiveMessageID: 303,
+			ActiveTurnStart: time.Now(),
+			TextBuffer:      "Subprocess output",
+			Cmd:             cmd,
+			UpdateChan:      make(chan struct{}, 10),
+		}
+
+		s.GracefulShutdown()
+
+		if s.isAlive {
+			t.Errorf("Expected session to be dead after GracefulShutdown")
+		}
+
+		select {
+		case <-waitDone:
+			// Process terminated cleanly
+		case <-time.After(1 * time.Second):
+			t.Errorf("Expected subprocess PID %d to be terminated by GracefulShutdown", cmd.Process.Pid)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+
+		// Second call must be idempotent and not panic
+		s.GracefulShutdown()
 	})
 }

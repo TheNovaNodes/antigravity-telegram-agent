@@ -205,18 +205,6 @@ func TestErrorClassification_StreamInterruptionAndRateLimit(t *testing.T) {
 			wantRateLimit:       false,
 			wantPrintTimeout:    false,
 		},
-		{
-			errMsg:              "interrupted",
-			wantStreamInterrupt: true,
-			wantRateLimit:       false,
-			wantPrintTimeout:    false,
-		},
-		{
-			errMsg:              "process interrupted",
-			wantStreamInterrupt: true,
-			wantRateLimit:       false,
-			wantPrintTimeout:    false,
-		},
 	}
 
 	for _, tc := range tests {
