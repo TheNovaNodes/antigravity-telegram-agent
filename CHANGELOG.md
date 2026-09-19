@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security & DevSecOps
+- **Automated Gitleaks CI Pipeline & Secret Hardening (Issue #273)**:
+  - Integrated automated Gitleaks workflow (`.github/workflows/secret-scan.yml`) across all pushes and pull requests.
+  - Hardened `.gitignore` and `.gitleaks.toml` rules covering `.secrets*`, `*.token`, `tokens/`, `credentials.json`, and database state files.
+- **Child Process Isolation & Secret Leakage Elimination (Issues #281, #282, #283)**:
+  - Replaced `os.Environ()` denylist inheritance with strict `buildChildEnv` allowlist (`LANG`, `LC_ALL`, `TZ`, `TERM`, `PATH`, `SYSTEM_HOME`, `USER`, `TMPDIR`, proxies), preventing supervisor credentials (`BOT_TOKENS`, `ALLOWED_ADMIN_IDS`, `ELEVENLABS_API_KEY`) from bleeding into child processes.
+  - Suppressed phantom error dispatches in `readStdoutLoop` on idle session teardown (`stream input cancelled: context canceled`) during supervisor restarts.
+
+### Reliability & Lifecycle
+- **Graceful SIGTERM Teardown & Maintenance Notice (Issues #284, #290)**:
+  - Delivered dedicated user-facing maintenance disclaimer upon daemon shutdown/restart.
+  - Suppressed mid-turn SIGTERM agent error dispatches so routine server maintenance does not generate false alarms.
+- **Projects Directory Resolution & Workspace Sandboxing (Issues #288, #289)**:
+  - Resolved `PROJECTS_DIR` from `SYSTEM_HOME` to support multi-account isolation and arbitrary system users.
+  - Enhanced workspace-scoped artifact sandboxing and symlink traversal checks.
+
+### UI/UX & Localization
+- **Strict English UI Localization (Issues #291, #292)**:
+  - Standardized compaction advice prompts, stream disruption warnings, and artifact captions to English across all bot responses.
+
+### Testing & Infrastructure
+- **Go 1.18+ Native Fuzzing Suite (Issue #276)**:
+  - Added continuous native fuzz tests for Telegram update dispatchers, TTS cleaners, and Harvester Markdown sanitizers.
+- **Zero-Leak Goroutine Verification (Issue #275)**:
+  - Integrated `uber-go/goleak` guards across test suites and background cleanup workers.
+- **Interactive Account UI & BOLA Authorization Guards (Issue #274)**:
+  - Added comprehensive unit tests for account callback routing, Broken Object Level Authorization (BOLA) prevention, and quota mock HTTP recovery.
+
+### Portability & Deployment
+- **Portability & Public Release Gate (Issues #277, #278, #280)**:
+  - Eliminated hardcoded host paths across path sanitizers.
+  - Dynamic `agy` binary discovery resolving through `SYSTEM_HOME` and `PATH`.
+  - Rebranded project documentation and repository identifiers to Antigravity Telegram Agent.
+
 ### Added
 - **Session Artifacts Post-Mortem Exhumation Hook (Issue #269)**:
   - Implemented automatic exhumation hook on `[🆕 New Session]` and `/clear` in accordance with the Session Artifacts Manifesto (`SESSION_ARTIFACTS_MANIFESTO.md`).

@@ -63,7 +63,6 @@ type AgySession struct {
 	AccountHomeDir  string
 }
 
-
 // getTurnTimeout returns the maximum duration of complete inactivity allowed before the turn watchdog triggers.
 // Defaults to 15 minutes, configurable via TURN_INACTIVITY_TIMEOUT_MINUTES or TURN_TIMEOUT_MINUTES.
 func getTurnTimeout() time.Duration {
