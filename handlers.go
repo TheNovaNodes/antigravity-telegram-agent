@@ -907,7 +907,7 @@ func performSessionExhumation(bot *tgbotapi.BotAPI, chatID int64, sessionID, bot
 				emoji = "📋"
 			}
 
-			caption := fmt.Sprintf("%s *Артефакт сессии:* %s", emoji, art.Title)
+			caption := fmt.Sprintf("%s *Session artifact:* %s", emoji, art.Title)
 			if art.RedactedCount > 0 {
 				caption += fmt.Sprintf("\n🛡️ _Redacted %d secret(s)_", art.RedactedCount)
 			}

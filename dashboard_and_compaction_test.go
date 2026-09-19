@@ -136,7 +136,7 @@ func TestGetCompactionHint(t *testing.T) {
 
 	// Case 2: Small transcript with stream recovery
 	hintRecovery := getCompactionHint(convID, true)
-	if !strings.Contains(hintRecovery, "Зафиксирован сбой сетевого стрима") {
+	if !strings.Contains(hintRecovery, "Network stream interruption detected") {
 		t.Errorf("Expected stream recovery warning, got: %q", hintRecovery)
 	}
 	if !strings.Contains(hintRecovery, "/export") || !strings.Contains(hintRecovery, "🆕 New Session") {
@@ -153,8 +153,8 @@ func TestGetCompactionHint(t *testing.T) {
 	}
 
 	hintLarge := getCompactionHint(convID, false)
-	if !strings.Contains(hintLarge, "Сессия достигла 512 КБ") {
-		t.Errorf("Expected size notice (512 КБ), got: %q", hintLarge)
+	if !strings.Contains(hintLarge, "Session transcript reached 512 KB") {
+		t.Errorf("Expected size notice (512 KB), got: %q", hintLarge)
 	}
 	if !strings.Contains(hintLarge, "/export") || !strings.Contains(hintLarge, "🆕 New Session") {
 		t.Errorf("Expected export and new session advice, got: %q", hintLarge)
@@ -162,8 +162,8 @@ func TestGetCompactionHint(t *testing.T) {
 
 	// Case 4: Transcript >= 500 KB with stream recovery (size takes precedence / clear messaging)
 	hintLargeWithRecovery := getCompactionHint(convID, true)
-	if !strings.Contains(hintLargeWithRecovery, "Сессия достигла 512 КБ") {
-		t.Errorf("Expected size notice (512 КБ) even with stream recovery, got: %q", hintLargeWithRecovery)
+	if !strings.Contains(hintLargeWithRecovery, "Session transcript reached 512 KB") {
+		t.Errorf("Expected size notice (512 KB) even with stream recovery, got: %q", hintLargeWithRecovery)
 	}
 }
 

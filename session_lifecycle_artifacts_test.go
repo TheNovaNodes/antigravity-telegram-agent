@@ -493,8 +493,8 @@ Define canonical state machine events for agent collaboration and artifact exhum
 		unescaped, _ := url.QueryUnescape(body)
 		if strings.Contains(body, "RFC_001_swarm_protocol.md") || strings.Contains(unescaped, "RFC_001_swarm_protocol.md") {
 			foundDoc = true
-			if !strings.Contains(unescaped, "Артефакт сессии") && !strings.Contains(body, "Артефакт сессии") {
-				t.Errorf("document caption missing 'Артефакт сессии', got: %s", unescaped)
+			if !strings.Contains(unescaped, "Session artifact") && !strings.Contains(body, "Session artifact") {
+				t.Errorf("document caption missing 'Session artifact', got: %s", unescaped)
 			}
 			if strings.Contains(body, "AIzaSyDummySecretGoogleAPIKey123456789") || strings.Contains(unescaped, "AIzaSyDummySecretGoogleAPIKey123456789") {
 				t.Errorf("secret token leaked into Telegram document delivery!")
@@ -588,7 +588,7 @@ func TestHandleClearCommand_AntiGarbageSieves(t *testing.T) {
 		if strings.Contains(body, "Exhumed and alienated") {
 			t.Errorf("did not expect exhumation notice when all files are garbage, got: %s", body)
 		}
-		if strings.Contains(body, "Артефакт сессии") {
+		if strings.Contains(body, "Session artifact") {
 			t.Errorf("did not expect any artifact document to be delivered to Telegram, got: %s", body)
 		}
 	}

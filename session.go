@@ -243,11 +243,11 @@ func getCompactionHint(convID string, hadStreamRecovery bool) string {
 		tPath := filepath.Join(getBrainDir(), convID, ".system_generated", "logs", "transcript.jsonl")
 		if fi, err := os.Stat(tPath); err == nil && fi.Size() >= 500*1024 {
 			kb := fi.Size() / 1024
-			return fmt.Sprintf("\n\n💡 _Сессия достигла %d КБ. Во избежание сетевых задержек рекомендуется сохранить контекст через /export и начать новую сессию ([🆕 New Session])._", kb)
+			return fmt.Sprintf("\n\n💡 _Session transcript reached %d KB. To avoid network latency, consider saving context via /export and starting a new session ([🆕 New Session])._", kb)
 		}
 	}
 	if hadStreamRecovery {
-		return "\n\n💡 _Зафиксирован сбой сетевого стрима. Рекомендуется сохранить контекст через /export и начать новую сессию ([🆕 New Session])._"
+		return "\n\n💡 _Network stream interruption detected. Consider saving context via /export and starting a new session ([🆕 New Session])._"
 	}
 	return ""
 }
