@@ -154,7 +154,7 @@ func (s *AgySession) checkTurnInactivity(now time.Time, turnTimeout time.Duratio
 			}
 			trimmed += reasonNotice
 			sendChunk(botAPI, cID, activeMsgID, trimmed)
-			sendArtifacts(botAPI, cID, trimmed)
+			sendArtifacts(botAPI, cID, trimmed, s.Workspace)
 		} else {
 			sendChunk(botAPI, cID, activeMsgID, stalledMsg)
 		}
@@ -898,9 +898,12 @@ func ExtractAllowedArtifacts(text string, extraRoots ...string) []string {
 	brainDir := getBrainDir()
 	projectsDir := getProjectsDir()
 	baseHome := getSystemBaseHome()
-	sysProjectsDir := filepath.Join(baseHome, "projects")
-	sysAgentsDir := filepath.Join(baseHome, ".agents")
-	sysBrainDir := filepath.Join(baseHome, ".gemini", "antigravity-cli", "brain")
+	var sysProjectsDir, sysAgentsDir, sysBrainDir string
+	if baseHome != "" && baseHome != os.TempDir() {
+		sysProjectsDir = filepath.Join(baseHome, "projects")
+		sysAgentsDir = filepath.Join(baseHome, ".agents")
+		sysBrainDir = filepath.Join(baseHome, ".gemini", "antigravity-cli", "brain")
+	}
 
 	for _, match := range matches {
 		filePath := match[1]
@@ -920,16 +923,39 @@ func ExtractAllowedArtifacts(text string, extraRoots ...string) []string {
 
 		realPath, err := filepath.EvalSymlinks(cleanPath)
 		if err != nil {
-			continue
+			// If relative path, try resolving against extraRoots (session.Workspace) and projectsDir
+			if !filepath.IsAbs(filePath) {
+				resolved := false
+				var candidateRoots []string
+				candidateRoots = append(candidateRoots, extraRoots...)
+				candidateRoots = append(candidateRoots, projectsDir)
+				for _, root := range candidateRoots {
+					if strings.TrimSpace(root) == "" {
+						continue
+					}
+					cand := filepath.Join(root, filePath)
+					if rp, e := filepath.EvalSymlinks(cand); e == nil {
+						realPath = rp
+						err = nil
+						resolved = true
+						break
+					}
+				}
+				if !resolved {
+					continue
+				}
+			} else {
+				continue
+			}
 		}
 
 		// Fail-Closed: Verify that realPath is strictly contained inside allowed roots
 		isAllowed := isPathUnderRoot(realPath, agentsDir) ||
-			isPathUnderRoot(realPath, sysAgentsDir) ||
+			(sysAgentsDir != "" && isPathUnderRoot(realPath, sysAgentsDir)) ||
 			isPathUnderRoot(realPath, brainDir) ||
-			isPathUnderRoot(realPath, sysBrainDir) ||
+			(sysBrainDir != "" && isPathUnderRoot(realPath, sysBrainDir)) ||
 			isPathUnderRoot(realPath, projectsDir) ||
-			isPathUnderRoot(realPath, sysProjectsDir)
+			(sysProjectsDir != "" && isPathUnderRoot(realPath, sysProjectsDir))
 
 		for _, extra := range extraRoots {
 			if strings.TrimSpace(extra) != "" && isPathUnderRoot(realPath, extra) {

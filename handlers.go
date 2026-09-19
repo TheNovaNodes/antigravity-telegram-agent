@@ -775,16 +775,19 @@ func handleWorkspaceCommand(bot *tgbotapi.BotAPI, chatID, userID int64, text, bo
 	projectsDir := getProjectsDir()
 	agentsDir := getAgentsDir()
 	baseHome := getSystemBaseHome()
-	sysProjectsDir := filepath.Join(baseHome, "projects")
-	sysAgentsDir := filepath.Join(baseHome, ".agents")
+	var sysProjectsDir, sysAgentsDir, sysBotOffice string
+	if baseHome != "" && baseHome != os.TempDir() {
+		sysProjectsDir = filepath.Join(baseHome, "projects")
+		sysAgentsDir = filepath.Join(baseHome, ".agents")
+		sysBotOffice = filepath.Join(sysAgentsDir, botName)
+	}
 	botOffice := filepath.Join(agentsDir, botName)
-	sysBotOffice := filepath.Join(sysAgentsDir, botName)
 
 	// Allowed workspaces: anywhere under PROJECTS_DIR, sysProjectsDir, or within the bot's own office (Fail-Closed)
 	isAllowed := isPathUnderRoot(realPath, projectsDir) ||
-		isPathUnderRoot(realPath, sysProjectsDir) ||
+		(sysProjectsDir != "" && isPathUnderRoot(realPath, sysProjectsDir)) ||
 		isPathUnderRoot(realPath, botOffice) ||
-		isPathUnderRoot(realPath, sysBotOffice)
+		(sysBotOffice != "" && isPathUnderRoot(realPath, sysBotOffice))
 	if !isAllowed {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Path must be under %s or %s", projectsDir, botOffice)))
 		return
@@ -1012,7 +1015,7 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 					bot.Send(msg)
 				}
 			}
-			sendArtifacts(bot, chatID, trimmed)
+			sendArtifacts(bot, chatID, trimmed, s.Workspace)
 		} else {
 			stopMsg := "🛑 *Execution interrupted by user.*\nSession context preserved. Ready for new commands."
 			if activeID != 0 {

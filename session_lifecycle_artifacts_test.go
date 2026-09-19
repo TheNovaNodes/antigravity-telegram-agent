@@ -849,3 +849,74 @@ func TestExtractAllowedArtifacts_SessionWorkspaceScoped(t *testing.T) {
 	}
 }
 
+func TestExtractAllowedArtifacts_TempDirEscapeBlocked(t *testing.T) {
+	tempDir := t.TempDir()
+	accountHome := filepath.Join(tempDir, "etc", "antigravity-bot", "accounts", "thedoctormes")
+	if err := os.MkdirAll(accountHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// SYSTEM_HOME unset, HOME has /accounts/ -> getSystemBaseHome() falls back to os.TempDir()
+	t.Setenv("PROJECTS_DIR", "")
+	t.Setenv("SYSTEM_HOME", "")
+	t.Setenv("HOME", accountHome)
+
+	tmpProjectsDir := filepath.Join(os.TempDir(), "projects")
+	if err := os.MkdirAll(tmpProjectsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile := filepath.Join(tmpProjectsDir, "malicious_injected.txt")
+	if err := os.WriteFile(tmpFile, []byte("injected content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile)
+
+	text := fmt.Sprintf("Report: [Escape File](file://%s)\n", tmpFile)
+	allowed := ExtractAllowedArtifacts(text)
+	for _, p := range allowed {
+		if p == tmpFile {
+			t.Errorf("Security boundary failed: file in /tmp/projects %s was allowed when baseHome is TempDir", tmpFile)
+		}
+	}
+}
+
+func TestExtractAllowedArtifacts_RelativePathsResolution(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	subDir := filepath.Join(workspaceDir, "docs")
+	outsideDir := filepath.Join(tempDir, "outside")
+
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	relFile := filepath.Join(subDir, "report.md")
+	traversalFile := filepath.Join(outsideDir, "secret.txt")
+
+	if err := os.WriteFile(relFile, []byte("# Relative Doc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(traversalFile, []byte("forbidden\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Relative link and traversal attempt
+	text := "Check output:\n- [Doc](docs/report.md)\n- [Traversal](../outside/secret.txt)\n"
+
+	allowed := ExtractAllowedArtifacts(text, workspaceDir)
+
+	found := make(map[string]bool)
+	for _, p := range allowed {
+		found[p] = true
+	}
+
+	if !found[relFile] {
+		t.Errorf("Expected relative file docs/report.md to be resolved against workspace %s, but it was not", workspaceDir)
+	}
+	if found[traversalFile] {
+		t.Errorf("Expected path traversal ../outside/secret.txt to be strictly blocked, but it was allowed")
+	}
+}
