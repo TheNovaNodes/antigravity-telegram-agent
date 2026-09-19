@@ -177,16 +177,6 @@ func getSentTelegramMessagesOrEdits(ms *mockServer) []string {
 	return msgs
 }
 
-func getAllSentTelegramBodies(ms *mockServer) []string {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	var msgs []string
-	for _, b := range ms.sentBodies {
-		msgs = append(msgs, b)
-	}
-	return msgs
-}
-
 // TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead verifies that when a session
 // is already dead (isAlive == false) or was idle (ActiveTurnStart is zero), any incoming
 // ERROR result (e.g. stream input cancelled: context canceled) is suppressed without
