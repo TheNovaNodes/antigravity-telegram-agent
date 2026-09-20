@@ -21,7 +21,7 @@ var (
 )
 
 // startBotPolling initializes a Telegram Bot instance and starts its dedicated long-polling loop.
-func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.WaitGroup) {
+func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.WaitGroup, stopChan <-chan struct{}) {
 	defer wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -44,9 +44,16 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 	defer db.Close()
 	log.Printf("[Bot %s] Started in PURE GO mode", bot.Self.UserName)
 
+	// Layer 1: Defensive startup deleteWebhook guard (#295)
+	_ = clearWebhookOnStartup(bot)
+
+	// Layer 2: Explicit AllowedUpdates with callback_query (#295)
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
+	u.AllowedUpdates = DefaultAllowedUpdates
+
+	// Layer 3 & 4: GetUpdates with 409 Conflict auto-recovery & admin alerts (#295)
+	updates := getUpdatesWithRecovery(bot, u, allowedAdmins, stopChan)
 
 	for update := range updates {
 		var userID int64
@@ -136,12 +143,13 @@ func main() {
 		})
 	}
 	var wg sync.WaitGroup
+	stopPollingChan := make(chan struct{})
 
 	for _, t := range strings.Split(tokensEnv, ",") {
 		t = strings.TrimSpace(t)
 		if t != "" {
 			wg.Add(1)
-			go startBotPolling(t, allowedAdmins, &wg)
+			go startBotPolling(t, allowedAdmins, &wg, stopPollingChan)
 		}
 	}
 
@@ -173,7 +181,8 @@ func main() {
 	}
 	close(stopHousekeeping)
 
-	// 1. Stop Telegram polling on all active bots
+	// 1. Stop Telegram polling on all active bots (#295)
+	close(stopPollingChan)
 	activeBotsMu.Lock()
 	for _, b := range activeBots {
 		b.StopReceivingUpdates()
