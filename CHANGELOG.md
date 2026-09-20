@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security & DevSecOps
+## [1.3.0] - 2026-09-20
+
+### Security & Reliability (Incident #294 Resolution)
+- **Defensive deleteWebhook Guard & 409 Conflict Auto-Recovery (Issues #294, #295, PR #296)**:
+  - Implemented Layer 1 startup `deleteWebhook` guard (`webhook_guard.go`) purging stale or unauthorized external webhooks across all swarm bots before launching Long Polling workers.
+  - Implemented Layer 2 runtime auto-recovery in polling loop intercepting HTTP 409 Conflict with automatic webhook teardown and retry backoff, preventing infinite loop crashes and bot outages.
+  - Enforced explicit `AllowedUpdates` registration (`message`, `edited_message`, `channel_post`, `edited_channel_post`, `callback_query`), ensuring zero dropped inline button callbacks and securing interactive UI menus.
+  - Added full unit test suite with mocked Telegram Bot API server (`webhook_guard_test.go`) covering all recovery paths and edge cases.
 - **Automated Gitleaks CI Pipeline & Secret Hardening (Issue #273)**:
   - Integrated automated Gitleaks workflow (`.github/workflows/secret-scan.yml`) across all pushes and pull requests.
   - Hardened `.gitignore` and `.gitleaks.toml` rules covering `.secrets*`, `*.token`, `tokens/`, `credentials.json`, and database state files.
