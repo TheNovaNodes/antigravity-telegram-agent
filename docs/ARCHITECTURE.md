@@ -129,6 +129,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleModelCommand` | Dynamic model selection keyboard. | Read-locked cache (`modelsMu.RLock()`). |
 | `handleRefreshModelsCommand` | Live fetch of supported LLMs from `agy --print /models`. | Write-locked cache update (`modelsMu.Lock()`). |
 | `handleUsageCommand` | Token quota and API tier usage display. | Executes `agy --print /usage`. |
+| `handleAccountsCommand` | Multi-account pool manager, live account switching, and quota diagnostics (`/accounts`). | Thread-safe pool reads, interactive action callbacks, and admin-guarded mutations. |
 | `handleHelpCommand` | Quick command reference and operational guide. | Pure static format. |
 | `handleTTSCommand` | Text-to-Speech synthesis for arbitrary user text (`/tts <text>`). | Hybrid engine (Edge-TTS primary -> Piper TTS CPU failover -> ElevenLabs key pool). |
 | `handleTTSEngineCommand` | Inspect or switch active Text-To-Speech engine (`/tts_engine [engine]`). | Thread-safe dynamic engine override and configuration inspector. |
@@ -148,6 +149,8 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `AgySession.start` | Spawns `agy` sub-process with `Setpgid`, `WaitDelay`, and streaming throttler. | Monitors `cmd.Wait()` to clean up zombie `*⏳ Thinking...*` UI states on unexpected process exit. |
 | `ReapStoppedSubprocesses` | Inspects `/proc` for stuck descendant processes of active `AgySession` roots in `State: T` / `t`. | Two-phase forced termination (`SIGCONT` + `SIGKILL`) after grace period expiry (default 3s). |
 | `StartSubprocessWatchdogWorker` | Background supervisor loop executing `ReapStoppedSubprocesses` on a periodic ticker (2s). | Clean worker shutdown via `stopHousekeeping` channel. |
+| `StartupWebhookGuard` | Preemptive Layer 1 deleteWebhook invocation across all configured bots before Long Polling initialization. | Non-blocking, error-logged, fail-safe startup hook. |
+| `PurgeWebhookWithRetry` | Layer 2 runtime auto-recovery intercepting HTTP 409 Conflict with exponential backoff. | Exponential backoff (1s..5s), retry limit (3), and channel log notifications. |
 
 ---
 
@@ -288,14 +291,14 @@ flowchart TD
     Req[Incoming User Prompt] --> Session[AgySession]
     Session --> Acquire[GlobalAccountPool.AcquireAccount]
     Acquire --> Check{Active Account Healthy?}
-    Check -->|Quota > 5% & Active| Execute[Launch Subprocess under Account HOME]
-    Check -->|Cooldown / Quota < 5%| Rotate[Auto-Failover to Next Healthy Account]
+    Check -->|Quota > 5% & !Disabled & Active| Execute[Launch Subprocess under Account HOME]
+    Check -->|Cooldown / Disabled / Quota == 0| Rotate[Auto-Failover to Next Healthy Account]
     Rotate --> SafePark[Safe Parking & Session Context Retention]
     Rotate --> Execute
     Execute --> Probe[Periodic Background Quota Probe]
-    Probe --> AutoRecover{Recovered > 5%?}
+    Probe --> AutoRecover{Recovered > 5% & !Disabled?}
     AutoRecover -->|Yes| Unban[Clear CooldownUntil & Restore StateActive]
-    AutoRecover -->|No| Backoff[Sane Dynamic Backoff 1m..30m]
+    AutoRecover -->|No / Disabled| Backoff[Sane Dynamic Backoff / Inherited Reset Window]
 ```
 
 ### Key Capabilities:
@@ -304,6 +307,7 @@ flowchart TD
 3. **Stream Interruption & 429 Failover**: When mid-turn SSE sockets drop and retries are exhausted or rate limits occur, the pool dynamically migrates the session to the next available healthy account without losing conversational state.
 4. **Auto-Recovery & Sane Cooldowns**: Eliminates multi-hour lock traps by validating quota health (`> 5%`) on background probes, auto-clearing `StateCooldown` and restoring `StateActive`.
 5. **Shared Build & Module Caches**: Deduplicates Go build cache, Go module cache (`GOPATH/pkg/mod`), npm, and pip caches across account homes via dynamic symlinking to prevent disk exhaustion.
+6. **Disabled Quota Normalization & Cross-Window Shield (#298)**: Deserializes the `"disabled": true` attribute emitted by Google Antigravity CLI when weekly limits hit 0%. Normalizes `RemainingFraction` to `0.0`, flags `Disabled = true`, and inherits `reset_time` from the weekly limit window. Excludes disabled accounts from candidate nomination in `AcquireAccount` and prevents rapid 30-second false-healthy backoff loops in auto-failover logic.
 
 ---
 
@@ -329,5 +333,35 @@ flowchart TD
 ### 2. Teardown & Idle Error Suppression (#281):
 - **Phantom Error Suppression**: When the supervisor terminates or restarts (e.g. system upgrades or container restarts), closing `stdin` on `--input-format stream-json` causes `agy` to exit with `stream input cancelled: context canceled`.
 - **Turn-Aware Lifecycle Guard**: In `readStdoutLoop`, incoming error events are checked against active turn state (`!s.isAlive || s.ActiveTurnStart.IsZero()`). Teardown artifacts from idle or stopping sessions are logged internally and suppressed, eliminating false-positive `❌ Error from agent` messages in Telegram. Active turn errors continue to trigger auto-recovery (`StreamRecovery`) and user notices without interruption.
+
+---
+
+## 11. Two-Tier Webhook Guard & 409 Conflict Immunity
+
+To prevent routing deadlocks, multi-bot crash loops, and split-brain webhook conflicts across Telegram Bot API instances ([`webhook_guard.go`](../webhook_guard.go)):
+
+```mermaid
+flowchart TD
+    Start[Daemon Boot] --> Layer1["Layer 1: Preemptive Startup deleteWebhook"]
+    Layer1 -->|Purge Lingering Webhooks| Polling["Launch Long Polling Workers (getUpdates)"]
+    Polling --> UpdateCheck{Incoming Update or Error?}
+    UpdateCheck -->|Update Received| Dispatch[Route to Handlers via AllowedUpdates]
+    UpdateCheck -->|HTTP 409 Conflict| Layer2["Layer 2: Runtime Auto-Recovery"]
+    Layer2 --> Purge["Auto-purge Webhook with Backoff (1s..5s)"]
+    Purge --> Polling
+```
+
+### 1. Layer 1: Preemptive Startup Webhook Purge:
+- **Daemon Initialization Hook**: On daemon boot, before launching Long Polling routines, every configured bot token in `BOT_TOKENS` executes an automated `deleteWebhook` call with `drop_pending_updates: false`.
+- **Stale Route Eviction**: Clears lingering webhooks left by previous server migrations, third-party integrations, or unclean supervisor restarts, preventing immediate startup deadlocks.
+
+### 2. Layer 2: Runtime 409 Conflict Auto-Recovery:
+- **Dynamic Conflict Interception**: If an external process or orchestrator sets a webhook while the daemon is actively polling, Telegram returns `409 Conflict: can't use getUpdates method while webhook is active`.
+- **Zero-Downtime Healing**: The polling loop intercepts HTTP 409 status codes, invokes `PurgeWebhookWithRetry(bot, 3)`, applies exponential backoff, and resumes polling seamlessly without requiring supervisor restart or manual intervention.
+
+### 3. AllowedUpdates Enforcement:
+- **Comprehensive UI Event Ingestion**: Explicitly registers `message`, `edited_message`, `channel_post`, `edited_channel_post`, and `callback_query`.
+- **Responsive Interactive Menus**: Guarantees that interactive inline button clicks (`cmd:stop`, `cmd:retry`, account switching keyboards) are never dropped by the Telegram gateway.
+
 
 
