@@ -47,6 +47,7 @@ The core is decomposed into distinct, focused domain modules:
 | [`models.go`](models.go) | Dynamic LLM discovery from `agy models` with emoji tier badges. |
 | [`tts.go`](tts.go) | Mirror Protocol TTS audio engine with multi-key ElevenLabs rotation and custom base URL support. |
 | [`formatters.go`](formatters.go) | Markdown-to-Telegram-HTML conversion with tag balancing and artifact parsing. |
+| [`webhook_guard.go`](webhook_guard.go) | Two-tier webhook immunity suite: Layer 1 startup `deleteWebhook` purge & Layer 2 runtime HTTP 409 Conflict auto-recovery with `AllowedUpdates` enforcement. |
 
 ---
 
@@ -120,6 +121,8 @@ The engine features an enterprise-grade resilience suite engineered for 24/7 hea
 * **Cross-Turn 429 Safe Parking Protocol**: When upstream model quotas are exhausted, the engine automatically compiles the active session into a Markdown export file (`session_<title>.md`), parks the session safely, and delivers the file to the user.
 * **Drop-to-Resume Workflow**: Users can forward or drop any `session_*.md` file directly into chat. The engine automatically parses the transcript, restores previous conversational context, and resumes execution from where it left off.
 * **Subprocess State: T Reaper**: An autonomous `/proc` scanner detects and reaps commands suspended by `SIGTTIN`/`SIGTTOU` via sequenced `SIGCONT` + `SIGKILL`.
+* **Two-Tier Webhook Guard & 409 Conflict Immunity**: Layer 1 preemptively purges lingering webhooks during daemon startup across all swarm bots before initializing Long Polling workers. Layer 2 dynamically intercepts runtime HTTP `409 Conflict` in the polling loop, auto-purging conflicting webhooks with exponential backoff to eliminate crash loops and multi-bot outages.
+* **Multi-Account Quota Normalization & Failover Shield**: Decodes upstream CLI `disabled: true` quota states when weekly limits hit 0%, normalizes fractions to `0.0`, and inherits weekly reset windows, preventing false-healthy account nomination and 429 quota exhaustion loops.
 
 ---
 
