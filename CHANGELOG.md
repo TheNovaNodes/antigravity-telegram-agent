@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Reliability & Multi-Account Quota Management (Issue #298)
+- **Disabled Quota Flag Parsing & 429 Failover Recovery (Issue #298)**:
+  - Added `Disabled` boolean deserialization in `ModelQuota` and `ParseUsageJSON` to capture `disabled: true` when Antigravity CLI exhausts weekly limits.
+  - Normalized `RemainingFraction` to `0.0` when a quota bucket is marked disabled or weekly quota hits 0%, inheriting `reset_time` from the weekly limit window.
+  - Excluded accounts with disabled or exhausted Gemini quota from `AcquireAccount` candidate pool and sticky session retention, avoiding erroneous selections.
+  - Updated Telegram `/accounts` dashboard formatting to explicitly display `disabled` (e.g., `Gemini: 5h disabled • 7d 0%`) instead of misleading `100%`.
+  - Updated auto-failover and cooldown calculation in `session.go` and `account_pool.go` to eliminate the 30-second backoff loop on disabled models.
+
 ## [1.3.0] - 2026-09-20
 
 ### Security & Reliability (Incident #294 Resolution)

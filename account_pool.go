@@ -46,10 +46,11 @@ func (s AccountState) String() string {
 	}
 }
 
-// ModelQuota holds the usage percentage and reset time for a quota window (#228).
+// ModelQuota holds the usage percentage, reset time, and disabled state for a quota window (#228, #298).
 type ModelQuota struct {
 	RemainingFraction float64   `json:"remaining_fraction"`
 	ResetTime         time.Time `json:"reset_time"`
+	Disabled          bool      `json:"disabled,omitempty"`
 }
 
 // AccountQuota encapsulates both Gemini and Claude/GPT quota windows (#228).
@@ -596,13 +597,16 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 	}
 	if ok {
 		if acc, exists := p.accounts[currentID]; exists && acc.State == StateActive {
-			acc.ActiveTurns++
-			acc.LastUsed = now
-			acc.State = StateInUse
-			p.activeChat[key] = acc.ID
-			_ = p.SaveState()
-			cp := *acc
-			return &cp, nil
+			isDisabled := !acc.Quota.LastFetchedAt.IsZero() && (acc.Quota.Gemini5h.Disabled || acc.Quota.GeminiWeekly.Disabled) && (acc.Quota.GeminiWeekly.ResetTime.IsZero() || now.Before(acc.Quota.GeminiWeekly.ResetTime))
+			if !isDisabled {
+				acc.ActiveTurns++
+				acc.LastUsed = now
+				acc.State = StateInUse
+				p.activeChat[key] = acc.ID
+				_ = p.SaveState()
+				cp := *acc
+				return &cp, nil
+			}
 		}
 	}
 
@@ -612,6 +616,10 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 
 	for _, acc := range p.accounts {
 		if acc.State == StateActive || acc.State == StateInUse {
+			if !acc.Quota.LastFetchedAt.IsZero() && (acc.Quota.Gemini5h.Disabled || acc.Quota.GeminiWeekly.Disabled) && (acc.Quota.GeminiWeekly.ResetTime.IsZero() || now.Before(acc.Quota.GeminiWeekly.ResetTime)) {
+				hasCooldown = true
+				continue
+			}
 			candidates = append(candidates, acc)
 		} else if acc.State == StateCooldown {
 			hasCooldown = true
@@ -626,6 +634,13 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
+		// Prioritize non-disabled accounts over disabled ones (#298)
+		disI := !candidates[i].Quota.LastFetchedAt.IsZero() && (candidates[i].Quota.Gemini5h.Disabled || candidates[i].Quota.GeminiWeekly.Disabled)
+		disJ := !candidates[j].Quota.LastFetchedAt.IsZero() && (candidates[j].Quota.Gemini5h.Disabled || candidates[j].Quota.GeminiWeekly.Disabled)
+		if disI != disJ {
+			return !disI
+		}
+
 		// Least active turns first
 		if candidates[i].ActiveTurns != candidates[j].ActiveTurns {
 			return candidates[i].ActiveTurns < candidates[j].ActiveTurns
@@ -742,7 +757,7 @@ func (p *AccountPool) FetchEmailForToken(accessToken string) (string, error) {
 	return strings.TrimSpace(data.Email), nil
 }
 
-// ParseUsageJSON parses the raw JSON output of `agy -p "/usage" --output-format json` into an AccountQuota (#228).
+// ParseUsageJSON parses the raw JSON output of `agy -p "/usage" --output-format json` into an AccountQuota (#228, #298).
 func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
 	var resp struct {
 		Command struct {
@@ -754,6 +769,7 @@ func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
 						Window            string  `json:"window"`
 						RemainingFraction float64 `json:"remaining_fraction"`
 						ResetTime         string  `json:"reset_time"`
+						Disabled          bool    `json:"disabled"`
 					} `json:"buckets"`
 				} `json:"groups"`
 			} `json:"data"`
@@ -768,6 +784,9 @@ func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
 		LastFetchedAt: time.Now(),
 	}
 
+	hasGeminiWeekly := false
+	hasClaudeWeekly := false
+
 	for _, g := range resp.Command.Data.Groups {
 		nameLower := strings.ToLower(g.Name)
 		isGemini := strings.Contains(nameLower, "gemini")
@@ -778,9 +797,14 @@ func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
 			if b.ResetTime != "" {
 				resetT, _ = time.Parse(time.RFC3339, b.ResetTime)
 			}
+			remFraction := b.RemainingFraction
+			if b.Disabled {
+				remFraction = 0.0
+			}
 			mq := ModelQuota{
-				RemainingFraction: b.RemainingFraction,
+				RemainingFraction: remFraction,
 				ResetTime:         resetT,
+				Disabled:          b.Disabled,
 			}
 
 			if isGemini {
@@ -788,14 +812,34 @@ func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
 					quota.Gemini5h = mq
 				} else if b.Window == "weekly" || b.ID == "gemini-weekly" {
 					quota.GeminiWeekly = mq
+					hasGeminiWeekly = true
 				}
 			} else if isClaude {
 				if b.Window == "5h" || b.ID == "3p-5h" {
 					quota.Claude5h = mq
 				} else if b.Window == "weekly" || b.ID == "3p-weekly" {
 					quota.ClaudeWeekly = mq
+					hasClaudeWeekly = true
 				}
 			}
+		}
+	}
+
+	// Cross-bucket normalization (#298):
+	// If weekly quota is 0% or disabled, Google Antigravity CLI disables the 5-hour window.
+	// Normalize RemainingFraction to 0.0, set Disabled = true, and inherit reset_time if missing.
+	if hasGeminiWeekly && (quota.GeminiWeekly.RemainingFraction == 0 || quota.GeminiWeekly.Disabled) {
+		quota.Gemini5h.Disabled = true
+		quota.Gemini5h.RemainingFraction = 0.0
+		if quota.Gemini5h.ResetTime.IsZero() && !quota.GeminiWeekly.ResetTime.IsZero() {
+			quota.Gemini5h.ResetTime = quota.GeminiWeekly.ResetTime
+		}
+	}
+	if hasClaudeWeekly && (quota.ClaudeWeekly.RemainingFraction == 0 || quota.ClaudeWeekly.Disabled) {
+		quota.Claude5h.Disabled = true
+		quota.Claude5h.RemainingFraction = 0.0
+		if quota.Claude5h.ResetTime.IsZero() && !quota.ClaudeWeekly.ResetTime.IsZero() {
+			quota.Claude5h.ResetTime = quota.ClaudeWeekly.ResetTime
 		}
 	}
 
@@ -834,15 +878,23 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 		currentAcc.Quota = *quota
 
 		now := time.Now()
-		if quota.Gemini5h.RemainingFraction == 0 && !quota.Gemini5h.ResetTime.IsZero() && now.Before(quota.Gemini5h.ResetTime) {
+		if !quota.Gemini5h.Disabled && quota.Gemini5h.RemainingFraction == 0 && !quota.Gemini5h.ResetTime.IsZero() && now.Before(quota.Gemini5h.ResetTime) {
 			currentAcc.State = StateCooldown
 			currentAcc.CooldownUntil = quota.Gemini5h.ResetTime
 			log.Printf("[AccountPool] Account %s 5-hour quota exhausted, in cooldown until %s", accountID, quota.Gemini5h.ResetTime.Format(time.RFC3339))
-		} else if quota.GeminiWeekly.RemainingFraction == 0 && !quota.GeminiWeekly.ResetTime.IsZero() && now.Before(quota.GeminiWeekly.ResetTime) {
+		} else if (quota.GeminiWeekly.Disabled || quota.GeminiWeekly.RemainingFraction == 0) && !quota.GeminiWeekly.ResetTime.IsZero() && now.Before(quota.GeminiWeekly.ResetTime) {
 			currentAcc.State = StateCooldown
 			currentAcc.CooldownUntil = quota.GeminiWeekly.ResetTime
 			log.Printf("[AccountPool] Account %s weekly quota exhausted, in cooldown until %s", accountID, quota.GeminiWeekly.ResetTime.Format(time.RFC3339))
-		} else if currentAcc.State == StateCooldown && quota.Gemini5h.RemainingFraction > 0.05 {
+		} else if quota.Gemini5h.Disabled || quota.GeminiWeekly.Disabled {
+			currentAcc.State = StateCooldown
+			if !quota.GeminiWeekly.ResetTime.IsZero() && now.Before(quota.GeminiWeekly.ResetTime) {
+				currentAcc.CooldownUntil = quota.GeminiWeekly.ResetTime
+			} else {
+				currentAcc.CooldownUntil = now.Add(1 * time.Hour)
+			}
+			log.Printf("[AccountPool] Account %s quota disabled, in cooldown until %s", accountID, currentAcc.CooldownUntil.Format(time.RFC3339))
+		} else if currentAcc.State == StateCooldown && quota.Gemini5h.RemainingFraction > 0.05 && !quota.Gemini5h.Disabled && !quota.GeminiWeekly.Disabled {
 			currentAcc.State = StateActive
 			currentAcc.CooldownUntil = time.Time{}
 			log.Printf("[AccountPool] Account %s has healthy quota (%.1f%% Gemini 5h), cooldown cleared automatically", accountID, quota.Gemini5h.RemainingFraction*100)

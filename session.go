@@ -1495,11 +1495,17 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							// Synchronize with exact quota reset time if available (#228)
 							if q, err := GlobalAccountPool.FetchAccountQuotas(currentAccID); err == nil && q != nil {
 								now := time.Now()
-								if q.Gemini5h.RemainingFraction == 0 && !q.Gemini5h.ResetTime.IsZero() && now.Before(q.Gemini5h.ResetTime) {
+								if !q.Gemini5h.Disabled && q.Gemini5h.RemainingFraction == 0 && !q.Gemini5h.ResetTime.IsZero() && now.Before(q.Gemini5h.ResetTime) {
 									cooldownDuration = time.Until(q.Gemini5h.ResetTime)
-								} else if q.GeminiWeekly.RemainingFraction == 0 && !q.GeminiWeekly.ResetTime.IsZero() && now.Before(q.GeminiWeekly.ResetTime) {
+								} else if (q.GeminiWeekly.Disabled || q.GeminiWeekly.RemainingFraction == 0) && !q.GeminiWeekly.ResetTime.IsZero() && now.Before(q.GeminiWeekly.ResetTime) {
 									cooldownDuration = time.Until(q.GeminiWeekly.ResetTime)
-								} else if q.Gemini5h.RemainingFraction > 0.05 {
+								} else if q.Gemini5h.Disabled || q.GeminiWeekly.Disabled {
+									if !q.GeminiWeekly.ResetTime.IsZero() && now.Before(q.GeminiWeekly.ResetTime) {
+										cooldownDuration = time.Until(q.GeminiWeekly.ResetTime)
+									} else {
+										cooldownDuration = 1 * time.Hour
+									}
+								} else if q.Gemini5h.RemainingFraction > 0.05 && !q.Gemini5h.Disabled && !q.GeminiWeekly.Disabled {
 									// Account actually has healthy quota! This was a transient error or stream interruption.
 									// Apply brief 30-second backoff rather than punitive hours-long ban.
 									cooldownDuration = 30 * time.Second
