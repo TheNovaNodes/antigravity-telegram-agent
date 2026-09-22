@@ -457,3 +457,49 @@ func TestHandleAccountCallbackQuery_AllActions(t *testing.T) {
 		t.Errorf("handleAccountCallbackQuery ingest failed")
 	}
 }
+
+func TestHandleAccountsCommand_DisabledQuotaDisplay(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	now := time.Now()
+	pool.accounts["acc-dis"] = &Account{
+		ID:    "acc-dis",
+		Email: "dis@example.com",
+		State: StateActive,
+		Quota: AccountQuota{
+			Gemini5h: ModelQuota{
+				RemainingFraction: 0.0,
+				Disabled:          true,
+			},
+			GeminiWeekly: ModelQuota{
+				RemainingFraction: 0.0,
+				Disabled:          false,
+			},
+			Claude5h: ModelQuota{
+				RemainingFraction: 0.75,
+			},
+			ClaudeWeekly: ModelQuota{
+				RemainingFraction: 1.0,
+			},
+			LastFetchedAt: now,
+		},
+	}
+
+	handleAccountsCommand(bot, 12345, 999, "/accounts", "TestBot", db)
+	text := helper.getLastSentText()
+
+	// Should show 'Gemini: 5h disabled • 7d 0%'
+	expectedLine := "Gemini: 5h disabled • 7d 0%"
+	if !strings.Contains(text, expectedLine) {
+		t.Errorf("Expected dashboard to contain %q, but got:\n%s", expectedLine, text)
+	}
+}

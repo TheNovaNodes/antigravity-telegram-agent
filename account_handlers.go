@@ -146,12 +146,24 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 
 		if !acc.Quota.LastFetchedAt.IsZero() {
 			g5h := fmt.Sprintf("%.0f%%", acc.Quota.Gemini5h.RemainingFraction*100)
+			if acc.Quota.Gemini5h.Disabled {
+				g5h = "disabled"
+			}
 			gWeekly := fmt.Sprintf("%.0f%%", acc.Quota.GeminiWeekly.RemainingFraction*100)
+			if acc.Quota.GeminiWeekly.Disabled {
+				gWeekly = "disabled"
+			}
 			c5h := fmt.Sprintf("%.0f%%", acc.Quota.Claude5h.RemainingFraction*100)
+			if acc.Quota.Claude5h.Disabled {
+				c5h = "disabled"
+			}
 			cWeekly := fmt.Sprintf("%.0f%%", acc.Quota.ClaudeWeekly.RemainingFraction*100)
+			if acc.Quota.ClaudeWeekly.Disabled {
+				cWeekly = "disabled"
+			}
 
 			reset5h := ""
-			if !acc.Quota.Gemini5h.ResetTime.IsZero() && time.Now().Before(acc.Quota.Gemini5h.ResetTime) {
+			if !acc.Quota.Gemini5h.Disabled && !acc.Quota.Gemini5h.ResetTime.IsZero() && time.Now().Before(acc.Quota.Gemini5h.ResetTime) {
 				reset5h = fmt.Sprintf(" (resets %s UTC)", acc.Quota.Gemini5h.ResetTime.UTC().Format("15:04"))
 			}
 

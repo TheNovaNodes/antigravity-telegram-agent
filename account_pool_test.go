@@ -713,3 +713,118 @@ func TestSession_StartReacquiresOnCooldown(t *testing.T) {
 		t.Errorf("Expected session homeDir to switch to %s, got: %s", home2, newHome)
 	}
 }
+
+func TestParseUsageJSON_DisabledBucketAndWeeklyExhaustion(t *testing.T) {
+	// Raw JSON reproducing Issue #298 where weekly quota is 0,
+	// and gemini-5h has "disabled": true with residual remaining_fraction ~1.0
+	rawJSON := []byte(`{
+		"command": {
+			"name": "usage",
+			"data": {
+				"groups": [
+					{
+						"name": "Gemini Models",
+						"buckets": [
+							{
+								"id": "gemini-weekly",
+								"name": "Weekly Limit Remaining",
+								"window": "weekly",
+								"remaining_fraction": 0,
+								"reset_time": "2026-09-23T04:55:05Z"
+							},
+							{
+								"id": "gemini-5h",
+								"name": "Five Hour Limit Remaining",
+								"description": "You have hit your weekly limit, the 5-hour limit does not currently apply.",
+								"window": "5h",
+								"disabled": true,
+								"remaining_fraction": 0.9998999834060669
+							}
+						]
+					}
+				]
+			}
+		}
+	}`)
+
+	quota, err := ParseUsageJSON(rawJSON)
+	if err != nil {
+		t.Fatalf("ParseUsageJSON returned error: %v", err)
+	}
+
+	if !quota.Gemini5h.Disabled {
+		t.Errorf("Expected Gemini 5h to be marked Disabled=true")
+	}
+	if quota.Gemini5h.RemainingFraction != 0.0 {
+		t.Errorf("Expected Gemini 5h RemainingFraction to be normalized to 0.0, got %f", quota.Gemini5h.RemainingFraction)
+	}
+	if quota.GeminiWeekly.RemainingFraction != 0.0 {
+		t.Errorf("Expected Gemini weekly RemainingFraction to be 0.0, got %f", quota.GeminiWeekly.RemainingFraction)
+	}
+	if quota.Gemini5h.ResetTime.IsZero() {
+		t.Errorf("Expected Gemini 5h to inherit ResetTime from Gemini weekly")
+	}
+	expectedReset, _ := time.Parse(time.RFC3339, "2026-09-23T04:55:05Z")
+	if !quota.Gemini5h.ResetTime.Equal(expectedReset) {
+		t.Errorf("Expected Gemini 5h ResetTime to match weekly reset (%v), got %v", expectedReset, quota.Gemini5h.ResetTime)
+	}
+}
+
+func TestAccountPool_AcquireAccount_ExcludesDisabled(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	now := time.Now()
+	// acc-disabled has residual quota in CLI but is disabled due to weekly exhaustion
+	pool.accounts["acc-disabled"] = &Account{
+		ID:          "acc-disabled",
+		Email:       "disabled@gmail.com",
+		State:       StateActive,
+		LastUsed:    now.Add(-2 * time.Hour),
+		ActiveTurns: 0,
+		Quota: AccountQuota{
+			Gemini5h: ModelQuota{
+				RemainingFraction: 0.0,
+				Disabled:          true,
+				ResetTime:         now.Add(24 * time.Hour),
+			},
+			GeminiWeekly: ModelQuota{
+				RemainingFraction: 0.0,
+				ResetTime:         now.Add(24 * time.Hour),
+			},
+			LastFetchedAt: now,
+		},
+	}
+
+	// acc-healthy has lower remaining quota (0.40) but is NOT disabled
+	pool.accounts["acc-healthy"] = &Account{
+		ID:          "acc-healthy",
+		Email:       "healthy@gmail.com",
+		State:       StateActive,
+		LastUsed:    now.Add(-1 * time.Hour),
+		ActiveTurns: 0,
+		Quota: AccountQuota{
+			Gemini5h:      ModelQuota{RemainingFraction: 0.40},
+			GeminiWeekly:  ModelQuota{RemainingFraction: 0.50},
+			LastFetchedAt: now,
+		},
+	}
+
+	acc, err := pool.AcquireAccount(888)
+	if err != nil {
+		t.Fatalf("AcquireAccount failed: %v", err)
+	}
+	if acc.ID != "acc-healthy" {
+		t.Errorf("Expected acc-healthy to be chosen, but got %s", acc.ID)
+	}
+
+	// Now if acc-healthy is placed in cooldown, only acc-disabled remains active
+	pool.accounts["acc-healthy"].State = StateCooldown
+	pool.accounts["acc-healthy"].CooldownUntil = now.Add(1 * time.Hour)
+
+	// AcquireAccount should return ErrAllAccountsCooldown rather than selecting acc-disabled
+	_, err = pool.AcquireAccount(999)
+	if err != ErrAllAccountsCooldown {
+		t.Errorf("Expected ErrAllAccountsCooldown when only disabled account remains, got: %v", err)
+	}
+}
