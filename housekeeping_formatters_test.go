@@ -47,29 +47,41 @@ func TestCleanIdleSessions_Eviction(t *testing.T) {
 	}
 }
 
-func TestCleanIdleSessions_FourHourThreshold(t *testing.T) {
+func TestCleanIdleSessions_TwoHourThreshold(t *testing.T) {
+	origFunc := sysMemStatsFunc
+	sysMemStatsFunc = func() (MemoryStats, error) {
+		return MemoryStats{
+			TotalBytes:     8 * 1024 * 1024 * 1024,
+			AvailableBytes: 4 * 1024 * 1024 * 1024,
+			UsedRatio:      0.50, // Normal memory state (no pressure)
+		}, nil
+	}
+	defer func() {
+		sysMemStatsFunc = origFunc
+	}()
+
 	sessionMu.Lock()
 	sRecent := &AgySession{
 		BotName:      "RecentBot",
 		ChatID:       3001,
 		UserID:       4001,
-		LastActivity: time.Now().Add(-2 * time.Hour), // 2 hours idle: should stay
+		LastActivity: time.Now().Add(-1 * time.Hour), // 1 hour idle: should stay (< 2h)
 		isAlive:      true,
 	}
 	sExpired := &AgySession{
 		BotName:      "ExpiredBot",
 		ChatID:       3002,
 		UserID:       4002,
-		LastActivity: time.Now().Add(-5 * time.Hour), // 5 hours idle: should be evicted
+		LastActivity: time.Now().Add(-3 * time.Hour), // 3 hours idle: should be evicted (> 2h)
 		isAlive:      true,
 	}
 	globalSessions["RecentBot:3001:4001"] = sRecent
 	globalSessions["ExpiredBot:3002:4002"] = sExpired
 	sessionMu.Unlock()
 
-	evicted := CleanIdleSessions(4 * time.Hour)
+	evicted := CleanIdleSessions(2 * time.Hour)
 	if evicted != 1 {
-		t.Errorf("Expected 1 session to be evicted for 4h threshold, got %d", evicted)
+		t.Errorf("Expected 1 session to be evicted for 2h threshold, got %d", evicted)
 	}
 
 	sessionMu.Lock()
@@ -79,10 +91,117 @@ func TestCleanIdleSessions_FourHourThreshold(t *testing.T) {
 	sessionMu.Unlock()
 
 	if !recentExists {
-		t.Errorf("Expected 2-hour idle session to be preserved")
+		t.Errorf("Expected 1-hour idle session to be preserved")
 	}
 	if expiredExists {
-		t.Errorf("Expected 5-hour idle session to be evicted from globalSessions")
+		t.Errorf("Expected 3-hour idle session to be evicted from globalSessions")
+	}
+}
+
+func TestGetSystemMemoryStats(t *testing.T) {
+	stats, err := getSystemMemoryStats()
+	if err != nil {
+		t.Skipf("Skipping on environments without /proc/meminfo: %v", err)
+	}
+	if stats.TotalBytes == 0 {
+		t.Errorf("Expected TotalBytes > 0")
+	}
+	if stats.UsedRatio < 0 || stats.UsedRatio > 1.0 {
+		t.Errorf("UsedRatio out of range [0, 1]: %f", stats.UsedRatio)
+	}
+}
+
+func TestCleanIdleSessions_MemoryPressure_AggressiveEviction(t *testing.T) {
+	// Mock high memory pressure (85% used, 500MB available)
+	origFunc := sysMemStatsFunc
+	sysMemStatsFunc = func() (MemoryStats, error) {
+		return MemoryStats{
+			TotalBytes:     8 * 1024 * 1024 * 1024,
+			AvailableBytes: 500 * 1024 * 1024, // < 1.5GB
+			UsedRatio:      0.85,              // >= 75%
+		}, nil
+	}
+	defer func() {
+		sysMemStatsFunc = origFunc
+	}()
+
+	sessionMu.Lock()
+	sRecent := &AgySession{
+		BotName:      "PressureRecentBot",
+		ChatID:       5001,
+		UserID:       6001,
+		LastActivity: time.Now().Add(-10 * time.Minute), // 10m idle: should stay (< 20m)
+		isAlive:      true,
+	}
+	sIdleStale := &AgySession{
+		BotName:      "PressureIdleBot",
+		ChatID:       5002,
+		UserID:       6002,
+		LastActivity: time.Now().Add(-35 * time.Minute), // 35m idle: should be aggressively evicted (> 20m)
+		isAlive:      true,
+	}
+	globalSessions["PressureRecentBot:5001:6001"] = sRecent
+	globalSessions["PressureIdleBot:5002:6002"] = sIdleStale
+	sessionMu.Unlock()
+
+	evicted := CleanIdleSessions(2 * time.Hour)
+	if evicted != 1 {
+		t.Errorf("Expected 1 session aggressively evicted under memory pressure, got %d", evicted)
+	}
+
+	sessionMu.Lock()
+	_, recentExists := globalSessions["PressureRecentBot:5001:6001"]
+	_, idleExists := globalSessions["PressureIdleBot:5002:6002"]
+	delete(globalSessions, "PressureRecentBot:5001:6001")
+	sessionMu.Unlock()
+
+	if !recentExists {
+		t.Errorf("Expected 10-minute idle session to be preserved")
+	}
+	if idleExists {
+		t.Errorf("Expected 35-minute idle session to be evicted under memory pressure")
+	}
+}
+
+func TestCleanIdleSessions_ActiveTurnProtectedUnderMemoryPressure(t *testing.T) {
+	// Mock extreme memory pressure (95% used, 100MB available)
+	origFunc := sysMemStatsFunc
+	sysMemStatsFunc = func() (MemoryStats, error) {
+		return MemoryStats{
+			TotalBytes:     8 * 1024 * 1024 * 1024,
+			AvailableBytes: 100 * 1024 * 1024,
+			UsedRatio:      0.95,
+		}, nil
+	}
+	defer func() {
+		sysMemStatsFunc = origFunc
+	}()
+
+	sessionMu.Lock()
+	sActiveTurn := &AgySession{
+		BotName:         "ActiveTurnBot",
+		ChatID:          7001,
+		UserID:          8001,
+		LastActivity:    time.Now().Add(-45 * time.Minute), // idle 45m, but active turn in flight!
+		ActiveMessageID: 9999,
+		ActiveTurnStart: time.Now().Add(-5 * time.Minute),
+		isAlive:         true,
+	}
+	globalSessions["ActiveTurnBot:7001:8001"] = sActiveTurn
+	sessionMu.Unlock()
+
+	evicted := CleanIdleSessions(2 * time.Hour)
+	if evicted != 0 {
+		t.Errorf("Expected active in-flight turn to NEVER be evicted, got %d evictions", evicted)
+	}
+
+	sessionMu.Lock()
+	_, activeExists := globalSessions["ActiveTurnBot:7001:8001"]
+	delete(globalSessions, "ActiveTurnBot:7001:8001")
+	sessionMu.Unlock()
+
+	if !activeExists {
+		t.Errorf("Expected active in-flight session to be strictly immune to GC")
 	}
 }
 
