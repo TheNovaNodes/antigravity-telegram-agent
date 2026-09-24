@@ -363,3 +363,45 @@ flowchart TD
 ### 3. AllowedUpdates Enforcement:
 - **Comprehensive UI Event Ingestion**: Explicitly registers `message`, `edited_message`, `channel_post`, `edited_channel_post`, and `callback_query`.
 - **Responsive Interactive Menus**: Guarantees that interactive inline button clicks (`cmd:stop`, `cmd:retry`, account switching keyboards) are never dropped by the Telegram gateway.
+
+---
+
+## 12. Memory-Aware Autonomous GC & OOM Prevention Architecture
+
+To prevent systemd/kernel OOM-killer service terminations under multi-bot concurrency and long-running interactive sessions ([`session.go`](../session.go), [`main.go`](../main.go), Issue #304):
+
+```mermaid
+flowchart TD
+    Tick["GC Worker Ticker (every 1m)"] --> ReadMem["Read /proc/meminfo (getSystemMemoryStats)"]
+    ReadMem --> CheckPressure{"RAM Used >= 75% OR Avail < 1.5GB?"}
+    
+    CheckPressure -->|Yes: Memory Pressure| SetAggressive["Effective Idle Threshold = 20 min (defaultAggressiveMaxIdle)"]
+    CheckPressure -->|No: Normal Load| SetNormal["Effective Idle Threshold = 2 hours (SESSION_MAX_IDLE)"]
+    
+    SetAggressive --> ScanSessions["Scan globalSessions (Lock/Unlock)"]
+    SetNormal --> ScanSessions
+    
+    ScanSessions --> CheckSession{"For Each Session"}
+    CheckSession --> CheckTurn{"Active Turn in Flight? (ActiveMessageID != 0 || TurnStart)"}
+    
+    CheckTurn -->|Yes| Protect["IMMUNE: Skip Eviction"]
+    CheckTurn -->|No| CheckIdle{"Idle Time > Effective Threshold?"}
+    
+    CheckIdle -->|Yes| Evict["Evict: Kill Process & Close stdin"]
+    CheckIdle -->|No| Retain["Retain Process"]
+    
+    Evict --> ZeroLoss["Disk Persisted (transcript.jsonl / SQLite). Resurrects on next turn."]
+```
+
+### 1. Dynamic System Memory Sensing (`/proc/meminfo`):
+- **Real-Time Diagnostics**: `getSystemMemoryStats()` parses `MemTotal`, `MemAvailable`, `MemFree`, `Buffers`, and `Cached` from `/proc/meminfo` on each 1-minute GC cycle.
+- **Adaptive Memory Pressure Detection**: When RAM utilization reaches `>= 75%` or available RAM drops below `1.5 GB`, the GC automatically activates aggressive reclamation mode.
+
+### 2. Multi-Tier Idle Eviction Thresholds:
+- **Normal Operating Mode**: Idle sessions are kept alive up to `2 hours` (reduced from 4 hours, configurable via `SESSION_MAX_IDLE`), providing instant responsiveness for standard user interactions.
+- **Aggressive Pressure Mode**: When memory pressure is detected, the idle eviction threshold drops dynamically to `20 minutes` (`defaultAggressiveMaxIdle`), immediately reclaiming 150–400 MB RSS per idle `agy` subprocess.
+
+### 3. In-Flight Turn Immunity & Zero Context Loss:
+- **Active Turn Protection**: Sessions currently streaming answers or executing tool turns (`ActiveMessageID != 0` or active `ActiveTurnStart`) are strictly immune to GC, even under extreme memory pressure (95%+).
+- **Disk-Backed State Persistence**: Terminating idle `agy` subprocesses produces zero context loss because all conversation trajectories and tool calls are persisted to disk (`transcript.jsonl` and SQLite). Upon the user's next message, `acquireSession()` seamlessly resurrects the session (`agy --conversation <id>`) with 100% full context.
+
