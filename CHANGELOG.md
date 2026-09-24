@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Reliability & Autonomous Resource Management (Issue #304)
+- **Memory-Aware Session GC & OOM Prevention (Issue #304)**:
+  - Implemented dynamic memory pressure detection via `/proc/meminfo` (`getSystemMemoryStats`).
+  - Added aggressive session idle eviction (20m threshold) when system memory pressure exceeds 75% RAM usage or available RAM drops below 1.5GB.
+  - Reduced default `SESSION_MAX_IDLE` from 4h to 2h, and accelerated session GC interval to 1m.
+  - Guaranteed absolute in-flight turn immunity (`ActiveMessageID != 0` or `!ActiveTurnStart.IsZero()`), protecting active streaming turns from premature eviction.
+  - Validated zero context loss on idle eviction due to disk-backed conversation persistence and seamless CLI resurrection.
+
 ### Reliability & Multi-Account Quota Management (Issue #298)
 - **Disabled Quota Flag Parsing & 429 Failover Recovery (Issue #298)**:
   - Added `Disabled` boolean deserialization in `ModelQuota` and `ParseUsageJSON` to capture `disabled: true` when Antigravity CLI exhausts weekly limits.
