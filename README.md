@@ -65,7 +65,7 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | :--- | :--- | :--- |
 | `/start` | None | Displays live Agent Terminal dashboard (CWD, model, active account, session uptime, steps count, quick action keyboard). |
 | `/model` | None | Opens interactive inline keyboard to switch the active LLM model with seamless Hot Model Swap (100% context retention). |
-| `/refresh_models`| None | Dynamically fetches the latest model list from `agy --print /models`. |
+| `/refresh_models`| None | Dynamically fetches the latest model list from `agy models`. |
 | `/accounts` | `[status\|switch\|check]` | Multi-account quota pool dashboard, active account switching, and live quota health checks. |
 | `/usage` | None | Queries and displays current token quota and tier usage. |
 | `/clear` | None | Resets session context, terminates background tasks, and issues a fresh conversation UUID. |
@@ -78,6 +78,11 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/tts_engine` | `[hybrid\|edge\|piper\|elevenlabs]` | View or switch the active Text-To-Speech engine. |
 | `/stop` (or `/cancel`) | None | Gracefully interrupts active execution turn, terminates subprocess process group (`SIGTERM`/`SIGKILL`), salvages output buffer, and preserves conversation context. |
 | `/help` | None | Displays comprehensive command reference. |
+| `/goal` | `<prompt>` | Runs exhaustive long-running autonomous task without stopping prematurely. |
+| `/schedule` | `<duration>` | Sets background timer or recurring cron schedule for task execution. |
+| `/browser` | `<url>` | Launches web browser interaction and research workflow. |
+| `/plan` | `<goal>` | Generates structured step-by-step implementation plan. |
+| `/learn` | `<notes>` | Persists behavioral guidelines and lessons for future agent turns. |
 | `/grill_me` (or `/grill-me`) | None | Triggers interactive interview slash-command in Antigravity CLI (registered as bot command in `main.go`, auto-aliased and normalized in `handlers.go`). |
 | `/teamwork_preview` (or `/teamwork-preview`) | None | Triggers multi-agent collaboration preview (registered as bot command in `main.go`, auto-aliased and normalized in `handlers.go`). |
 
@@ -93,17 +98,18 @@ make build-harvester
 ```
 
 **Available Commands:**
-*   `scan`: Passively monitors and parses `transcript.jsonl` streams in real-time.
+*   `scan`: Audits multi-account pools and host brain storage to discover unharvested session artifact inventories.
     ```bash
-    ./bin/agy-harvester scan --dir ~/.agents/mybot
+    ./bin/agy-harvester scan --all
+    ./bin/agy-harvester scan --all --json
     ```
 *   `extract`: Packages the latest session data, runs the document taxonomy classifier, redacts secrets via the secret shield, and bundles the result into a ZIP archive with a `manifest.json`.
     ```bash
-    ./bin/agy-harvester extract --session my_session_id --out ./exports
+    ./bin/agy-harvester extract --session my_session_id --out ./exports/artifacts.zip
     ```
-*   `doctor`: Validates Harvester's configuration, tests Prometheus metrics connectivity, and performs system health checks.
+*   `doctor`: Audits and detects orphaned artifacts older than 48 hours stranded in session storage and not committed to Git.
     ```bash
-    ./bin/agy-harvester doctor
+    ./bin/agy-harvester doctor --max-age 48h
     ```
 
 For detailed operational procedures, refer to [docs/HARVESTER_RUNBOOK.md](docs/HARVESTER_RUNBOOK.md).
@@ -123,6 +129,7 @@ The engine features an enterprise-grade resilience suite engineered for 24/7 hea
 * **Subprocess State: T Reaper**: An autonomous `/proc` scanner detects and reaps commands suspended by `SIGTTIN`/`SIGTTOU` via sequenced `SIGCONT` + `SIGKILL`.
 * **Two-Tier Webhook Guard & 409 Conflict Immunity**: Layer 1 preemptively purges lingering webhooks during daemon startup across all swarm bots before initializing Long Polling workers. Layer 2 dynamically intercepts runtime HTTP `409 Conflict` in the polling loop, auto-purging conflicting webhooks with exponential backoff to eliminate crash loops and multi-bot outages.
 * **Multi-Account Quota Normalization & Failover Shield**: Decodes upstream CLI `disabled: true` quota states when weekly limits hit 0%, normalizes fractions to `0.0`, and inherits weekly reset windows, preventing false-healthy account nomination and 429 quota exhaustion loops.
+* **Multi-Account Conversations Self-Healing & Context Retention (#302)**: Resolves systemd service home path binding in the multi-account pool and dynamically heals broken or dangling symlinks across account profiles, preventing upstream stager crashes and guaranteeing continuous conversation context persistence.
 
 ---
 
@@ -144,6 +151,8 @@ The engine supports flexible configuration through environment variables:
 | `AGY_BINARY` | String | `~/.local/bin/agy` | Absolute path to the Antigravity CLI binary (defaults to `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
 | `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |
+| `ELEVENLABS_MAX_CHARS` | Integer | `2500` | Maximum character length threshold for ElevenLabs voice generation. |
+| `ELEVENLABS_TIMEOUT_SECONDS` | Integer | `30` | Timeout in seconds for ElevenLabs HTTP requests. |
 | `TTS_ENGINE` | String | `hybrid` | TTS engine selection (`hybrid` [default], `edge`, `piper`, `elevenlabs`). |
 | `EDGE_TTS_VOICE` | String | `ru-RU-DmitryNeural` | Voice name for Edge-TTS (default `ru-RU-DmitryNeural`). |
 | `PIPER_PATH` | String | `""` | Absolute path to the Piper TTS binary. |
@@ -151,12 +160,14 @@ The engine supports flexible configuration through environment variables:
 | `METRICS_ADDR` | String | `""` | Prometheus metrics bind address (e.g. `:9090`). |
 | `METRICS_PORT` | String | `""` | Prometheus metrics port fallback. |
 | `ACCOUNTS_DIR` | String | `~/.gemini/antigravity-cli/accounts` | Multi-account pool base directory (default `~/.gemini/antigravity-cli/accounts` or `/etc/antigravity-bot/accounts`). |
+| `ECOSYSTEM_INBOX_DIR` | String | `""` | Cross-agent ecosystem inter-bot inbox directory for safe deliver-to-chat file dispatch. |
 | `CONVERSATIONS_DIR` | String | `""` | Custom conversation logs directory. |
 | `SYSTEM_HOME` | String | `""` | Fallback host home directory when isolating account environments. |
 | `SHARED_CACHE_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
 | `SHARED_GOPATH_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
 | `SHARED_NPM_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
 | `SESSION_MAX_IDLE` | Duration | `4h` | Duration before idle session eviction and state archiving (default `4h`). |
+| `ENV_FILE` | String | `/etc/antigravity-bot/env` | Production environment file path for systemd supervisor credentials. |
 | `ALLOW_DOTENV` | Integer | `0` | Development flag (`1`) allowing `.env` fallback instead of fail-closed `ENV_FILE` requirement. |
 
 ---
