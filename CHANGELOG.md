@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Context Preservation & Session Desync Detection (Issue #303)
+- **Silent Fallback & Desync Prevention for `--conversation` (Issue #303)**:
+  - Detected and alerted on runtime conversation desync in `readStdoutLoop` when `agy` CLI silently rejects `--conversation` due to missing disk state and generates a fresh UUID.
+  - Added `session_context_resets_total` Prometheus counter with `bot` label and integrated with `RegisterEngineMetrics`.
+  - Added dynamic schema migration for `is_orphaned` column in `session_history` table and automated `markSessionOrphaned` flagging.
+  - Filtered orphaned conversations out of `/resume` inline session history list (`handleResumeCommand`).
+  - Delivered real-time transparent user notification in Telegram (prepending to stream buffer during turns or sending immediate HTML notice) explaining previous context loss and identifying fresh conversation ID.
+  - Guarded callback resumption in `handleCallbackQuery` to warn users when attempting to resume a session whose context is missing on disk.
+  - Added comprehensive unit test suite `session_context_desync_test.go` covering clean start non-regression, stream buffering, orphaned exclusion, and alert notifications.
+
 ### Reliability & Multi-Account Quota Management (Issue #298)
 - **Disabled Quota Flag Parsing & 429 Failover Recovery (Issue #298)**:
   - Added `Disabled` boolean deserialization in `ModelQuota` and `ParseUsageJSON` to capture `disabled: true` when Antigravity CLI exhausts weekly limits.

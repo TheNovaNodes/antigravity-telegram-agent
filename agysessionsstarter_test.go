@@ -35,6 +35,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		user_id INTEGER,
 		session_id TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_orphaned BOOLEAN DEFAULT 0,
 		UNIQUE(user_id, session_id)
 	)`)
 	if err != nil {

@@ -33,6 +33,7 @@ type AgySession struct {
 	Model           string
 	Workspace       string
 	Conversation    string
+	ExplicitConv    bool
 	UseContinue     bool
 	Cmd             *exec.Cmd
 	Stdin           io.WriteCloser
@@ -536,6 +537,7 @@ func acquireSession(opts SessionOptions) (*AgySession, error) {
 		Model:        model,
 		Workspace:    workspace,
 		Conversation: convID,
+		ExplicitConv: opts.ExplicitConv,
 		UseContinue:  opts.UseContinue,
 		InitChan:     make(chan string, 1),
 		UpdateChan:   make(chan struct{}, 100),
@@ -1200,10 +1202,48 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 				default:
 				}
 				s.mu.Lock()
-				s.Conversation = newID
+				requestedID := s.Conversation
+				explicit := s.ExplicitConv
 				uID := s.UserID
 				db := s.DB
+				botAPI := s.BotAPI
+				chatID := s.ChatID
+				bName := s.BotName
+				s.Conversation = newID
 				s.mu.Unlock()
+
+				// Detect context desync: when a specific conversation was requested but agy rejected it (#303).
+				// We check if the requested ID was established in history, or was explicitly requested (resume/model-swap).
+				isDesync := false
+				if requestedID != "" && newID != requestedID {
+					if explicit || db == nil || isSessionOwnedByUser(db, uID, requestedID) {
+						isDesync = true
+					}
+				}
+
+				if isDesync {
+					log.Printf("[SessionDesync] ⚠️ Context lost for bot %s (chatID %d, user %d): requested %s, but runtime generated %s",
+						bName, chatID, uID, requestedID, newID)
+					RecordSessionContextReset(bName)
+					if db != nil && uID != 0 {
+						markSessionOrphaned(db, uID, requestedID)
+					}
+					if botAPI != nil && chatID != 0 {
+						s.mu.Lock()
+						if s.ActiveMessageID != 0 {
+							// Active prompt is streaming deltas: prepend visible notice to buffer
+							s.TextBuffer = fmt.Sprintf("⚠️ _[Previous conversation context could not be loaded from storage. Started fresh session (%s)]_\n\n", safePrefix(newID, 8)) + s.TextBuffer
+						} else {
+							notice := fmt.Sprintf("⚠️ <b>[Context Reset]</b> Previous conversation context was not found on disk.\n"+
+								"The agent has been initialized with a fresh session (<code>%s</code>).", safePrefix(newID, 8))
+							msg := tgbotapi.NewMessage(chatID, notice)
+							msg.ParseMode = "HTML"
+							_, _ = botAPI.Send(msg)
+						}
+						s.mu.Unlock()
+					}
+				}
+
 				if db != nil && uID != 0 {
 					updateUserSession(db, uID, newID)
 				}
