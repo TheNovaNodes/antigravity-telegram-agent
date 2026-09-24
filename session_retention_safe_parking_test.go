@@ -228,3 +228,96 @@ func TestSession_EnvSharedCachesInjection(t *testing.T) {
 	checkEnv("PIP_CACHE_DIR", expectedPip)
 	checkEnv("HOME", accHome)
 }
+
+func TestEnsureSharedAccountDirectories_DanglingSymlinkRecovery(t *testing.T) {
+	sharedTmp := t.TempDir()
+	expectedShared := filepath.Join(sharedTmp, "conversations")
+	t.Setenv("CONVERSATIONS_DIR", expectedShared)
+	t.Setenv("SYSTEM_HOME", sharedTmp)
+	tmpAccHome := t.TempDir()
+
+	accCliDir := filepath.Join(tmpAccHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(accCliDir, 0755); err != nil {
+		t.Fatalf("Failed to create accCliDir: %v", err)
+	}
+	accConvs := filepath.Join(accCliDir, "conversations")
+
+	// 1. Create a pre-existing DANGLING symlink pointing to a non-existent directory
+	nonExistentTarget := filepath.Join(sharedTmp, "non_existent_old_conversations")
+	if err := os.Symlink(nonExistentTarget, accConvs); err != nil {
+		t.Fatalf("Failed to create dummy dangling symlink: %v", err)
+	}
+
+	// Verify that the symlink is indeed dangling (os.Stat returns ErrNotExist, os.Lstat succeeds)
+	if _, statErr := os.Stat(accConvs); !os.IsNotExist(statErr) {
+		t.Fatalf("Expected os.Stat to return ErrNotExist for dangling symlink, got %v", statErr)
+	}
+
+	// 2. Call EnsureSharedAccountDirectories
+	if err := EnsureSharedAccountDirectories(tmpAccHome); err != nil {
+		t.Fatalf("EnsureSharedAccountDirectories failed on dangling symlink: %v", err)
+	}
+
+	// 3. Verify that the dangling symlink was healed and now points to the existing shared conversations dir
+	fi, err := os.Lstat(accConvs)
+	if err != nil {
+		t.Fatalf("Failed to lstat healed conversations symlink %s: %v", accConvs, err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("Expected %s to be a symlink, got mode: %v", accConvs, fi.Mode())
+	}
+	target, err := os.Readlink(accConvs)
+	if err != nil {
+		t.Fatalf("Failed to read symlink %s: %v", accConvs, err)
+	}
+	if target != expectedShared {
+		t.Errorf("Expected healed symlink target %s, got: %s", expectedShared, target)
+	}
+
+	// 4. Assert that the symlink target is fully writable (mkdir / stat pass without EEXIST)
+	if _, statErr := os.Stat(accConvs); statErr != nil {
+		t.Errorf("Expected healed symlink target to exist on disk: %v", statErr)
+	}
+}
+
+func TestEnsureSharedAccountDirectories_SystemHomeFallback(t *testing.T) {
+	sharedTmp := t.TempDir()
+	t.Setenv("CONVERSATIONS_DIR", "")
+	t.Setenv("SYSTEM_HOME", sharedTmp)
+	t.Setenv("HOME", "/etc/antigravity-bot/accounts/service_account")
+
+	tmpAccHome := t.TempDir()
+
+	if err := EnsureSharedAccountDirectories(tmpAccHome); err != nil {
+		t.Fatalf("EnsureSharedAccountDirectories failed: %v", err)
+	}
+
+	accConvs := filepath.Join(tmpAccHome, ".gemini", "antigravity-cli", "conversations")
+	target, err := os.Readlink(accConvs)
+	if err != nil {
+		t.Fatalf("Failed to read symlink: %v", err)
+	}
+
+	expectedBase := filepath.Join(sharedTmp, ".gemini", "antigravity-cli", "conversations")
+	if target != expectedBase {
+		t.Errorf("Expected symlink target %s derived from SYSTEM_HOME, got: %s", expectedBase, target)
+	}
+}
+
+func TestEnsureSymlink_DanglingSymlinkSelfHealing(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "real_target")
+	symlinkPath := filepath.Join(tmpDir, "test_symlink")
+
+	// Create dangling symlink pointing to targetDir before targetDir exists
+	_ = os.Symlink(targetDir, symlinkPath)
+
+	// ensureSymlink should detect targetDir didn't exist, create targetDir, and validate symlink
+	if err := ensureSymlink(targetDir, symlinkPath); err != nil {
+		t.Fatalf("ensureSymlink failed: %v", err)
+	}
+
+	if _, err := os.Stat(symlinkPath); err != nil {
+		t.Errorf("Expected symlink target to exist after ensureSymlink: %v", err)
+	}
+}
