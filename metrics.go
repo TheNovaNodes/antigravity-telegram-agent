@@ -7,8 +7,40 @@ import (
 	"os"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var (
+	// SessionContextResetsTotal tracks silent context desync events where requested conversation ID was rejected by CLI runtime (#303).
+	SessionContextResetsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "session_context_resets_total",
+			Help: "Total count of silent context desyncs where requested conversation ID was rejected by CLI runtime.",
+		},
+		[]string{"bot"},
+	)
+)
+
+func init() {
+	RegisterEngineMetrics(prometheus.DefaultRegisterer)
+}
+
+// RegisterEngineMetrics registers engine metrics with the given Prometheus registerer.
+func RegisterEngineMetrics(reg prometheus.Registerer) {
+	if reg == nil {
+		return
+	}
+	_ = reg.Register(SessionContextResetsTotal)
+}
+
+// RecordSessionContextReset increments the Prometheus counter for context desyncs.
+func RecordSessionContextReset(botName string) {
+	if botName == "" {
+		botName = "unknown"
+	}
+	SessionContextResetsTotal.WithLabelValues(botName).Inc()
+}
 
 // StartMetricsServer boots an HTTP server exposing Prometheus metrics on the given address.
 // If addr is empty, it checks the METRICS_ADDR environment variable (e.g. ":9090").

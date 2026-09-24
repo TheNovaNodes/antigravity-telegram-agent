@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Context Preservation & Session Desync Detection (Issue #303)
+- **Silent Fallback & Desync Prevention for `--conversation` (Issue #303)**:
+  - Detected and alerted on runtime conversation desync in `readStdoutLoop` when `agy` CLI silently rejects `--conversation` due to missing disk state and generates a fresh UUID.
+  - Added `session_context_resets_total` Prometheus counter with `bot` label and integrated with `RegisterEngineMetrics`.
+  - Added dynamic schema migration for `is_orphaned` column in `session_history` table and automated `markSessionOrphaned` flagging.
+  - Filtered orphaned conversations out of `/resume` inline session history list (`handleResumeCommand`).
+  - Delivered real-time transparent user notification in Telegram (prepending to stream buffer during turns or sending immediate HTML notice) explaining previous context loss and identifying fresh conversation ID.
+  - Guarded callback resumption in `handleCallbackQuery` to warn users when attempting to resume a session whose context is missing on disk.
+  - Added comprehensive unit test suite `session_context_desync_test.go` covering clean start non-regression, stream buffering, orphaned exclusion, and alert notifications.
+
 ### Bug Fixes & Multi-Account Architecture (Issue #302)
 - **Dangling Conversations Symlink Self-Healing & System Home Resolution (Issue #302, PR #303)**:
   - Fixed `getSystemBaseHome()` and `getSharedConversationsDir()` in `account_pool.go` to prioritize `SYSTEM_HOME` and exclude systemd service account directories (`/accounts/`), eliminating path pollution and binding to ephemeral daemon homes.

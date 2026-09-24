@@ -203,11 +203,16 @@ func initDB(botName string) *sql.DB {
 		user_id INTEGER,
 		session_id TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_orphaned BOOLEAN DEFAULT 0,
 		UNIQUE(user_id, session_id)
 	)`)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// Dynamic migration for session_history: check if is_orphaned column exists (#303)
+	ensureSessionHistoryColumns(db)
+
 	return db
 }
 
@@ -250,6 +255,45 @@ func getUser(db *sql.DB, userID int64, botName string) User {
 		}
 	}
 	return u
+}
+
+// ensureSessionHistoryColumns guarantees that is_orphaned column exists in session_history (#303).
+func ensureSessionHistoryColumns(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	var hasIsOrphaned bool
+	rows, err := db.Query("PRAGMA table_info(session_history)")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notnull, pk int
+			var dfltValue interface{}
+			if err := rows.Scan(&cid, &name, &colType, &notnull, &dfltValue, &pk); err == nil {
+				if name == "is_orphaned" {
+					hasIsOrphaned = true
+					break
+				}
+			}
+		}
+	}
+	if !hasIsOrphaned {
+		_, _ = db.Exec("ALTER TABLE session_history ADD COLUMN is_orphaned BOOLEAN DEFAULT 0")
+	}
+}
+
+// markSessionOrphaned flags a conversation session in session_history as orphaned due to context desync (#303).
+func markSessionOrphaned(db *sql.DB, userID int64, sessionID string) {
+	if db == nil || sessionID == "" {
+		return
+	}
+	ensureSessionHistoryColumns(db)
+	_, err := db.Exec("UPDATE session_history SET is_orphaned = 1 WHERE user_id = ? AND session_id = ?", userID, sessionID)
+	if err != nil {
+		log.Printf("DB Error marking session %s as orphaned for user %d: %v", sessionID, userID, err)
+	}
 }
 
 // isSessionOwnedByUser checks whether a given sessionID was initiated by userID.

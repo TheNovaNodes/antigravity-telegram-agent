@@ -292,7 +292,8 @@ func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB)
 		return
 	}
 	brainDir := getBrainDir()
-	dbRows, err := db.Query("SELECT DISTINCT session_id FROM session_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", userID)
+	ensureSessionHistoryColumns(db)
+	dbRows, err := db.Query("SELECT DISTINCT session_id FROM session_history WHERE user_id = ? AND COALESCE(is_orphaned, 0) = 0 ORDER BY created_at DESC LIMIT 20", userID)
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read session history"))
 		return
@@ -1157,16 +1158,26 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, user 
 
 		updateUserSession(db, userID, convID)
 
+		desyncDetected := false
+		actualID := convID
 		select {
 		case newID := <-session.InitChan:
 			session.mu.Lock()
 			session.Conversation = newID
 			session.mu.Unlock()
-			convID = newID
+			if convID != "" && newID != convID {
+				desyncDetected = true
+			}
+			actualID = newID
 		case <-time.After(3 * time.Second):
 		}
 
-		respText := fmt.Sprintf("🔄 Resumed session!\n`%s`", safePrefix(convID, 8))
+		var respText string
+		if desyncDetected {
+			respText = fmt.Sprintf("⚠️ *Could not resume session `%s`*\nContext is missing on disk. Started a fresh session instead:\n`%s`", safePrefix(convID, 8), safePrefix(actualID, 8))
+		} else {
+			respText = fmt.Sprintf("🔄 Resumed session!\n`%s`", safePrefix(actualID, 8))
+		}
 		msg := tgbotapi.NewMessage(chatID, respText)
 		msg.ParseMode = "Markdown"
 		bot.Send(msg)
