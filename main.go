@@ -153,15 +153,15 @@ func main() {
 		}
 	}
 
-	// Start background housekeeping workers (session GC, disk cleanup, and subprocess watchdog)
+	// Start background housekeeping workers (memory-aware session GC, disk cleanup, and subprocess watchdog) (#304)
 	stopHousekeeping := make(chan struct{})
-	maxIdleSessionDuration := 4 * time.Hour
+	maxIdleSessionDuration := 2 * time.Hour
 	if idleEnv := os.Getenv("SESSION_MAX_IDLE"); idleEnv != "" {
 		if d, err := time.ParseDuration(idleEnv); err == nil && d > 0 {
 			maxIdleSessionDuration = d
 		}
 	}
-	StartSessionGCWorker(30*time.Minute, maxIdleSessionDuration, stopHousekeeping)
+	StartSessionGCWorker(1*time.Minute, maxIdleSessionDuration, stopHousekeeping)
 	StartDiskCleanupWorker(2*time.Hour, 24*time.Hour, stopHousekeeping)
 	StartSubprocessWatchdogWorker(2*time.Second, 3*time.Second, stopHousekeeping)
 

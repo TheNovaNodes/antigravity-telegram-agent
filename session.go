@@ -260,14 +260,14 @@ func getProjectsDir() string {
 	if baseHome != "" && baseHome != os.TempDir() {
 		return filepath.Join(baseHome, "projects")
 	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" && home != os.TempDir() {
+		return filepath.Join(home, "projects")
+	}
 	if fi, err := os.Stat("/root/projects"); err == nil && fi.IsDir() {
 		return "/root/projects"
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, "projects")
+	return filepath.Join(os.TempDir(), "projects")
 }
 
 // isPathUnderRoot checks whether a given path is located strictly within the root directory (Fail-Closed).
@@ -593,8 +593,100 @@ func getSession(botName string, user User, chatID int64, dbs ...*sql.DB) *AgySes
 	return session
 }
 
+// MemoryStats captures essential system memory metrics for memory pressure detection (#304).
+type MemoryStats struct {
+	TotalBytes     uint64
+	AvailableBytes uint64
+	UsedRatio      float64
+}
+
+// Default memory pressure thresholds (#304)
+const (
+	defaultMemoryPressureUsedRatio = 0.75               // 75% RAM usage
+	defaultMemoryPressureMinAvail  = 1536 * 1024 * 1024 // 1.5 GB minimum available RAM
+	defaultAggressiveMaxIdle       = 20 * time.Minute   // 20 minutes idle threshold under memory pressure
+)
+
+var sysMemStatsFunc = getSystemMemoryStats
+
+// getSystemMemoryStats reads /proc/meminfo to determine real-time memory pressure.
+func getSystemMemoryStats() (MemoryStats, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return MemoryStats{}, err
+	}
+
+	var memTotal, memAvail, memFree, buffers, cached uint64
+	hasAvail := false
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		val, parseErr := strconv.ParseUint(fields[1], 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		valBytes := val * 1024
+
+		switch fields[0] {
+		case "MemTotal:":
+			memTotal = valBytes
+		case "MemAvailable:":
+			memAvail = valBytes
+			hasAvail = true
+		case "MemFree:":
+			memFree = valBytes
+		case "Buffers:":
+			buffers = valBytes
+		case "Cached:":
+			cached = valBytes
+		}
+	}
+
+	if memTotal == 0 {
+		return MemoryStats{}, fmt.Errorf("unable to determine MemTotal from /proc/meminfo")
+	}
+
+	if !hasAvail {
+		memAvail = memFree + buffers + cached
+	}
+
+	var usedRatio float64
+	if memTotal > 0 && memTotal >= memAvail {
+		usedRatio = float64(memTotal-memAvail) / float64(memTotal)
+	}
+
+	return MemoryStats{
+		TotalBytes:     memTotal,
+		AvailableBytes: memAvail,
+		UsedRatio:      usedRatio,
+	}, nil
+}
+
 // CleanIdleSessions scans globalSessions and terminates processes idle longer than maxIdleDuration.
+// Under high memory pressure (>75% RAM used or <1.5GB available), it automatically applies
+// aggressive eviction (default 20 minutes) to prevent OOM termination (#304). Sessions with active turns
+// in flight are strictly protected and never evicted.
 func CleanIdleSessions(maxIdleDuration time.Duration) int {
+	effectiveMaxIdle := maxIdleDuration
+	if effectiveMaxIdle <= 0 {
+		effectiveMaxIdle = 2 * time.Hour
+	}
+
+	memStats, err := sysMemStatsFunc()
+	isUnderPressure := false
+	if err == nil {
+		if memStats.UsedRatio >= defaultMemoryPressureUsedRatio || memStats.AvailableBytes < defaultMemoryPressureMinAvail {
+			isUnderPressure = true
+			effectiveMaxIdle = defaultAggressiveMaxIdle
+			log.Printf("[GC] ⚠️ High memory pressure detected (%.1f%% RAM used, %d MB available). Triggering aggressive idle eviction (threshold: %v)...",
+				memStats.UsedRatio*100, memStats.AvailableBytes/(1024*1024), effectiveMaxIdle)
+		}
+	}
+
 	sessionMu.Lock()
 	now := time.Now()
 	var toEvict []*AgySession
@@ -602,13 +694,20 @@ func CleanIdleSessions(maxIdleDuration time.Duration) int {
 
 	for k, s := range globalSessions {
 		s.mu.Lock()
+		activeID := s.ActiveMessageID
+		turnStart := s.ActiveTurnStart
 		lastAct := s.LastActivity
 		if lastAct.IsZero() {
 			lastAct = s.LastEdit
 		}
 		s.mu.Unlock()
 
-		if !lastAct.IsZero() && now.Sub(lastAct) > maxIdleDuration {
+		// Immunity: Never evict sessions with active streaming turns in flight
+		if activeID != 0 || !turnStart.IsZero() {
+			continue
+		}
+
+		if !lastAct.IsZero() && now.Sub(lastAct) > effectiveMaxIdle {
 			toEvict = append(toEvict, s)
 			toEvictKeys = append(toEvictKeys, k)
 		}
@@ -621,7 +720,12 @@ func CleanIdleSessions(maxIdleDuration time.Duration) int {
 
 	for _, s := range toEvict {
 		s.Kill()
-		log.Printf("[GC] Evicted idle session for bot %s (chatID %d)", s.BotName, s.ChatID)
+		if isUnderPressure {
+			log.Printf("[GC] ⚡ Evicted idle session under memory pressure for bot %s (chatID %d, idle: %v)",
+				s.BotName, s.ChatID, now.Sub(s.LastActivity).Round(time.Second))
+		} else {
+			log.Printf("[GC] Evicted idle session for bot %s (chatID %d)", s.BotName, s.ChatID)
+		}
 	}
 	return len(toEvict)
 }
