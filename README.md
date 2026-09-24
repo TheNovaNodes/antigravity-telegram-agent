@@ -65,7 +65,7 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | :--- | :--- | :--- |
 | `/start` | None | Displays live Agent Terminal dashboard (CWD, model, active account, session uptime, steps count, quick action keyboard). |
 | `/model` | None | Opens interactive inline keyboard to switch the active LLM model with seamless Hot Model Swap (100% context retention). |
-| `/refresh_models`| None | Dynamically fetches the latest model list from `agy --print /models`. |
+| `/refresh_models`| None | Dynamically fetches the latest model list from `agy models`. |
 | `/accounts` | `[status\|switch\|check]` | Multi-account quota pool dashboard, active account switching, and live quota health checks. |
 | `/usage` | None | Queries and displays current token quota and tier usage. |
 | `/clear` | None | Resets session context, terminates background tasks, and issues a fresh conversation UUID. |
@@ -78,6 +78,11 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/tts_engine` | `[hybrid\|edge\|piper\|elevenlabs]` | View or switch the active Text-To-Speech engine. |
 | `/stop` (or `/cancel`) | None | Gracefully interrupts active execution turn, terminates subprocess process group (`SIGTERM`/`SIGKILL`), salvages output buffer, and preserves conversation context. |
 | `/help` | None | Displays comprehensive command reference. |
+| `/goal` | `<prompt>` | Triggers persistent long-running execution mode in Antigravity CLI until objective is fully achieved. |
+| `/schedule` | `<spec>` | Schedules recurring background cron tasks or one-shot timers. |
+| `/browser` | `<url/task>` | Directs agent to run automated browser interactions and web workflows. |
+| `/plan` | `<task>` | Triggers step-by-step architectural planning and multi-stage execution strategy. |
+| `/learn` | `<note>` | Teaches and persists custom operational rules and behavior patterns for future sessions. |
 | `/grill_me` (or `/grill-me`) | None | Triggers interactive interview slash-command in Antigravity CLI (registered as bot command in `main.go`, auto-aliased and normalized in `handlers.go`). |
 | `/teamwork_preview` (or `/teamwork-preview`) | None | Triggers multi-agent collaboration preview (registered as bot command in `main.go`, auto-aliased and normalized in `handlers.go`). |
 
@@ -93,7 +98,7 @@ make build-harvester
 ```
 
 **Available Commands:**
-*   `scan`: Passively monitors and parses `transcript.jsonl` streams in real-time.
+*   `scan`: Passively monitors and parses `transcript.jsonl` streams in real-time. Supports `--all` and `--json` flags for swarm-wide telemetry.
     ```bash
     ./bin/agy-harvester scan --dir ~/.agents/mybot
     ```
@@ -114,6 +119,7 @@ For detailed operational procedures, refer to [docs/HARVESTER_RUNBOOK.md](docs/H
 
 The engine features an enterprise-grade resilience suite engineered for 24/7 headless production:
 
+* **Memory-Aware Autonomous GC & OOM Prevention (`1m` ticker, dynamic pressure threshold)**: Scans system memory metrics via `/proc/meminfo`. Under high memory pressure (>75% RAM used or <1.5GB available), it automatically applies aggressive idle session eviction (20m threshold) to prevent OOM termination. Sessions with active turns in flight are strictly protected, and evicted idle sessions seamlessly resurrect from disk on demand.
 * **Inactivity Turn Watchdog (`15m` inactivity, `45m` hard deadline)**: Monitors `LastActivity` updated on all JSONL step events. If an agent hangs, stalls, or deadlocks without activity for 15 minutes, or exceeds the 45-minute hard deadline, the watchdog terminates the rogue process group via `s.Kill()`, salvages all accumulated output text, and delivers it to Telegram with full artifact extraction.
 * **Two-Phase Process Group Annihilation (`Setpgid: true`)**: Child processes run in isolated kernel process groups. Interruption (`/stop` or watchdog) sends `SIGTERM` followed by `SIGKILL` to `-pgid`, eliminating all child compiler, worker, and PTY processes without zombies.
 * **Asynchronous Coalescing Throttler (`1200ms`)**: Buffers rapid token streams and flushes edits at 1.2-second intervals, eliminating Telegram `429 Too Many Requests` deadlocks and empty message race conditions.
@@ -156,7 +162,7 @@ The engine supports flexible configuration through environment variables:
 | `SHARED_CACHE_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
 | `SHARED_GOPATH_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
 | `SHARED_NPM_DIR` | String | `""` | Shared caches deduplicated across rotation accounts. |
-| `SESSION_MAX_IDLE` | Duration | `4h` | Duration before idle session eviction and state archiving (default `4h`). |
+| `SESSION_MAX_IDLE` | Duration | `2h` | Duration before idle session eviction and state archiving (default `2h`). |
 | `ALLOW_DOTENV` | Integer | `0` | Development flag (`1`) allowing `.env` fallback instead of fail-closed `ENV_FILE` requirement. |
 
 ---

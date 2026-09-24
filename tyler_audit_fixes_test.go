@@ -193,14 +193,20 @@ func TestTylerAudit_DispatchUpdate_ReusedTimer(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Wait for worker idle timeout eviction
-	time.Sleep(150 * time.Millisecond)
+	// Wait for worker idle timeout eviction with retry polling to handle race detector scheduling jitter
+	evicted := false
+	for attempt := 0; attempt < 50; attempt++ {
+		time.Sleep(20 * time.Millisecond)
+		chatQueuesMu.Lock()
+		_, active := chatQueues[testChatID]
+		chatQueuesMu.Unlock()
+		if !active {
+			evicted = true
+			break
+		}
+	}
 
-	chatQueuesMu.Lock()
-	_, active := chatQueues[testChatID]
-	chatQueuesMu.Unlock()
-
-	if active {
+	if !evicted {
 		t.Errorf("Expected worker queue for chat %d to be evicted after idle timeout", testChatID)
 	}
 }
