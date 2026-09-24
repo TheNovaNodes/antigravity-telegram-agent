@@ -69,7 +69,7 @@ sequenceDiagram
     participant Session as AgySession (Mutex)
     participant Subproc as agy Child Process (pgid)
     participant Stream as readStdoutLoop
-
+    
     User->>Bot: Prompt Message
     Bot->>Session: handleMessagePayload()
     Session->>Session: Lock startMu & session.mu
@@ -127,7 +127,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleStartCommand` | Live agent terminal dashboard (CWD, model, session uptime, steps count, quick action buttons). | Non-blocking file reads from `.title` and `transcript.jsonl`. |
 | `handleResumeCommand` | Interactive session picker with relative modification timestamps and `<USER_REQUEST>` prompt titles. | Queries SQLite history + reads `brain` directory. |
 | `handleModelCommand` | Dynamic model selection keyboard. | Read-locked cache (`modelsMu.RLock()`). |
-| `handleRefreshModelsCommand` | Live fetch of supported LLMs from `agy --print /models`. | Write-locked cache update (`modelsMu.Lock()`). |
+| `handleRefreshModelsCommand` | Live fetch of supported LLMs from `agy models`. | Write-locked cache update (`modelsMu.Lock()`). |
 | `handleUsageCommand` | Token quota and API tier usage display. | Executes `agy --print /usage`. |
 | `handleAccountsCommand` | Multi-account pool manager, live account switching, and quota diagnostics (`/accounts`). | Thread-safe pool reads, interactive action callbacks, and admin-guarded mutations. |
 | `handleHelpCommand` | Quick command reference and operational guide. | Pure static format. |
@@ -308,6 +308,7 @@ flowchart TD
 4. **Auto-Recovery & Sane Cooldowns**: Eliminates multi-hour lock traps by validating quota health (`> 5%`) on background probes, auto-clearing `StateCooldown` and restoring `StateActive`.
 5. **Shared Build & Module Caches**: Deduplicates Go build cache, Go module cache (`GOPATH/pkg/mod`), npm, and pip caches across account homes via dynamic symlinking to prevent disk exhaustion.
 6. **Disabled Quota Normalization & Cross-Window Shield (#298)**: Deserializes the `"disabled": true` attribute emitted by Google Antigravity CLI when weekly limits hit 0%. Normalizes `RemainingFraction` to `0.0`, flags `Disabled = true`, and inherits `reset_time` from the weekly limit window. Excludes disabled accounts from candidate nomination in `AcquireAccount` and prevents rapid 30-second false-healthy backoff loops in auto-failover logic.
+7. **Dangling Symlink Self-Healing & Shared Conversations Integrity (#302)**: Eliminates systemd service home path binding in `getSharedConversationsDir` by prioritizing `SYSTEM_HOME` and host roots over transient `/accounts/` homes. In `EnsureSharedAccountDirectories` and `ensureSymlink`, target directories are pre-created (`os.MkdirAll`) and broken/dangling symlinks are automatically detected via `os.Stat()` and healed, preventing POSIX `EEXIST` crashes in upstream `agy` stager (`stager.go:117`) and guaranteeing seamless multi-turn conversation persistence across account rotations.
 
 ---
 
@@ -403,7 +404,4 @@ flowchart TD
 ### 3. In-Flight Turn Immunity & Zero Context Loss:
 - **Active Turn Protection**: Sessions currently streaming answers or executing tool turns (`ActiveMessageID != 0` or active `ActiveTurnStart`) are strictly immune to GC, even under extreme memory pressure (95%+).
 - **Disk-Backed State Persistence**: Terminating idle `agy` subprocesses produces zero context loss because all conversation trajectories and tool calls are persisted to disk (`transcript.jsonl` and SQLite). Upon the user's next message, `acquireSession()` seamlessly resurrects the session (`agy --conversation <id>`) with 100% full context.
-
-
-
 

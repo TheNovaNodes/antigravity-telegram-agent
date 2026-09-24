@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bug Fixes & Multi-Account Architecture (Issue #302)
+- **Dangling Conversations Symlink Self-Healing & System Home Resolution (Issue #302, PR #303)**:
+  - Fixed `getSystemBaseHome()` and `getSharedConversationsDir()` in `account_pool.go` to prioritize `SYSTEM_HOME` and exclude systemd service account directories (`/accounts/`), eliminating path pollution and binding to ephemeral daemon homes.
+  - Hardened `ensureSymlink()` to guarantee creation of target directories (`os.MkdirAll`) prior to symlinking, and automatically detect and prune broken/dangling symlinks via `os.Stat()`.
+  - Upgraded `EnsureSharedAccountDirectories()` to auto-heal existing broken conversation symlinks across all account profiles, resolving Linux VFS `EEXIST` (`file exists`) errors in upstream `agy` stager (`stager.go:117`) and preventing multi-turn conversation context loss.
+  - Added unit test suite (`TestEnsureSharedAccountDirectories_DanglingSymlinkRecovery`, `TestEnsureSharedAccountDirectories_SystemHomeFallback`, `TestEnsureSymlink_DanglingSymlinkSelfHealing`) verifying automatic recovery and path resolution.
+
 ### Reliability & Autonomous Resource Management (Issue #304)
 - **Memory-Aware Session GC & OOM Prevention (Issue #304)**:
   - Implemented dynamic memory pressure detection via `/proc/meminfo` (`getSystemMemoryStats`).
