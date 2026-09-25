@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation & Codebase Invariants Synchronization
+- **Codebase-Wide Documentation Re-alignment**:
+  - Synchronized `README.md` test coverage badge to verified benchmark of `81.0%` (2289/2827 statements).
+  - Documented all 14 targets in `Makefile` and clarified `/workspace` security sandboxing boundaries.
+  - Corrected `ACCOUNTS_DIR` (`/etc/antigravity-bot/accounts`) and `AGY_BINARY` (`PATH` resolution priority) in `README.md`.
+  - Added Section 13 to `docs/ARCHITECTURE.md` detailing Context Preservation & Session Desync Detection Architecture (#303), complete with sequence diagram and database quarantine mechanisms.
+  - Synchronized SQLite schemas (`session_history` unique constraints and `is_orphaned` column; `users` with `is_first_start`) and Webhook Guard function names (`clearWebhookOnStartup`, `recoverFromWebhookConflict`, `getUpdatesWithRecovery`) in `docs/ARCHITECTURE.md`.
+  - Rebranded `.github/SECURITY.md` to `antigravity-telegram-agent` and updated supported versions matrix.
+  - Hardened local development setup (`ALLOW_DOTENV=1` / `make run`) and test commands in `CONTRIBUTING.md`.
+  - Added `session_context_resets_total` to `docs/HARVESTER_RUNBOOK.md` metrics catalog.
+
 ### CI/CD Resilience & Repository Hygiene (Issue #301)
 - **CI Tooling Hardening & Git Hygiene (Issue #301)**:
   - Added retry loops for static analysis tools installation (`staticcheck`, `gosec`, `govulncheck`) and `govulncheck` scans in `.github/workflows/ci.yml` to eliminate transient network failures.

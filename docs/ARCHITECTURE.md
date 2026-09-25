@@ -350,17 +350,17 @@ flowchart TD
     Polling --> UpdateCheck{Incoming Update or Error?}
     UpdateCheck -->|Update Received| Dispatch[Route to Handlers via AllowedUpdates]
     UpdateCheck -->|HTTP 409 Conflict| Layer2["Layer 2: Runtime Auto-Recovery"]
-    Layer2 --> Purge["Auto-purge Webhook with Backoff (1s..5s)"]
+    Layer2 --> Purge["recoverFromWebhookConflict with Backoff & Admin Alerts"]
     Purge --> Polling
 ```
 
 ### 1. Layer 1: Preemptive Startup Webhook Purge:
-- **Daemon Initialization Hook**: On daemon boot, before launching Long Polling routines, every configured bot token in `BOT_TOKENS` executes an automated `deleteWebhook` call with `drop_pending_updates: false`.
+- **Daemon Initialization Hook**: On daemon boot, before launching Long Polling routines, every configured bot token in `BOT_TOKENS` executes an automated `deleteWebhook` call with `drop_pending_updates: false` ([`clearWebhookOnStartup`](../webhook_guard.go)).
 - **Stale Route Eviction**: Clears lingering webhooks left by previous server migrations, third-party integrations, or unclean supervisor restarts, preventing immediate startup deadlocks.
 
 ### 2. Layer 2: Runtime 409 Conflict Auto-Recovery:
 - **Dynamic Conflict Interception**: If an external process or orchestrator sets a webhook while the daemon is actively polling, Telegram returns `409 Conflict: can't use getUpdates method while webhook is active`.
-- **Zero-Downtime Healing**: The polling loop intercepts HTTP 409 status codes, invokes `PurgeWebhookWithRetry(bot, 3)`, applies exponential backoff, and resumes polling seamlessly without requiring supervisor restart or manual intervention.
+- **Zero-Downtime Healing**: The polling loop ([`getUpdatesWithRecovery`](../webhook_guard.go)) intercepts HTTP 409 status codes, invokes [`recoverFromWebhookConflict`](../webhook_guard.go) with unconditional `deleteWebhook` execution, applies exponential retry backoff, and dispatches Layer 4 alerts to authorized administrators with cooldown protection.
 
 ### 3. AllowedUpdates Enforcement:
 - **Comprehensive UI Event Ingestion**: Explicitly registers `message`, `edited_message`, `channel_post`, `edited_channel_post`, and `callback_query`.
@@ -406,4 +406,51 @@ flowchart TD
 ### 3. In-Flight Turn Immunity & Zero Context Loss:
 - **Active Turn Protection**: Sessions currently streaming answers or executing tool turns (`ActiveMessageID != 0` or active `ActiveTurnStart`) are strictly immune to GC, even under extreme memory pressure (95%+).
 - **Disk-Backed State Persistence**: Terminating idle `agy` subprocesses produces zero context loss because all conversation trajectories and tool calls are persisted to disk (`transcript.jsonl` and SQLite). Upon the user's next message, `acquireSession()` seamlessly resurrects the session (`agy --conversation <id>`) with 100% full context.
+
+---
+
+## 13. Context Preservation & Session Desync Detection Architecture
+
+To eliminate silent conversation history amnesia when `agy` rejects `--conversation <id>` due to missing or wiped disk state ([`session.go`](../session.go), [`handlers.go`](../handlers.go), Issue #303):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Handlers as handleMessagePayload / handleCallbackQuery
+    participant Session as AgySession (Supervisor)
+    participant Subproc as agy CLI Subprocess
+    participant SQLite as SQLite Database (session_history)
+    participant Prom as Prometheus (session_context_resets_total)
+
+    User->>Handlers: Prompt / Resume (Requested ID: UUID-A)
+    Handlers->>Session: Start subprocess with --conversation UUID-A
+    Session->>Subproc: exec(agy --conversation UUID-A)
+    Note over Subproc: UUID-A missing on disk! Generates fresh UUID-B silently
+    Subproc-->>Session: Stdout JSONL Event: {"event": "init", "conversation_id": "UUID-B"}
+    Session->>Session: Detect Desync: requestedID != "" && newID != requestedID
+    Session->>Prom: RecordSessionContextReset(botName)
+    Session->>SQLite: markSessionOrphaned(userID, UUID-A) (is_orphaned = 1)
+    alt Active Turn in Flight
+        Session->>Session: Prepend warning banner to TextBuffer: "⚠️ [Context lost...] Started fresh session (UUID-B)"
+        Session-->>User: Streaming deltas with transparent context loss alert
+    else Callback / Command
+        Session-->>User: Instant HTML alert: "⚠️ [Context Reset] Previous context not found on disk"
+    end
+    Session->>SQLite: updateUserSession(userID, UUID-B)
+```
+
+### 1. Root Cause & Threat Model:
+When Google Antigravity CLI encounters an `--conversation <id>` argument for a session directory that does not exist in `~/.gemini/antigravity-cli/brain/` (e.g. wiped during disk cleanups, dangling symlinks, or cross-account state divergence), the CLI silently falls back to generating a brand new conversation UUID. Without detection, the Telegram gateway previously continued streaming without notifying the user, causing silent amnesia and confusion.
+
+### 2. Autonomous Desync Detection in `readStdoutLoop`:
+Upon receiving the CLI `init` JSONL event, `readStdoutLoop` compares `requestedID` against `newID`. If `requestedID != ""` and `newID != requestedID`:
+1. **Telemetry Alerting**: Increments the Prometheus counter `session_context_resets_total{bot="..."}` via [`RecordSessionContextReset`](../metrics.go).
+2. **Database Quarantine**: Executes `markSessionOrphaned(db, userID, requestedID)`, setting `is_orphaned = 1` in `session_history`.
+3. **History Filter**: `handleResumeCommand` excludes orphaned conversations from the `/resume` interactive inline keyboard picker.
+4. **Transparent User Alert**:
+   - If an active turn is currently streaming (`ActiveMessageID != 0`), a non-destructive warning banner (`⚠️ _[Previous conversation context could not be loaded from storage. Started fresh session (%s)]_\n\n`) is prepended to `s.TextBuffer`.
+   - If idle or during session resumption, an immediate high-priority HTML notice is dispatched to the Telegram chat.
+5. **Session Re-alignment**: The database `users.session_id` is updated with `newID` so subsequent prompts correctly target the newly initialized conversation.
+
 

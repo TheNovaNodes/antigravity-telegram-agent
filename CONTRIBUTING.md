@@ -33,13 +33,18 @@ ELEVENLABS_API_KEY="your_optional_elevenlabs_key_here"
 
 ### Step 3: Run the Bot
 ```bash
-go run .
+make run
+# or run with explicit local development mode flag:
+ALLOW_DOTENV=1 go run .
 ```
 
-## Testing
-Always run the test suite and race detector before submitting a Pull Request:
+## Testing & Quality Gates
+Always run the full verification suite before submitting a Pull Request:
 ```bash
+make lint        # Run Go compiler linter (go vet ./...)
+make sast        # Run staticcheck & gosec security scans
+make vuln        # Run govulncheck dependency vulnerability audit
 make race        # Run test suite with Go data race detector
-make coverage    # Verify statements coverage (enforce >= 80%)
+make coverage    # Verify statement coverage (enforce >= 80%, verified benchmark: 81.0%)
 ```
 If you are adding a new feature or bugfix, please include corresponding unit tests to maintain or improve code coverage.

@@ -48,6 +48,10 @@ The core is decomposed into distinct, focused domain modules:
 | [`tts.go`](tts.go) | Mirror Protocol TTS audio engine with multi-key ElevenLabs rotation and custom base URL support. |
 | [`formatters.go`](formatters.go) | Markdown-to-Telegram-HTML conversion with tag balancing and artifact parsing. |
 | [`webhook_guard.go`](webhook_guard.go) | Two-tier webhook immunity suite: Layer 1 startup `deleteWebhook` purge & Layer 2 runtime HTTP 409 Conflict auto-recovery with `AllowedUpdates` enforcement. |
+| [`env_builder.go`](env_builder.go) | Strict subprocess environment allowlist (`buildChildEnv`), eliminating supervisor secret bleed into agent subprocesses. |
+| [`metrics.go`](metrics.go) | Prometheus metrics registration (`RegisterEngineMetrics`), context desync counter, and `/metrics` HTTP exporter. |
+| [`cmd/agy-harvester/`](cmd/agy-harvester/) | Standalone CLI entry point for session artifact harvesting (`scan`, `extract`, `doctor`). |
+| [`pkg/harvester/`](pkg/harvester/) | Harvester engine: streaming JSONL transcript parser, taxonomy classifier, secret redaction shield, and ZIP bundler. |
 
 ---
 
@@ -178,14 +182,15 @@ The engine supports flexible configuration through environment variables:
 Standardized development targets:
 
 ```bash
-make build            # Compile binary to bin/antigravity-bot-engine
+make build            # Compile bot engine to bin/antigravity-bot-engine
 make build-harvester  # Compile Harvester CLI to bin/agy-harvester
-make run              # Build and run the engine locally
-make test             # Run unit tests with Go data race detector
+make all              # Compile both engine and harvester binaries
+make run              # Build and run the engine locally (ALLOW_DOTENV=1)
+make test             # Run complete unit test suite with Go data race detector
 make test-fast        # Run unit tests quickly without race detector
 make race             # Alias for make test (race detector)
-make coverage         # Generate statement coverage report
-make lint             # Run Go linter (go vet ./...)
+make coverage         # Generate statement coverage report (verified >= 80%)
+make lint             # Run Go compiler linter (go vet ./...)
 make sast             # Run staticcheck and gosec security scans
 make vuln             # Run govulncheck vulnerability scanner
 make env-check        # Assert no exposed secrets/.env in production
@@ -197,7 +202,7 @@ make clean            # Remove compiled binaries and test coverage profiles
 
 ## 🧪 Testing & CI Verification
 
-We enforce a strict **zero-data-race** policy (`go test -race`) and high test coverage:
+We enforce a strict **zero-data-race** policy (`go test -race`) and verified high test coverage (**81.0%** statement coverage):
 
 ```bash
 # Run complete test suite with race detector and coverage analysis
