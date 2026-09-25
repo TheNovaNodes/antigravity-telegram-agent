@@ -138,6 +138,7 @@ curl http://localhost:9090/healthz
 | `agy_harvester_extracted_total` | Counter | `kind="ADR\|RFC\|RESEARCH\|CHECKLIST\|SPEC\|DOC"` | Total artifacts extracted and preserved. |
 | `agy_harvester_sanitized_secrets_total` | Counter | _none_ | Total credentials/secrets intercepted and masked. |
 | `agy_harvester_orphan_uncommitted_count` | Gauge | _none_ | Current number of uncommitted artifacts older than 48h. |
+| `session_context_resets_total` | Counter | `bot="<name>"` | Total runtime context desyncs where requested conversation ID was rejected by CLI (#303). |
 
 ### 4.3 Recommended Alerting Rules
 ```yaml
