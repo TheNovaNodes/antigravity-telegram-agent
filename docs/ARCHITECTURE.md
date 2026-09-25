@@ -149,8 +149,8 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `AgySession.start` | Spawns `agy` sub-process with `Setpgid`, `WaitDelay`, and streaming throttler. | Monitors `cmd.Wait()` to clean up zombie `*⏳ Thinking...*` UI states on unexpected process exit. |
 | `ReapStoppedSubprocesses` | Inspects `/proc` for stuck descendant processes of active `AgySession` roots in `State: T` / `t`. | Two-phase forced termination (`SIGCONT` + `SIGKILL`) after grace period expiry (default 3s). |
 | `StartSubprocessWatchdogWorker` | Background supervisor loop executing `ReapStoppedSubprocesses` on a periodic ticker (2s). | Clean worker shutdown via `stopHousekeeping` channel. |
-| `StartupWebhookGuard` | Preemptive Layer 1 deleteWebhook invocation across all configured bots before Long Polling initialization. | Non-blocking, error-logged, fail-safe startup hook. |
-| `PurgeWebhookWithRetry` | Layer 2 runtime auto-recovery intercepting HTTP 409 Conflict with exponential backoff. | Exponential backoff (1s..5s), retry limit (3), and channel log notifications. |
+| `clearWebhookOnStartup` | Preemptive Layer 1 deleteWebhook invocation across all configured bots before Long Polling initialization. | Non-blocking, error-logged, fail-safe startup hook. |
+| `recoverFromWebhookConflict` | Layer 2/3 runtime auto-recovery intercepting HTTP 409 Conflict with deleteWebhook self-healing and Layer 4 admin alerts. | Wrapped in `getUpdatesWithRecovery` with retry backoff and admin cooldown alerts. |
 
 ---
 
@@ -172,17 +172,19 @@ PRAGMA synchronous = NORMAL;
 ```sql
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    workspace TEXT,
-    model TEXT,
-    session_id TEXT,
+    workspace TEXT DEFAULT '',
+    model TEXT DEFAULT 'gemini-3.8-flash-high',
+    is_first_start BOOLEAN DEFAULT 1,
+    session_id TEXT DEFAULT NULL,
     voice_reply BOOLEAN DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS session_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     session_id TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_orphaned BOOLEAN DEFAULT 0,
+    UNIQUE(user_id, session_id)
 );
 ```
 

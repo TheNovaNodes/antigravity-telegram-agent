@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### CI/CD Resilience & Repository Hygiene (Issue #301)
+- **CI Tooling Hardening & Git Hygiene (Issue #301)**:
+  - Added retry loops for static analysis tools installation (`staticcheck`, `gosec`, `govulncheck`) and `govulncheck` scans in `.github/workflows/ci.yml` to eliminate transient network failures.
+  - Added job timeout (`timeout-minutes: 5`) and workflow concurrency cancellation to `.github/workflows/secret-scan.yml`.
+  - Audited and pruned all 19 stale remote-tracking refs and merged local branches.
+  - Synchronized SQLite schemas and webhook guard function names in `docs/ARCHITECTURE.md`.
+  - Synchronized `README.md` test coverage badge to verified 81.0%, corrected path resolution descriptions, and documented all Makefile targets.
+
 ### Context Preservation & Session Desync Detection (Issue #303)
 - **Silent Fallback & Desync Prevention for `--conversation` (Issue #303)**:
   - Detected and alerted on runtime conversation desync in `readStdoutLoop` when `agy` CLI silently rejects `--conversation` due to missing disk state and generates a fresh UUID.
