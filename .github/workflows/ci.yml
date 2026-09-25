@@ -75,15 +75,41 @@ jobs:
     - name: Install Static Analysis & SAST Tools
       if: steps.cache-sast.outputs.cache-hit != 'true'
       run: |
-        go install honnef.co/go/tools/cmd/staticcheck@latest
-        go install github.com/securego/gosec/v2/cmd/gosec@latest
-        go install golang.org/x/vuln/cmd/govulncheck@latest
+        for tool in "honnef.co/go/tools/cmd/staticcheck@latest" "github.com/securego/gosec/v2/cmd/gosec@latest" "golang.org/x/vuln/cmd/govulncheck@latest"; do
+          echo "Installing $tool..."
+          installed=0
+          for attempt in 1 2 3; do
+            if go install "$tool"; then
+              installed=1
+              break
+            fi
+            echo "Attempt $attempt failed to install $tool, retrying in 5s..."
+            sleep 5
+          done
+          if [ "$installed" -ne 1 ]; then
+            echo "Failed to install $tool after 3 attempts"
+            exit 1
+          fi
+        done
 
     - name: Run SAST Security Scans (staticcheck & gosec)
       run: make sast
 
     - name: Run Vulnerability Check (govulncheck)
-      run: make vuln
+      run: |
+        checked=0
+        for attempt in 1 2 3; do
+          if make vuln; then
+            checked=1
+            break
+          fi
+          echo "govulncheck attempt $attempt failed (transient network or DB issue), retrying in 5s..."
+          sleep 5
+        done
+        if [ "$checked" -ne 1 ]; then
+          echo "govulncheck failed after 3 attempts"
+          exit 1
+        fi
 
     - name: Run Tests with Race Detector
       run: go test -v -race -coverprofile=coverage.out ./...

@@ -1,7 +1,7 @@
 # 🛸 Antigravity Telegram Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-75.8%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-81.0%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
 
@@ -72,7 +72,7 @@ We engineered this **Pure Go Core** from scratch to eliminate these bottlenecks.
 | `/resume` | None | Presents an interactive picker of previous sessions sorted by last modification time. |
 | `/export` | None | Compiles and sends full conversation transcript as a clean Markdown document. |
 | `/rename` | `<name>` | Renames the current session in brain storage (`.title`). |
-| `/workspace` | `<path>` | Switches working directory (sandboxed under `AGENTS_DIR` with symlink traversal checks). |
+| `/workspace` | `<path>` | Switches working directory (sandboxed under `PROJECTS_DIR` and bot's own office in `AGENTS_DIR`). |
 | `/voice` | `[on\|off]`| Toggles persistent voice responses generated via multiple engines (Edge-TTS, Piper, ElevenLabs, Hybrid). |
 | `/tts` | `<text>` | Synthesizes arbitrary text into speech and sends as a voice note. |
 | `/tts_engine` | `[hybrid\|edge\|piper\|elevenlabs]` | View or switch the active Text-To-Speech engine. |
@@ -149,7 +149,7 @@ The engine supports flexible configuration through environment variables:
 | `BRAIN_DIR` | String | `~/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
 | `PROJECTS_DIR` | String | `~/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
 | `DATA_DIR` | String | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
-| `AGY_BINARY` | String | `~/.local/bin/agy` | Absolute path to the Antigravity CLI binary (defaults to `~/.local/bin/agy`). |
+| `AGY_BINARY` | String | `~/.local/bin/agy` | Path to Antigravity CLI binary (resolves via `AGY_BINARY`, `PATH`, or `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
 | `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |
 | `ELEVENLABS_MAX_CHARS` | Integer | `2500` | Maximum character length threshold for ElevenLabs voice generation. |
@@ -160,7 +160,7 @@ The engine supports flexible configuration through environment variables:
 | `PIPER_MODEL` | String | `""` | Absolute path to the Piper ONNX voice model. |
 | `METRICS_ADDR` | String | `""` | Prometheus metrics bind address (e.g. `:9090`). |
 | `METRICS_PORT` | String | `""` | Prometheus metrics port fallback. |
-| `ACCOUNTS_DIR` | String | `~/.gemini/antigravity-cli/accounts` | Multi-account pool base directory (default `~/.gemini/antigravity-cli/accounts` or `/etc/antigravity-bot/accounts`). |
+| `ACCOUNTS_DIR` | String | `/etc/antigravity-bot/accounts` | Multi-account pool base directory (default `/etc/antigravity-bot/accounts` or `~/.antigravity-bot/accounts`). |
 | `ECOSYSTEM_INBOX_DIR` | String | `""` | Cross-agent ecosystem inter-bot inbox directory for safe deliver-to-chat file dispatch. |
 | `CONVERSATIONS_DIR` | String | `""` | Custom conversation logs directory. |
 | `SYSTEM_HOME` | String | `""` | Fallback host home directory when isolating account environments. |
@@ -178,13 +178,19 @@ The engine supports flexible configuration through environment variables:
 Standardized development targets:
 
 ```bash
-make build       # Compile binary to bin/antigravity-bot-engine
-make run         # Build and run the engine locally
-make test        # Run unit tests
-make race        # Run unit tests with Go data race detector
-make coverage    # Generate coverage report and HTML summary
-make fmt         # Format all Go source files via gofmt
-make clean       # Remove compiled binaries and test coverage profiles
+make build            # Compile binary to bin/antigravity-bot-engine
+make build-harvester  # Compile Harvester CLI to bin/agy-harvester
+make run              # Build and run the engine locally
+make test             # Run unit tests with Go data race detector
+make test-fast        # Run unit tests quickly without race detector
+make race             # Alias for make test (race detector)
+make coverage         # Generate statement coverage report
+make lint             # Run Go linter (go vet ./...)
+make sast             # Run staticcheck and gosec security scans
+make vuln             # Run govulncheck vulnerability scanner
+make env-check        # Assert no exposed secrets/.env in production
+make fmt              # Format all Go source files via gofmt
+make clean            # Remove compiled binaries and test coverage profiles
 ```
 
 ---
