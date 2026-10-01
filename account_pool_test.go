@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"io"
+	_ "modernc.org/sqlite"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -11,25 +18,7 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	_ "modernc.org/sqlite"
 )
-
-func setupTestAccountPool(t *testing.T) (*AccountPool, string) {
-	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "account_pool_test_*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	pool, err := NewAccountPool(tmpDir)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		t.Fatalf("Failed to create account pool: %v", err)
-	}
-	return pool, tmpDir
-}
 
 func TestAccountPool_AcquireReleaseLRU(t *testing.T) {
 	pool, tmpDir := setupTestAccountPool(t)
@@ -507,15 +496,6 @@ func TestAccountPool_QuotaPrioritization(t *testing.T) {
 	}
 }
 
-func containsAll(str string, substrs ...string) bool {
-	for _, s := range substrs {
-		if !strings.Contains(str, s) {
-			return false
-		}
-	}
-	return true
-}
-
 func TestHandleUsageCommand_WithActiveAccount(t *testing.T) {
 	ts, sent, mu := createStrictTelegramMockServer(t)
 	defer ts.Close()
@@ -826,5 +806,847 @@ func TestAccountPool_AcquireAccount_ExcludesDisabled(t *testing.T) {
 	_, err = pool.AcquireAccount(999)
 	if err != ErrAllAccountsCooldown {
 		t.Errorf("Expected ErrAllAccountsCooldown when only disabled account remains, got: %v", err)
+	}
+}
+
+func TestAccountPool_FetchEmailForToken_Scenarios(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	// 1. Empty token should fail fast without network call
+	email, err := pool.FetchEmailForToken("")
+	if err == nil || email != "" {
+		t.Fatalf("expected error for empty token, got email: %s, err: %v", email, err)
+	}
+
+	// 2. 200 OK with valid email
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Header.Get("Authorization") != "Bearer valid-token-123" {
+			t.Errorf("expected Bearer valid-token-123, got: %s", req.Header.Get("Authorization"))
+		}
+		jsonBody := `{"email": "hero@novanodes.com"}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(jsonBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	email, err = pool.FetchEmailForToken("valid-token-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if email != "hero@novanodes.com" {
+		t.Errorf("expected hero@novanodes.com, got: %s", email)
+	}
+
+	// 3. 200 OK with missing or empty email field
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		jsonBody := `{"email": "   ", "name": "No Email User"}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(jsonBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	email, err = pool.FetchEmailForToken("token-empty-email")
+	if err == nil || email != "" {
+		t.Errorf("expected error for missing email, got email: %s, err: %v", email, err)
+	}
+
+	// 4. 401 Unauthorized (invalid/expired OAuth token)
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		jsonBody := `{"error": "invalid_token", "error_description": "Token has expired"}`
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Body:       io.NopCloser(bytes.NewBufferString(jsonBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	_, err = pool.FetchEmailForToken("token-expired")
+	if err == nil {
+		t.Fatalf("expected error for 401 Unauthorized, got nil")
+	}
+
+	// 5. 429 Too Many Requests (Google rate limit)
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       io.NopCloser(bytes.NewBufferString("Rate limit exceeded")),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	_, err = pool.FetchEmailForToken("token-ratelimited")
+	if err == nil {
+		t.Fatalf("expected error for 429 Too Many Requests, got nil")
+	}
+
+	// 6. 500 Internal Server Error
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       io.NopCloser(bytes.NewBufferString("Google backend crash")),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	_, err = pool.FetchEmailForToken("token-google-500")
+	if err == nil {
+		t.Fatalf("expected error for 500 Internal Server Error, got nil")
+	}
+
+	// 7. Malformed JSON
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString("{unparseable json")),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	_, err = pool.FetchEmailForToken("token-malformed-json")
+	if err == nil {
+		t.Fatalf("expected error for malformed JSON, got nil")
+	}
+
+	// 8. Network timeout / connection refused
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: errors.New("connection reset by peer")}
+	})
+
+	_, err = pool.FetchEmailForToken("token-network-drop")
+	if err == nil {
+		t.Fatalf("expected error for network failure, got nil")
+	}
+}
+
+func TestAccountPool_DeriveAccountIDFromEmail_Table(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"developer@novanodes.com", "developer"},
+		{"john.doe-dev_123@gmail.com", "john.doe-dev_123"},
+		{"UPPERCASE.User@COMPANY.COM", "uppercase.user"},
+		{"strange!#$special%*()chars@domain.com", "strangespecialchars"},
+		{"very_long_prefix_that_exceeds_thirty_two_characters_limit@domain.com", "very_long_prefix_that_exceeds_th"},
+		{"", "account"},
+		{"@empty-user.com", "account"},
+		{"clean-slug", "clean-slug"},
+		{"...dots-and-dashes---", "dots-and-dashes"},
+	}
+
+	for _, tc := range tests {
+		got := DeriveAccountIDFromEmail(tc.input)
+		if got != tc.expected {
+			t.Errorf("DeriveAccountIDFromEmail(%q) = %q, expected %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestAccountPool_IngestCurrentAccount_Scenarios(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	mockHome := filepath.Join(tmpDir, "mock_home")
+	_ = os.MkdirAll(mockHome, 0755)
+	t.Setenv("HOME", mockHome)
+
+	// Scenario 1: Token file missing
+	_, err := pool.IngestCurrentAccount()
+	if err == nil {
+		t.Fatalf("expected error when token file is missing, got nil")
+	}
+
+	// Scenario 2: Token file exists but invalid JSON
+	tokenDir := filepath.Join(mockHome, ".gemini", "antigravity-cli")
+	_ = os.MkdirAll(tokenDir, 0755)
+	tokenPath := filepath.Join(tokenDir, "antigravity-oauth-token")
+	_ = os.WriteFile(tokenPath, []byte("broken json payload"), 0600)
+
+	_, err = pool.IngestCurrentAccount()
+	if err == nil {
+		t.Fatalf("expected error when token file is malformed JSON, got nil")
+	}
+
+	// Scenario 3: Token file has empty access token
+	_ = os.WriteFile(tokenPath, []byte(`{"token": {"access_token": ""}}`), 0600)
+	_, err = pool.IngestCurrentAccount()
+	if err == nil {
+		t.Fatalf("expected error when access token is empty, got nil")
+	}
+
+	// Scenario 4: Successful ingestion
+	validTokenJSON := `{"token": {"access_token": "valid-oauth-secret-abc"}}`
+	_ = os.WriteFile(tokenPath, []byte(validTokenJSON), 0600)
+
+	pool.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"email": "agent.ingest@novanodes.com"}`)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	acc, err := pool.IngestCurrentAccount()
+	if err != nil {
+		t.Fatalf("unexpected error during ingest: %v", err)
+	}
+	if acc == nil {
+		t.Fatalf("expected ingested account, got nil")
+	}
+	if acc.ID != "agent.ingest" {
+		t.Errorf("expected account ID agent.ingest, got: %s", acc.ID)
+	}
+	if acc.Email != "agent.ingest@novanodes.com" {
+		t.Errorf("expected email agent.ingest@novanodes.com, got: %s", acc.Email)
+	}
+
+	// Verify profile folder was created and account added to pool
+	pool.mu.RLock()
+	retrieved, exists := pool.accounts["agent.ingest"]
+	pool.mu.RUnlock()
+
+	if !exists || retrieved == nil {
+		t.Errorf("ingested account not found in pool map")
+	}
+	if _, err := os.Stat(acc.HomeDir); os.IsNotExist(err) {
+		t.Errorf("account profile directory was not created at %s", acc.HomeDir)
+	}
+}
+
+func TestAccountPool_FetchAllQuotas_Execution(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	script := "#!/bin/sh\necho '{\"command\":{\"data\":{\"groups\":[{\"name\":\"gemini\",\"buckets\":[{\"id\":\"5h\",\"window\":\"5h\",\"remaining_fraction\":0.9,\"reset_time\":\"2026-09-12T15:00:00Z\"}]}]}}}'\n"
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write mock script: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	pool.accounts["acc-alpha"] = &Account{
+		ID:      "acc-alpha",
+		Email:   "alpha@example.com",
+		HomeDir: filepath.Join(tmpDir, "acc-alpha"),
+		State:   StateActive,
+	}
+	pool.accounts["acc-beta"] = &Account{
+		ID:      "acc-beta",
+		Email:   "beta@example.com",
+		HomeDir: filepath.Join(tmpDir, "acc-beta"),
+		State:   StateCooldown,
+	}
+
+	// FetchAllQuotas executes concurrently and waits for all accounts
+	pool.FetchAllQuotas()
+
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	if pool.accounts["acc-alpha"].Quota.LastFetchedAt.IsZero() {
+		t.Errorf("expected quota to be populated for acc-alpha")
+	}
+}
+
+func TestAccountState_String(t *testing.T) {
+	if StateActive.String() != "Active" {
+		t.Errorf("expected Active")
+	}
+	if StateInUse.String() != "In-Use" {
+		t.Errorf("expected In-Use")
+	}
+	if StateCooldown.String() != "Cooldown" {
+		t.Errorf("expected Cooldown")
+	}
+	if StateExpired.String() != "Expired" {
+		t.Errorf("expected Expired")
+	}
+	if AccountState(99).String() != "Unknown" {
+		t.Errorf("expected Unknown")
+	}
+}
+
+func TestGetAccountsDir_EnvOverride(t *testing.T) {
+	t.Setenv("ACCOUNTS_DIR", "/custom/accounts/dir")
+	if getAccountsDir() != "/custom/accounts/dir" {
+		t.Errorf("expected /custom/accounts/dir, got: %s", getAccountsDir())
+	}
+}
+
+func TestAccountPool_StartBackgroundReaper_ImmediateCancel(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pool.StartBackgroundReaper(ctx, nil)
+}
+
+func TestDeriveAccountIDFromEmail(t *testing.T) {
+	tests := []struct {
+		email    string
+		expected string
+	}{
+		{"izizizwtfzalupchick@gmail.com", "izizizwtfzalupchick"},
+		{"thedoctormes@gmail.com", "thedoctormes"},
+		{"sora89049653438@gmail.com", "sora89049653438"},
+		{"John.Doe@example.com", "john.doe"},
+		{"user_test-1@domain.org", "user_test-1"},
+		{"", "account"},
+		{"@domain.com", "account"},
+		{"  Spaces.Test@gmail.com  ", "spaces.test"},
+	}
+
+	for _, tt := range tests {
+		got := DeriveAccountIDFromEmail(tt.email)
+		if got != tt.expected {
+			t.Errorf("DeriveAccountIDFromEmail(%q) = %q, want %q", tt.email, got, tt.expected)
+		}
+	}
+}
+
+func TestAccountPool_LoadState_MigrateLegacyAccountIDs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pool_migrate_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	legacyAccDir := filepath.Join(tmpDir, "acc-1")
+	if err := os.MkdirAll(legacyAccDir, 0700); err != nil {
+		t.Fatalf("Failed to create legacy acc dir: %v", err)
+	}
+
+	legacyState := poolStateJSON{
+		Accounts: map[string]*Account{
+			"acc-1": {
+				ID:      "acc-1",
+				Email:   "thedoctormes@gmail.com",
+				HomeDir: legacyAccDir,
+				State:   StateActive,
+			},
+		},
+		PinnedChat: map[string]string{
+			"trickster_gobot:1001": "acc-1",
+		},
+		ActiveChat: map[string]string{
+			"trickster_gobot:1001": "acc-1",
+			"1001":                 "acc-1",
+		},
+	}
+
+	stateBytes, err := json.Marshal(legacyState)
+	if err != nil {
+		t.Fatalf("Failed to marshal legacy state: %v", err)
+	}
+
+	stateFilePath := filepath.Join(tmpDir, "accounts.json")
+	if err := os.WriteFile(stateFilePath, stateBytes, 0600); err != nil {
+		t.Fatalf("Failed to write accounts.json: %v", err)
+	}
+
+	pool, err := NewAccountPool(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to initialize pool: %v", err)
+	}
+
+	// 1. Verify old account ID is gone and new slug exists
+	if _, oldExists := pool.accounts["acc-1"]; oldExists {
+		t.Errorf("Legacy account ID acc-1 still exists in accounts map")
+	}
+
+	newAcc, newExists := pool.accounts["thedoctormes"]
+	if !newExists || newAcc == nil {
+		t.Fatalf("Expected migrated account thedoctormes to exist")
+	}
+
+	if newAcc.ID != "thedoctormes" {
+		t.Errorf("Expected account ID to be thedoctormes, got %s", newAcc.ID)
+	}
+
+	expectedNewHome := filepath.Join(tmpDir, "thedoctormes")
+	if newAcc.HomeDir != expectedNewHome {
+		t.Errorf("Expected HomeDir %s, got %s", expectedNewHome, newAcc.HomeDir)
+	}
+
+	// 2. Verify filesystem: new directory exists, old directory is a symlink to new directory
+	fi, err := os.Lstat(legacyAccDir)
+	if err != nil {
+		t.Errorf("Legacy directory missing or failed lstat: %v", err)
+	} else if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("Legacy directory is not a symlink")
+	}
+
+	if fiNew, err := os.Stat(expectedNewHome); err != nil || !fiNew.IsDir() {
+		t.Errorf("New directory does not exist or is not a dir: %v", err)
+	}
+
+	// 3. Verify pinnedChat and activeChat mappings migrated
+	if pool.pinnedChat["trickster_gobot:1001"] != "thedoctormes" {
+		t.Errorf("Pinned chat not migrated, got %s", pool.pinnedChat["trickster_gobot:1001"])
+	}
+	if pool.activeChat["trickster_gobot:1001"] != "thedoctormes" {
+		t.Errorf("Active chat not migrated, got %s", pool.activeChat["trickster_gobot:1001"])
+	}
+	if pool.activeChat["1001"] != "thedoctormes" {
+		t.Errorf("Legacy chat key not migrated, got %s", pool.activeChat["1001"])
+	}
+
+	// 4. Verify persisted accounts.json has the migrated IDs
+	reloadedPool, err := NewAccountPool(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to reload pool: %v", err)
+	}
+	if _, exists := reloadedPool.accounts["thedoctormes"]; !exists {
+		t.Errorf("Reloaded pool does not contain migrated account thedoctormes")
+	}
+}
+
+func TestHandleAccountsCommand_NilPool(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = nil
+	defer func() { GlobalAccountPool = oldPool }()
+
+	handleAccountsCommand(bot, 12345, 999, "/accounts", "TestBot", db)
+
+	text := helper.getLastSentText()
+	if !strings.Contains(text, "Account Pool Manager is not initialized") {
+		t.Fatalf("expected nil pool error message, got: %s", text)
+	}
+}
+
+func TestHandleAccountsCommand_Help(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	handleAccountsCommand(bot, 12345, 999, "/accounts help", "TestBot", db)
+
+	text := helper.getLastSentText()
+	if !strings.Contains(text, "Account Pool Management Commands") {
+		t.Fatalf("expected help guide, got: %s", text)
+	}
+	if !strings.Contains(text, "/accounts switch") || !strings.Contains(text, "/accounts pin") {
+		t.Errorf("expected command listing in help, got: %s", text)
+	}
+}
+
+func TestHandleAccountsCommand_DefaultDashboard(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	pool.accounts["acc-1"] = &Account{
+		ID:       "acc-1",
+		Email:    "alpha@novanodes.com",
+		HomeDir:  filepath.Join(poolDir, "acc-1"),
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+	pool.accounts["acc-2"] = &Account{
+		ID:            "acc-2",
+		Email:         "beta@novanodes.com",
+		HomeDir:       filepath.Join(poolDir, "acc-2"),
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(1 * time.Hour),
+	}
+
+	handleAccountsCommand(bot, 12345, 999, "/accounts", "TestBot", db)
+
+	text := helper.getLastSentText()
+	if !strings.Contains(text, "Account Pool Manager") {
+		t.Fatalf("expected dashboard title, got: %s", text)
+	}
+	if !strings.Contains(text, "acc-1") || !strings.Contains(text, "acc-2") {
+		t.Errorf("expected accounts listed in dashboard, got: %s", text)
+	}
+}
+
+func TestHandleAccountsCommand_Switch_Scenarios(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	pool.accounts["acc-alpha"] = &Account{
+		ID:       "acc-alpha",
+		Email:    "alpha@novanodes.com",
+		HomeDir:  filepath.Join(poolDir, "acc-alpha"),
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+
+	// 1. Missing target ID
+	handleAccountsCommand(bot, 12345, 999, "/accounts switch", "TestBot", db)
+	text := helper.getLastSentText()
+	if !strings.Contains(text, "Usage: <code>/accounts switch") {
+		t.Errorf("expected usage message, got: %s", text)
+	}
+
+	// 2. Nonexistent account ID
+	handleAccountsCommand(bot, 12345, 999, "/accounts switch nonexistent", "TestBot", db)
+	text = helper.getLastSentText()
+	if !strings.Contains(text, "Failed to switch account") {
+		t.Errorf("expected switch error for nonexistent account, got: %s", text)
+	}
+
+	// 3. Successful switch
+	handleAccountsCommand(bot, 12345, 999, "/accounts switch acc-alpha", "TestBot", db)
+	text = helper.getLastSentText()
+	if !strings.Contains(text, "Switched to Account:") || !strings.Contains(text, "acc-alpha") {
+		t.Errorf("expected successful switch confirmation, got: %s", text)
+	}
+}
+
+func TestHandleAccountsCommand_Pin_Unpin(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	pool.accounts["acc-pinned"] = &Account{
+		ID:       "acc-pinned",
+		Email:    "pinned@novanodes.com",
+		HomeDir:  filepath.Join(poolDir, "acc-pinned"),
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+
+	// 1. Pin missing argument
+	handleAccountsCommand(bot, 12345, 999, "/accounts pin", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Usage: <code>/accounts pin") {
+		t.Errorf("expected pin usage message")
+	}
+
+	// 2. Pin nonexistent
+	handleAccountsCommand(bot, 12345, 999, "/accounts pin ghost", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Failed to pin account") {
+		t.Errorf("expected pin failure for ghost account")
+	}
+
+	// 3. Pin valid
+	handleAccountsCommand(bot, 12345, 999, "/accounts pin acc-pinned", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Sticky Mode Enabled") {
+		t.Errorf("expected sticky mode enabled message")
+	}
+
+	// 4. Unpin
+	handleAccountsCommand(bot, 12345, 999, "/accounts unpin", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Sticky Mode Disabled") {
+		t.Errorf("expected sticky mode disabled message")
+	}
+}
+
+func TestHandleAccountsCommand_ClearCooldown(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	pool.accounts["acc-cool"] = &Account{
+		ID:            "acc-cool",
+		Email:         "cool@novanodes.com",
+		HomeDir:       filepath.Join(poolDir, "acc-cool"),
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(2 * time.Hour),
+	}
+
+	// 1. Missing target
+	handleAccountsCommand(bot, 12345, 999, "/accounts clear_cooldown", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Usage: <code>/accounts clear_cooldown") {
+		t.Errorf("expected clear_cooldown usage message")
+	}
+
+	// 2. Nonexistent target
+	handleAccountsCommand(bot, 12345, 999, "/accounts clear_cooldown nonexistent", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Failed to clear cooldown") {
+		t.Errorf("expected clear cooldown failure message")
+	}
+
+	// 3. Valid target
+	handleAccountsCommand(bot, 12345, 999, "/accounts clear_cooldown acc-cool", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Cooldown Cleared:") {
+		t.Errorf("expected cooldown cleared success message")
+	}
+	if pool.accounts["acc-cool"].State != StateActive {
+		t.Errorf("expected account state to be active")
+	}
+}
+
+func TestHandleAccountsCommand_Quotas_And_IngestFail(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	mockScript := filepath.Join(poolDir, "mock_agy.sh")
+	_ = os.WriteFile(mockScript, []byte("#!/bin/sh\necho '{\"command\":{\"data\":{\"groups\":[]}}}'\n"), 0755)
+	t.Setenv("AGY_BINARY", mockScript)
+
+	// Quotas subcommand
+	handleAccountsCommand(bot, 12345, 999, "/accounts quotas", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Account Pool Manager") {
+		t.Errorf("expected refreshed dashboard on quotas command")
+	}
+
+	// Ingest subcommand failure (no token file present in clean test env)
+	t.Setenv("HOME", t.TempDir())
+	handleAccountsCommand(bot, 12345, 999, "/accounts ingest", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Failed to ingest account") {
+		t.Errorf("expected failure message when ingesting without token")
+	}
+}
+
+func TestHandleAccountCallbackQuery_RoutingAndNilPool(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	cbNonAcc := &tgbotapi.CallbackQuery{
+		ID:   "cb_1",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 201,
+		},
+		Data: "model:gemini-flash",
+	}
+	handled := handleAccountCallbackQuery(bot, cbNonAcc, "TestBot", db)
+	if handled {
+		t.Fatalf("expected non-acc callback to return false, got true")
+	}
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = nil
+	defer func() { GlobalAccountPool = oldPool }()
+
+	cbAcc := &tgbotapi.CallbackQuery{
+		ID:   "cb_2",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 202,
+		},
+		Data: "acc:switch:acc-1",
+	}
+	handled = handleAccountCallbackQuery(bot, cbAcc, "TestBot", db)
+	if !handled {
+		t.Fatalf("expected nil pool callback to return true, got false")
+	}
+}
+
+func TestHandleAccountCallbackQuery_AllActions(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	mockScript := filepath.Join(poolDir, "mock_agy.sh")
+	_ = os.WriteFile(mockScript, []byte("#!/bin/sh\necho '{\"command\":{\"data\":{\"groups\":[]}}}'\n"), 0755)
+	t.Setenv("AGY_BINARY", mockScript)
+
+	pool.accounts["acc-action"] = &Account{
+		ID:            "acc-action",
+		Email:         "action@novanodes.com",
+		HomeDir:       filepath.Join(poolDir, "acc-action"),
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(1 * time.Hour),
+		LastUsed:      time.Now(),
+	}
+
+	// 1. Switch
+	cbSwitch := &tgbotapi.CallbackQuery{
+		ID:   "cb_switch",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 301,
+		},
+		Data: "acc:switch:acc-action",
+	}
+	if !handleAccountCallbackQuery(bot, cbSwitch, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery switch failed")
+	}
+
+	// Switch invalid
+	cbSwitchInv := &tgbotapi.CallbackQuery{
+		ID:   "cb_switch_inv",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 302,
+		},
+		Data: "acc:switch:ghost-acc",
+	}
+	if !handleAccountCallbackQuery(bot, cbSwitchInv, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery switch invalid failed")
+	}
+
+	// 2. Pin and Unpin
+	cbPin := &tgbotapi.CallbackQuery{
+		ID:   "cb_pin",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 303,
+		},
+		Data: "acc:pin:acc-action",
+	}
+	if !handleAccountCallbackQuery(bot, cbPin, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery pin failed")
+	}
+
+	cbUnpin := &tgbotapi.CallbackQuery{
+		ID:   "cb_unpin",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 304,
+		},
+		Data: "acc:unpin",
+	}
+	if !handleAccountCallbackQuery(bot, cbUnpin, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery unpin failed")
+	}
+
+	// 3. Clear cooldown
+	cbCool := &tgbotapi.CallbackQuery{
+		ID:   "cb_cool",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 305,
+		},
+		Data: "acc:cooldown:acc-action",
+	}
+	if !handleAccountCallbackQuery(bot, cbCool, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery cooldown failed")
+	}
+
+	// 4. Refresh
+	cbRefresh := &tgbotapi.CallbackQuery{
+		ID:   "cb_refresh",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 306,
+		},
+		Data: "acc:refresh",
+	}
+	if !handleAccountCallbackQuery(bot, cbRefresh, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery refresh failed")
+	}
+
+	// 5. Ingest failure
+	t.Setenv("HOME", t.TempDir())
+	cbIngest := &tgbotapi.CallbackQuery{
+		ID:   "cb_ingest",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 307,
+		},
+		Data: "acc:ingest",
+	}
+	if !handleAccountCallbackQuery(bot, cbIngest, "TestBot", db) {
+		t.Errorf("handleAccountCallbackQuery ingest failed")
+	}
+}
+
+func TestHandleAccountsCommand_DisabledQuotaDisplay(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	now := time.Now()
+	pool.accounts["acc-dis"] = &Account{
+		ID:    "acc-dis",
+		Email: "dis@example.com",
+		State: StateActive,
+		Quota: AccountQuota{
+			Gemini5h: ModelQuota{
+				RemainingFraction: 0.0,
+				Disabled:          true,
+			},
+			GeminiWeekly: ModelQuota{
+				RemainingFraction: 0.0,
+				Disabled:          false,
+			},
+			Claude5h: ModelQuota{
+				RemainingFraction: 0.75,
+			},
+			ClaudeWeekly: ModelQuota{
+				RemainingFraction: 1.0,
+			},
+			LastFetchedAt: now,
+		},
+	}
+
+	handleAccountsCommand(bot, 12345, 999, "/accounts", "TestBot", db)
+	text := helper.getLastSentText()
+
+	// Should show 'Gemini: 5h disabled • 7d 0%'
+	expectedLine := "Gemini: 5h disabled • 7d 0%"
+	if !strings.Contains(text, expectedLine) {
+		t.Errorf("Expected dashboard to contain %q, but got:\n%s", expectedLine, text)
 	}
 }
