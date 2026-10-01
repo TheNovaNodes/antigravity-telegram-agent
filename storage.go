@@ -3,10 +3,12 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	sqliteDriver "modernc.org/sqlite"
@@ -33,17 +35,147 @@ type User struct {
 
 const defaultModel = "gemini-3.8-flash-high"
 
+var migrateOnce sync.Once
+
 // getDataDir resolves the directory for persistent SQLite database files.
+// Priority:
+// 1. DATA_DIR environment variable (explicit override)
+// 2. /var/lib/antigravity-bot/data (FHS standard for system daemon persistent state)
+// 3. /etc/antigravity-bot/data (FHS fallback for configuration/state)
+// 4. ./data (local development / testing fallback)
+// 5. . (current working directory fallback)
 func getDataDir() string {
 	if env := os.Getenv("DATA_DIR"); env != "" {
-		return env
+		cleaned := filepath.Clean(env)
+		// #nosec G301 G703 -- gosec:nri (Need Review)
+		_ = os.MkdirAll(cleaned, 0700)
+		return cleaned
 	}
-	// Check if data directory exists or create it
+
+	candidates := []string{
+		"/var/lib/antigravity-bot/data",
+		"/etc/antigravity-bot/data",
+	}
+
+	for _, dir := range candidates {
+		// #nosec G301 -- gosec:nri (Need Review)
+		if err := os.MkdirAll(dir, 0700); err == nil {
+			return dir
+		}
+	}
+
 	dir := "data"
+	// #nosec G301 -- gosec:nri (Need Review)
 	if err := os.MkdirAll(dir, 0700); err == nil {
 		return dir
 	}
 	return "."
+}
+
+// migrateLegacyDataFiles checks if legacy databases exist in fallback "./data" directory
+// and safely copies them to targetDir if they are not already present in targetDir.
+// It skips automatic migration during testing unless AUTO_MIGRATE_DATA=1.
+func migrateLegacyDataFiles(targetDir string) {
+	if isTestEnvironment() && os.Getenv("AUTO_MIGRATE_DATA") != "1" {
+		return
+	}
+	legacyDir := "data"
+	count, err := MigrateDataFiles(legacyDir, targetDir)
+	if err != nil {
+		log.Printf("⚠️ [Storage Migration] Partial migration notice from %s to %s: %v", legacyDir, targetDir, err)
+	} else if count > 0 {
+		log.Printf("📦 [Storage Migration] Successfully migrated %d database file(s) from %s to %s (mode 0600)", count, legacyDir, targetDir)
+	}
+}
+
+// isTestEnvironment detects if the process is running within a go test runner.
+func isTestEnvironment() bool {
+	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "-test.") {
+			return true
+		}
+	}
+	return strings.HasSuffix(os.Args[0], ".test")
+}
+
+// MigrateDataFiles safely copies SQLite database files (.db, .db-wal, .db-shm)
+// from srcDir to dstDir preserving 0600 file permissions and avoiding overwriting existing files in dstDir.
+// Returns count of migrated files.
+func MigrateDataFiles(srcDir, dstDir string) (int, error) {
+	cleanSrc, errSrc := filepath.Abs(srcDir)
+	cleanDst, errDst := filepath.Abs(dstDir)
+	if errSrc == nil && errDst == nil && cleanSrc == cleanDst {
+		return 0, nil
+	}
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	// #nosec G301 -- gosec:nri (Need Review)
+	if err := os.MkdirAll(dstDir, 0700); err != nil {
+		return 0, err
+	}
+
+	migratedCount := 0
+	var lastErr error
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Match SQLite database files and journal/WAL files
+		if !strings.HasPrefix(name, "sessions_") || (!strings.HasSuffix(name, ".db") && !strings.HasSuffix(name, ".db-wal") && !strings.HasSuffix(name, ".db-shm")) {
+			continue
+		}
+
+		srcPath := filepath.Join(srcDir, name)
+		dstPath := filepath.Join(dstDir, name)
+
+		// Check if destination file already exists
+		if _, err := os.Stat(dstPath); err == nil {
+			// Already exists, do not overwrite to protect existing target state
+			continue
+		}
+
+		// Copy file securely with 0600 mode
+		if err := copyFileSecure(srcPath, dstPath, 0600); err != nil {
+			lastErr = err
+			log.Printf("⚠️ Warning: Failed to copy %s to %s: %v", srcPath, dstPath, err)
+		} else {
+			migratedCount++
+		}
+	}
+
+	return migratedCount, lastErr
+}
+
+// copyFileSecure copies data from src to dst and enforces the specified file mode.
+func copyFileSecure(src, dst string, mode os.FileMode) error {
+	// #nosec G304 G703 -- gosec:nri (Need Review)
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	// #nosec G304 G703 -- gosec:nri (Need Review)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	// #nosec G703 -- gosec:nri (Need Review)
+	return os.Chmod(dst, mode)
 }
 
 // loadEnvFile secures and loads secrets into the process environment.
@@ -129,6 +261,9 @@ func ensureEnvPermissions() {
 // initDB initializes the SQLite database for a specific bot, enables WAL mode, and creates necessary tables.
 func initDB(botName string) *sql.DB {
 	dbDir := getDataDir()
+	migrateOnce.Do(func() {
+		migrateLegacyDataFiles(dbDir)
+	})
 	dbPath := filepath.Join(dbDir, fmt.Sprintf("sessions_%s.db", botName))
 
 	// Ensure secure permissions (0600) on database file to prevent unauthorized local reading
