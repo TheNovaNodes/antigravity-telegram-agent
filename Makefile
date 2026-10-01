@@ -4,13 +4,18 @@ BINARY_NAME=antigravity-bot-engine
 BIN_DIR=bin
 BUILD_PATH=$(BIN_DIR)/$(BINARY_NAME)
 
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS = -ldflags "-X main.GitCommit=$(GIT_COMMIT) -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
 all: build build-harvester
 
 build:
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 go build -o $(BUILD_PATH) .
+	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_PATH) .
 	@echo "✅ Build complete: $(BUILD_PATH)"
 
 build-harvester:
