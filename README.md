@@ -212,19 +212,29 @@ make coverage
 
 ---
 
-## 🚀 Deployment (Blood Rules)
+## 🚀 Deployment (Blood Rules & 5-Échelon Architecture)
 
 We adhere strictly to the **ПРАВИЛА КРОВИ (Blood Rules)**:
 1. **NO DIRECT PUSH TO MASTER.** All changes go through feature branches and Pull Requests.
 2. **NO MANUAL PATCHES IN PROD.** All updates are verified via CI and deployed through PRs.
+3. **NO MERGE WITHOUT ZAVLAB APPROVAL.**
+
+Deployments are executed via the canonical 5-échelon pipeline [`./scripts/deploy.sh`](scripts/deploy.sh):
 
 ```bash
 # 1. Pull the latest master (after PR merge)
 git pull origin master
 
-# 2. Execute standardized deployment script
-./scripts/deploy.sh
+# 2. Execute standardized 5-échelon deployment pipeline
+sudo ./scripts/deploy.sh
 ```
+
+### 🏛️ The 5-Échelon Deployment Pipeline:
+* **🛡️ Échelon 0 (Pre-Flight Guard & Rollback Capsule):** Verifies root privileges, Go/Make toolchains, ensures `/etc/antigravity-bot/env` permissions (`0600`), validates required tokens without leaking secrets to logs, and creates an isolated rollback capsule of the previous binary in `bin/.bak/`.
+* **🧱 Échelon 1 (Production Isolation Probe):** Enforces a clean workspace (`git status --porcelain`) to prevent dirty uncommitted state or stray artifacts in production.
+* **🔄 Échelon 2 (Atomic Switch & Graceful Shift):** Builds binaries with ldflags metadata (`GitCommit`, `Version`, `BuildTime`), installs the systemd unit (`antigravity-bot-engine.service`), performs daemon-reload, restarts the service, and verifies process stability over a 5-second liveness window.
+* **🪞 Échelon 3 (Identity & Truth Probe):** Executes binary identity introspection (`antigravity-bot-engine --version`) and verifies byte-for-byte that the running commit matches `git rev-parse HEAD`. Immediately triggers rollback upon detection of Ghost Deploy.
+* **🔍 Échelon 4 (Deep Smoke Probe & Rollback Gate):** Verifies `agy-harvester` CLI execution, validates active systemd state and valid PID, optionally probes `/healthz`, and enforces an automated emergency rollback trap (`trap rollback EXIT`) if any error occurs.
 
 ---
 *Built with adrenaline, terminal wizardry, and strict CI discipline by the Trickster and ZaVLab.* 🎭⚡

@@ -105,6 +105,9 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 
 // main is the entry point that spins up multiple bot instances concurrently based on the BOT_TOKENS environment variable.
 func main() {
+	if handleVersionFlag() {
+		return
+	}
 	loadEnvFile()
 	fetchModels()
 	tokensEnv := os.Getenv("BOT_TOKENS")
