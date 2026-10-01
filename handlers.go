@@ -481,26 +481,40 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 	}
 }
 
-// handleHelpCommand outputs the command reference.
+// handleHelpCommand outputs the comprehensive command reference grouped by domain.
 func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
-	respText := "🆘 *Command Reference:*\n\n" +
-		"• /start - Show dashboard\n" +
-		"• /model - Change LLM model\n" +
-		"• /usage - Check API quota\n" +
-		"• /accounts - Multi-account pool manager, rotation & cooldowns\n" +
-		"• /stop - Interrupt active turn without resetting session\n" +
-		"• /clear - Clear context (reset session)\n" +
-		"• /resume - Resume previous session\n" +
-		"• /rename <name> - Rename current session\n" +
-		"• /workspace <path> - Change working directory\n" +
-		"• /export - Export conversation transcript to Markdown file\n" +
-		"• /voice [on|off] - Toggle persistent voice responses\n" +
-		"• /tts <text> - Convert text to speech (Hybrid Edge + Piper)\n" +
-		"• /tts_engine [engine] - View or switch TTS engine (hybrid/edge/piper/elevenlabs)\n\n" +
-		"*Send any text or file to start the Agent.*"
+	respText := "🆘 *Справочник команд (Command Reference):*\n\n" +
+		"📂 *Управление сессией:*\n" +
+		"• /start - Панель управления и статус системы\n" +
+		"• /help - Справочник доступных команд\n" +
+		"• /clear - Сброс контекста и запуск новой сессии\n" +
+		"• /stop - Прерывание активного хода агента\n" +
+		"• /resume - Переключение на предыдущую сессию\n" +
+		"• /rename `<имя>` - Переименование текущей сессии\n" +
+		"• /workspace `<путь>` - Смена рабочей директории агента\n" +
+		"• /export - Экспорт стенограммы сессии в Markdown\n\n" +
+		"🧠 *Голос, модели и аккаунты:*\n" +
+		"• /model - Выбор активной нейросетевой модели\n" +
+		"• /refresh_models - Динамическое обновление списка моделей\n" +
+		"• /usage - Проверка расхода квот API\n" +
+		"• /accounts - Пул мультиаккаунтов, ротация и кулдауны\n" +
+		"• /voice `[on|off]` - Переключение голосовых ответов\n" +
+		"• /tts `<текст>` - Синтез речи (Hybrid Edge + Piper / ElevenLabs)\n" +
+		"• /tts_engine `[движок]` - Просмотр или переключение TTS-движка\n\n" +
+		"⚡ *Автономные режимы CLI:*\n" +
+		"• /goal `<цель>` - Автономная задача до достижения цели\n" +
+		"• /plan `<задача>` - Пошаговая декомпозиция и планирование\n" +
+		"• /schedule `<cron/таймер>` - Фоновый запуск по расписанию\n" +
+		"• /browser `<url/запрос>` - Веб-поиск и взаимодействие с браузером\n" +
+		"• /learn `<знание>` - Сохранение правил и навыков для будущих сессий\n" +
+		"• /grill_me `<тема>` - Интерактивное интервью для проектирования\n" +
+		"• /teamwork_preview `<проект>` - Роевое взаимодействие автономных агентов\n\n" +
+		"_Отправьте любой текст, файл или голосовое сообщение для запуска агента._"
 	msg := tgbotapi.NewMessage(chatID, respText)
 	msg.ParseMode = "Markdown"
-	bot.Send(msg)
+	if bot != nil {
+		bot.Send(msg)
+	}
 }
 
 // handleExportCommand extracts the conversation steps from transcript.jsonl and sends a formatted Markdown file to the chat.
