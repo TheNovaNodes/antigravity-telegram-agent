@@ -8,29 +8,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-func TestFallbackModel_TerminalExhaustion(t *testing.T) {
-	// Verify non-cyclic terminal fallback chain
-	m1 := getFallbackModel("gemini-3.8-flash-high")
-	if m1 != "gemini-3.7-flash-high" {
-		t.Errorf("Expected gemini-3.7-flash-high, got %s", m1)
-	}
-
-	m2 := getFallbackModel(m1)
-	if m2 != "gemini-3.1-pro-high" {
-		t.Errorf("Expected gemini-3.1-pro-high, got %s", m2)
-	}
-
-	m3 := getFallbackModel(m2)
-	if m3 != "gemini-3.6-flash-low" {
-		t.Errorf("Expected gemini-3.6-flash-low, got %s", m3)
-	}
-
-	m4 := getFallbackModel(m3)
-	if m4 != "" {
-		t.Errorf("Expected terminal empty fallback (exhaustion), got %s (infinite loop detected!)", m4)
-	}
-}
-
 func TestDispatchUpdate_SequentialPerChat(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

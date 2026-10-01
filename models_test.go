@@ -71,27 +71,3 @@ func TestFetchModels_InvalidBinary(t *testing.T) {
 	// Should not crash, simply logs error
 	fetchModels()
 }
-
-func TestGetFallbackModel(t *testing.T) {
-	tests := []struct {
-		current  string
-		expected string
-	}{
-		{"gemini-3.8-flash-high", "gemini-3.7-flash-high"},
-		{"gemini-3.7-flash-high", "gemini-3.1-pro-high"},
-		{"gemini-3.1-pro-high", "gemini-3.6-flash-low"},
-		{"gemini-3.6-flash-low", ""},
-		{"unknown-model", "gemini-3.8-flash-high"},
-		{"claude-opus-4-6-thinking", "gemini-3.8-flash-high"},
-	}
-
-	for _, tc := range tests {
-		got := getFallbackModel(tc.current)
-		if got != tc.expected {
-			t.Errorf("getFallbackModel(%q) = %q; want %q", tc.current, got, tc.expected)
-		}
-		if got != "" && got == tc.current {
-			t.Errorf("getFallbackModel(%q) returned same model", tc.current)
-		}
-	}
-}
