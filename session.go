@@ -439,13 +439,6 @@ func (s *AgySession) GetConversation() string {
 	return s.Conversation
 }
 
-// SetConversation safely updates the active conversation ID under mutex lock.
-func (s *AgySession) SetConversation(convID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Conversation = convID
-}
-
 // sendTypingAction sends a ChatTyping or ChatRecordVoice action to Telegram if the session is actively generating a response.
 func (s *AgySession) sendTypingAction() {
 	s.mu.Lock()
@@ -1192,34 +1185,6 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string, extraRoots .
 			closer.Close()
 		}
 	}
-}
-
-// fallbackChain defines the prioritized failover progression for LLM models upon encountering rate limits (429/503).
-var fallbackChain = []string{
-	"gemini-3.8-flash-high",
-	"gemini-3.7-flash-high",
-	"gemini-3.1-pro-high",
-	"gemini-3.6-flash-low",
-}
-
-// getFallbackModel provides an automatic failover model when rate limits or quota exhaustion are encountered.
-// It iterates through fallbackChain. If currentModel is found, it returns the next model in sequence.
-// If currentModel is not in the chain, it fails over to the head of the chain (unless already equal).
-// It returns an empty string when the fallback chain is exhausted, preventing infinite switching loops.
-func getFallbackModel(currentModel string) string {
-	for i, m := range fallbackChain {
-		if m == currentModel {
-			if i+1 < len(fallbackChain) {
-				return fallbackChain[i+1]
-			}
-			return "" // Chain exhausted, terminal state
-		}
-	}
-	// If currentModel is not in fallbackChain, fail over to the first entry (flagship)
-	if len(fallbackChain) > 0 && fallbackChain[0] != currentModel {
-		return fallbackChain[0]
-	}
-	return ""
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events.

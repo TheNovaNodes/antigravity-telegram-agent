@@ -37,7 +37,7 @@ func TestPathHelpers_EnvironmentOverrides(t *testing.T) {
 	}
 }
 
-func TestAgySession_SetAndGetConversation(t *testing.T) {
+func TestAgySession_GetConversation(t *testing.T) {
 	s := &AgySession{
 		BotName:      "TestBot",
 		Conversation: "initial-conv",
@@ -47,7 +47,9 @@ func TestAgySession_SetAndGetConversation(t *testing.T) {
 		t.Errorf("Expected initial-conv, got %s", got)
 	}
 
-	s.SetConversation("updated-conv")
+	s.mu.Lock()
+	s.Conversation = "updated-conv"
+	s.mu.Unlock()
 	if got := s.GetConversation(); got != "updated-conv" {
 		t.Errorf("Expected updated-conv, got %s", got)
 	}
@@ -188,7 +190,9 @@ func TestHandleRenameCommand_ActiveAndEmpty(t *testing.T) {
 
 	// 2. Rename with active session
 	session := getSession("TestMockBot", user, chatID)
-	session.SetConversation("rename-test-uuid")
+	session.mu.Lock()
+	session.Conversation = "rename-test-uuid"
+	session.mu.Unlock()
 
 	handleRenameCommand(bot, chatID, "/rename Project Alpha Dashboard", "TestMockBot", user)
 
@@ -199,7 +203,9 @@ func TestHandleRenameCommand_ActiveAndEmpty(t *testing.T) {
 	}
 
 	// 3. Rename with no active conversation
-	session.SetConversation("")
+	session.mu.Lock()
+	session.Conversation = ""
+	session.mu.Unlock()
 	handleRenameCommand(bot, chatID, "/rename New Title", "TestMockBot", user)
 }
 

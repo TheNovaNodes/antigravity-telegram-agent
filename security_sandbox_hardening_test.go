@@ -65,7 +65,7 @@ func TestIsValidSessionID(t *testing.T) {
 	}
 }
 
-func TestEnsureEnvPermissions(t *testing.T) {
+func TestLoadEnvFile_Permissions(t *testing.T) {
 	tempDir := t.TempDir()
 	origWd, err := os.Getwd()
 	if err != nil {
@@ -86,7 +86,7 @@ func TestEnsureEnvPermissions(t *testing.T) {
 		t.Fatalf("Failed to create test .env: %v", err)
 	}
 
-	ensureEnvPermissions()
+	loadEnvFile()
 
 	info, err := os.Stat(envFile)
 	if err != nil {

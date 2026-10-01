@@ -94,49 +94,6 @@ func TestSendChunk_PanicRecovery(t *testing.T) {
 	sendChunk(nil, -1, -1, strings.Repeat("A", 10000))
 }
 
-// TestFallbackModel_UnknownCurrent_NoThrash verifies fallbackChain integrity for standard and non-standard models.
-func TestFallbackModel_UnknownCurrent_NoThrash(t *testing.T) {
-	// Non-chain models must fail over to flagship model (fallbackChain[0])
-	unknowns := []string{"claude-3-7-sonnet", "gpt-4o", "mistral-large", "custom-llm"}
-	for _, u := range unknowns {
-		fb := getFallbackModel(u)
-		if fb != fallbackChain[0] {
-			t.Errorf("getFallbackModel(%q) = %q; want flagship %q", u, fb, fallbackChain[0])
-		}
-	}
-
-	// Flagship model must fail over to second entry
-	if fb := getFallbackModel(fallbackChain[0]); fb != fallbackChain[1] {
-		t.Errorf("getFallbackModel(%q) = %q; want %q", fallbackChain[0], fb, fallbackChain[1])
-	}
-
-	// Terminal model must return empty string
-	terminal := fallbackChain[len(fallbackChain)-1]
-	if fb := getFallbackModel(terminal); fb != "" {
-		t.Errorf("getFallbackModel(%q) = %q; want empty string (exhaustion)", terminal, fb)
-	}
-
-	// Exhaustion verification: chaining until terminal must terminate cleanly
-	curr := "unknown-entry"
-	visited := make(map[string]bool)
-	steps := 0
-	for {
-		next := getFallbackModel(curr)
-		if next == "" {
-			break
-		}
-		if visited[next] {
-			t.Fatalf("Cycle detected in fallback chain: model %q visited twice", next)
-		}
-		visited[next] = true
-		curr = next
-		steps++
-		if steps > len(fallbackChain)+2 {
-			t.Fatalf("Fallback chain exceeded expected depth without terminating")
-		}
-	}
-}
-
 // BenchmarkTextBuffer_Append benchmarks delta appending under the maxTextBufferBytes cap.
 func BenchmarkTextBuffer_Append(b *testing.B) {
 	delta := "1234567890"

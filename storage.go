@@ -253,11 +253,6 @@ func loadEnvFile() {
 	log.Printf("🔑 Loaded and verified %d environment variables from %s (mode 0600)", loadedCount, envFile)
 }
 
-// ensureEnvPermissions verifies that env permissions are enforced (0600).
-func ensureEnvPermissions() {
-	loadEnvFile()
-}
-
 // initDB initializes the SQLite database for a specific bot, enables WAL mode, and creates necessary tables.
 func initDB(botName string) *sql.DB {
 	dbDir := getDataDir()
