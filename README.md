@@ -152,7 +152,7 @@ The engine supports flexible configuration through environment variables:
 | `AGENTS_DIR` | String | `~/.agents` | Base directory containing agent workspaces and download scratchpads. |
 | `BRAIN_DIR` | String | `~/.gemini/antigravity-cli/brain` | Storage directory for conversation logs, titles, and steps. |
 | `PROJECTS_DIR` | String | `~/projects` | Base directory for external repository projects and safe `/workspace` boundary. |
-| `DATA_DIR` | String | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
+| `DATA_DIR` | String | `/var/lib/antigravity-bot/data` | Isolated persistent state directory for SQLite databases (`sessions_<bot>.db`) outside Git tree (fallback: `/etc/antigravity-bot/data` or `./data`). |
 | `AGY_BINARY` | String | `~/.local/bin/agy` | Path to Antigravity CLI binary (resolves via `AGY_BINARY`, `PATH`, or `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | String | `""` | Comma or newline separated list of ElevenLabs API keys (supports auto-rotation). |
 | `ELEVENLABS_BASE_URL` | String | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable TTS endpoint URL (used for reverse proxies and testing). |

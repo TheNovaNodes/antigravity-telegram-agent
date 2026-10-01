@@ -16,6 +16,7 @@ ENGINE_BIN="${BIN_DIR}/antigravity-bot-engine"
 HARVESTER_BIN="${BIN_DIR}/agy-harvester"
 ENV_DIR="/etc/antigravity-bot"
 PROD_ENV_FILE="${ENV_DIR}/env"
+SYSTEM_DATA_DIR="/var/lib/antigravity-bot/data"
 SERVICE_NAME="antigravity-bot-engine.service"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 
@@ -88,7 +89,24 @@ if ! grep -q "^BOT_TOKENS=" "${PROD_ENV_FILE}" || ! grep -q "^ALLOWED_ADMIN_IDS=
     exit 1
 fi
 
-# 5. Create Rollback Capsule for previous binary
+# 5. Provision persistent state directory outside working tree (/var/lib/antigravity-bot/data, 0700)
+mkdir -p "${SYSTEM_DATA_DIR}"
+chmod 0700 "${SYSTEM_DATA_DIR}"
+
+# 6. Pre-flight safe migration of legacy databases from working tree if present
+if [ -d "${ROOT_DIR}/data" ] && [ "${SYSTEM_DATA_DIR}" != "${ROOT_DIR}/data" ]; then
+    for db_file in "${ROOT_DIR}"/data/sessions_*.db*; do
+        if [ -f "${db_file}" ]; then
+            base_name="$(basename "${db_file}")"
+            if [ ! -f "${SYSTEM_DATA_DIR}/${base_name}" ]; then
+                echo "   📦 Pre-flight migrating legacy database: ${base_name} -> ${SYSTEM_DATA_DIR}/"
+                install -m 0600 "${db_file}" "${SYSTEM_DATA_DIR}/${base_name}"
+            fi
+        fi
+    done
+fi
+
+# 7. Create Rollback Capsule for previous binary and database state
 mkdir -p "${BAK_DIR}"
 chmod 0700 "${BAK_DIR}"
 if [ -f "${ENGINE_BIN}" ]; then
@@ -97,6 +115,12 @@ if [ -f "${ENGINE_BIN}" ]; then
     cp -p "${ENGINE_BIN}" "${BACKUP_CAPSULE}"
     ln -sf "${BACKUP_CAPSULE}" "${BAK_DIR}/antigravity-bot-engine.latest.bak"
     echo "   📦 Rollback capsule created: ${BACKUP_CAPSULE}"
+
+    # Also snapshot active database state into capsule if present
+    if [ -d "${SYSTEM_DATA_DIR}" ] && compgen -G "${SYSTEM_DATA_DIR}/sessions_*.db" > /dev/null; then
+        tar -czf "${BAK_DIR}/data.${TIMESTAMP}.tar.gz" -C "${SYSTEM_DATA_DIR}" . 2>/dev/null || true
+        echo "   💾 Database snapshot archived to rollback capsule: ${BAK_DIR}/data.${TIMESTAMP}.tar.gz"
+    fi
 else
     echo "   ℹ️ No previous binary found at ${ENGINE_BIN} (first-time deployment)."
 fi
@@ -139,6 +163,7 @@ WorkingDirectory=${ROOT_DIR}
 ExecStart=${ENGINE_BIN}
 EnvironmentFile=${PROD_ENV_FILE}
 Environment="ENV_FILE=${PROD_ENV_FILE}"
+Environment="DATA_DIR=${SYSTEM_DATA_DIR}"
 Environment="HOME=${HOME:-/root}"
 Environment="SYSTEM_HOME=/root"
 Environment="PATH=/root/.local/bin:${HOME:-/root}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

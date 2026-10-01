@@ -264,7 +264,7 @@ All hardcoded filesystem paths and credentials are decoupled and configurable vi
 | `AGENTS_DIR` | `~/.agents` | Base directory containing agent workspaces and download scratchpads. |
 | `BRAIN_DIR` | `~/.gemini/antigravity-cli/brain` | Storage for agent conversation logs, titles, and step histories. |
 | `PROJECTS_DIR` | `~/projects` | Base directory for project codebases and sandbox boundaries (`isPathUnderRoot`). |
-| `DATA_DIR` | `data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted. |
+| `DATA_DIR` | `/var/lib/antigravity-bot/data` | Directory where SQLite state databases (`sessions_<bot>.db`) are persisted (isolated outside Git tree). |
 | `AGY_BINARY` | `~/.local/bin/agy` (or `PATH`) | Path to Antigravity CLI executable (defaults to `~/.local/bin/agy`). |
 | `ELEVENLABS_API_KEY` | `""` | Comma/newline separated list of ElevenLabs API keys (supports automatic rotation). |
 | `ELEVENLABS_BASE_URL` | `https://api.elevenlabs.io/v1/text-to-speech` | Configurable base URL for testing and reverse proxies. |
