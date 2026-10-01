@@ -3,7 +3,7 @@
 [![CI](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/Coverage-81.0%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go)
+![Go Version](https://img.shields.io/badge/Go-1.25.14+-00ADD8?style=for-the-badge&logo=go)
 
 **The Ultimate, High-Performance, Deadlock-Immune Pure Go Core for the Antigravity Telegram Bot Ecosystem.**
 

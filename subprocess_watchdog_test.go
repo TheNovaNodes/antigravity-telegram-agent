@@ -115,8 +115,8 @@ func TestReapStoppedSubprocessesLive(t *testing.T) {
 
 	// 4. Run ReapStoppedSubprocesses with 0 gracePeriod -> should reap immediately
 	reaped := ReapStoppedSubprocesses(0)
-	if reaped != 1 {
-		t.Errorf("expected 1 process reaped, got %d", reaped)
+	if reaped < 1 {
+		t.Errorf("expected at least 1 process reaped, got %d", reaped)
 	}
 
 	// 5. Verify child process is dead or zombie

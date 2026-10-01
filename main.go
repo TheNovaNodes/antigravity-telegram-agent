@@ -76,7 +76,9 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 func registerBotCommands(bot *tgbotapi.BotAPI) {
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Welcome menu & status"},
+		{Command: "help", Description: "Command reference & documentation"},
 		{Command: "model", Description: "Select LLM model"},
+		{Command: "refresh_models", Description: "Dynamically refresh models cache"},
 		{Command: "usage", Description: "Show API quota usage"},
 		{Command: "accounts", Description: "Manage multi-account pool and rotation"},
 		{Command: "clear", Description: "Clear context and restart agent"},
@@ -87,6 +89,7 @@ func registerBotCommands(bot *tgbotapi.BotAPI) {
 		{Command: "export", Description: "Export session transcript to file"},
 		{Command: "voice", Description: "Toggle persistent voice mode"},
 		{Command: "tts", Description: "Text to speech voice synthesis"},
+		{Command: "tts_engine", Description: "View or switch active TTS engine"},
 		{Command: "goal", Description: "Run exhaustive long-running task"},
 		{Command: "schedule", Description: "Set recurring schedule or timer"},
 		{Command: "browser", Description: "Use web browser for a task"},
