@@ -778,4 +778,3 @@ func TestDelivery_Tier3_MarkdownTruncationIntegrity(t *testing.T) {
 		t.Errorf("expected exactly 2 fences for already closed code block, got %d", fenceCountClosed)
 	}
 }
-
