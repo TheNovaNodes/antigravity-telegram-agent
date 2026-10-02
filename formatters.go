@@ -22,6 +22,28 @@ var allowedTags = map[string]bool{
 	"blockquote": true,
 }
 
+var (
+	reTGFenced = regexp.MustCompile("(?is)```([a-zA-Z0-9_\\-\\+]*)\\n?(.*?)```")
+	reTGInline = regexp.MustCompile("(?s)`([^`]+?)`")
+
+	reThink    = regexp.MustCompile(`(?is)<think>(.*?)</think>`)
+	reThinking = regexp.MustCompile(`(?is)<thinking>(.*?)</thinking>`)
+	reThought  = regexp.MustCompile(`(?is)<thought>(.*?)</thought>`)
+
+	reTGHeader  = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	reTGList    = regexp.MustCompile(`^(\s*)[*\-+]\s+(.+)$`)
+	reTGNumList = regexp.MustCompile(`^(\s*)(\d+)\.\s+(.+)$`)
+
+	reTGImg        = regexp.MustCompile(`!\[(.*?)\]\((https?://[^\s\)]+)\)`)
+	reTGLink       = regexp.MustCompile(`\[(.*?)\]\((https?://[^\s\)]+)\)`)
+	reTGSpoiler    = regexp.MustCompile(`\|\|(.*?)\|\|`)
+	reTGStrike     = regexp.MustCompile(`~~(.*?)~~`)
+	reTGBoldItalic = regexp.MustCompile(`\*\*\*(.*?)\*\*\*`)
+	reTGBold       = regexp.MustCompile(`\*\*(.*?)\*\*`)
+	reTGItalicAst  = regexp.MustCompile(`\*([^\s*](?:[^*]*[^\s*])?)\*`)
+	reTGItalicUnd  = regexp.MustCompile(`_([^\s_](?:[^_]*[^\s_])?)_`)
+)
+
 func escapeHTML(text string) string {
 	text = strings.ReplaceAll(text, "&", "&amp;")
 	text = strings.ReplaceAll(text, "<", "&lt;")
@@ -142,44 +164,15 @@ func MarkdownToTelegramHTML(text string) string {
 		return token
 	}
 
-	// 1. Extract think blocks
-	reThink := regexp.MustCompile(`(?is)<think>(.*?)(?:</think>|$)`)
-	text = reThink.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reThink.FindStringSubmatch(m)
-		body := strings.TrimSpace(subs[1])
-		escaped := escapeHTML(body)
-		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
-		return createPlaceholder(formatted)
-	})
-
-	reThinking := regexp.MustCompile(`(?is)<thinking>(.*?)(?:</thinking>|$)`)
-	text = reThinking.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reThinking.FindStringSubmatch(m)
-		body := strings.TrimSpace(subs[1])
-		escaped := escapeHTML(body)
-		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
-		return createPlaceholder(formatted)
-	})
-
-	reThought := regexp.MustCompile(`(?is)<thought>(.*?)(?:</thought>|$)`)
-	text = reThought.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reThought.FindStringSubmatch(m)
-		body := strings.TrimSpace(subs[1])
-		escaped := escapeHTML(body)
-		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
-		return createPlaceholder(formatted)
-	})
-
-	// 2. Fenced Code Blocks
+	// 0. Code Shielding First: Fenced Code Blocks & Inline Code
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	if strings.Count(text, "```")%2 != 0 {
 		text += "\n```"
 	}
 
-	reFenced := regexp.MustCompile("(?is)```([a-zA-Z0-9_\\-\\+]*)\\n?(.*?)```")
-	text = reFenced.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reFenced.FindStringSubmatch(m)
+	text = reTGFenced.ReplaceAllStringFunc(text, func(m string) string {
+		subs := reTGFenced.FindStringSubmatch(m)
 		lang := strings.TrimSpace(subs[1])
 		body := escapeHTML(subs[2])
 		classAttr := ""
@@ -189,11 +182,34 @@ func MarkdownToTelegramHTML(text string) string {
 		return createPlaceholder(fmt.Sprintf("<pre><code%s>%s</code></pre>", classAttr, body))
 	})
 
-	// 3. Inline code
-	reInline := regexp.MustCompile("(?s)`([^`]+?)`")
-	text = reInline.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reInline.FindStringSubmatch(m)
+	text = reTGInline.ReplaceAllStringFunc(text, func(m string) string {
+		subs := reTGInline.FindStringSubmatch(m)
 		return createPlaceholder(fmt.Sprintf("<code>%s</code>", escapeHTML(subs[1])))
+	})
+
+	// 1. Extract think blocks (Strict closing tag)
+	text = reThink.ReplaceAllStringFunc(text, func(m string) string {
+		subs := reThink.FindStringSubmatch(m)
+		body := strings.TrimSpace(subs[1])
+		escaped := escapeHTML(body)
+		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
+		return createPlaceholder(formatted)
+	})
+
+	text = reThinking.ReplaceAllStringFunc(text, func(m string) string {
+		subs := reThinking.FindStringSubmatch(m)
+		body := strings.TrimSpace(subs[1])
+		escaped := escapeHTML(body)
+		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
+		return createPlaceholder(formatted)
+	})
+
+	text = reThought.ReplaceAllStringFunc(text, func(m string) string {
+		subs := reThought.FindStringSubmatch(m)
+		body := strings.TrimSpace(subs[1])
+		escaped := escapeHTML(body)
+		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
+		return createPlaceholder(formatted)
 	})
 
 	// Escape remaining HTML
@@ -263,20 +279,17 @@ func MarkdownToTelegramHTML(text string) string {
 			flushQuote()
 		}
 
-		reHeader := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-		if m := reHeader.FindStringSubmatch(stripped); m != nil {
+		if m := reTGHeader.FindStringSubmatch(stripped); m != nil {
 			outLines = append(outLines, fmt.Sprintf("\n<b><u>%s</u></b>", m[2]))
 			continue
 		}
 
-		reList := regexp.MustCompile(`^(\s*)[*\-+]\s+(.+)$`)
-		if m := reList.FindStringSubmatch(line); m != nil {
+		if m := reTGList.FindStringSubmatch(line); m != nil {
 			outLines = append(outLines, fmt.Sprintf("%s• %s", m[1], m[2]))
 			continue
 		}
 
-		reNumList := regexp.MustCompile(`^(\s*)(\d+)\.\s+(.+)$`)
-		if m := reNumList.FindStringSubmatch(line); m != nil {
+		if m := reTGNumList.FindStringSubmatch(line); m != nil {
 			outLines = append(outLines, fmt.Sprintf("%s%s. %s", m[1], m[2], m[3]))
 			continue
 		}
@@ -291,36 +304,28 @@ func MarkdownToTelegramHTML(text string) string {
 
 	// Inline formatting
 	// Images
-	reImg := regexp.MustCompile(`!\[(.*?)\]\((https?://[^\s\)]+)\)`)
-	text = reImg.ReplaceAllString(text, `<a href="$2">🖼 $1</a>`)
+	text = reTGImg.ReplaceAllString(text, `<a href="$2">🖼 $1</a>`)
 
 	// Links
-	reLink := regexp.MustCompile(`\[(.*?)\]\((https?://[^\s\)]+)\)`)
-	text = reLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
+	text = reTGLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
 
 	// Spoilers
-	reSpoiler := regexp.MustCompile(`\|\|(.*?)\|\|`)
-	text = reSpoiler.ReplaceAllString(text, `<tg-spoiler>$1</tg-spoiler>`)
+	text = reTGSpoiler.ReplaceAllString(text, `<tg-spoiler>$1</tg-spoiler>`)
 
 	// Strikethrough
-	reStrike := regexp.MustCompile(`~~(.*?)~~`)
-	text = reStrike.ReplaceAllString(text, `<s>$1</s>`)
+	text = reTGStrike.ReplaceAllString(text, `<s>$1</s>`)
 
 	// Bold Italic
-	reBoldItalic := regexp.MustCompile(`\*\*\*(.*?)\*\*\*`)
-	text = reBoldItalic.ReplaceAllString(text, `<b><i>$1</i></b>`)
+	text = reTGBoldItalic.ReplaceAllString(text, `<b><i>$1</i></b>`)
 
 	// Bold
-	reBold := regexp.MustCompile(`\*\*(.*?)\*\*`)
-	text = reBold.ReplaceAllString(text, `<b>$1</b>`)
+	text = reTGBold.ReplaceAllString(text, `<b>$1</b>`)
 
 	// Italic (asterisk)
-	reItalicAst := regexp.MustCompile(`\*([^\s*](?:[^*]*[^\s*])?)\*`)
-	text = reItalicAst.ReplaceAllString(text, `<i>$1</i>`)
+	text = reTGItalicAst.ReplaceAllString(text, `<i>$1</i>`)
 
 	// Italic (underscore)
-	reItalicUnd := regexp.MustCompile(`_([^\s_](?:[^_]*[^\s_])?)_`)
-	text = reItalicUnd.ReplaceAllString(text, `<i>$1</i>`)
+	text = reTGItalicUnd.ReplaceAllString(text, `<i>$1</i>`)
 
 	// Restore placeholders
 	for {

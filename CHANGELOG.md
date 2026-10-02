@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Thought Tags Code Shielding & Stream Truncation Prevention (Issue #351)
+- **Code Shielding First & Strict Tag Matching**:
+  - Reordered Markdown parsing in `formatters.go::MarkdownToTelegramHTML`: fenced code blocks (` ``` `) and inline code (`` ` ``) are now shielded into UUID placeholders at Step 0, before evaluating reasoning tags (`<think>`, `<thinking>`, `<thought>`).
+  - Strict closed tag enforcement: replaced greedy `(?:</thought>|$)` with strict closing tag requirements (`(?is)<thought>(.*?)</thought>|<think>(.*?)</think>|<thinking>(.*?)</thinking>`), eliminating premature message truncations and severed Markdown formatting.
+  - Safely treat unclosed opening tags as plain text, escaping `<` and `>` into `&lt;` and `&gt;` without corrupting Telegram HTML parsing or dropping trailing response content.
+  - Replaced dynamic in-loop and in-call `regexp.MustCompile` with package-level precompiled regex variables in `formatters.go`, eliminating memory allocations in the streaming hot path.
+  - Implemented code shielding parity in `rich_message.go`: `ExtractThinkingAndMarkdown` and `HasThoughts` now shield fenced and inline code blocks, preventing thought tags within code from being erroneously extracted or triggering Tier 2 delivery routing.
+  - Added comprehensive L1/L2 regression tests in `formatters_test.go` and `rich_message_test.go` (`TestMarkdownToTelegramHTML_ThoughtTagsShielding`, `TestHasThoughts_CodeShieldingAndUnclosed`).
+
 ### Clean Sticker Image & Semantic De-hijacking (Issue #347)
 - **Pure Image Sticker Routing**:
   - Removed synthetic emoji context injection (`[Пользователь отправил стикер: %s]`) in `handlers.go`, eliminating semantic hijacking of agent decision-making.

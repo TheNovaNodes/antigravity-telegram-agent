@@ -173,6 +173,60 @@ func TestExtractThinkingAndMarkdown(t *testing.T) {
 	if thinking5 != nil {
 		t.Errorf("expected promoted thinking to be nil, got %+v", thinking5)
 	}
+
+	// Case 6: Code containing <thought> must be preserved in markdown payload and NOT extracted to thinking
+	text6 := "Explanation of tags:\n```xml\n<thought>code inside block</thought>\n```\nAlso inline `<thought>`."
+	cleanMd6, thinking6 := ExtractThinkingAndMarkdown(text6)
+	if thinking6 != nil {
+		t.Errorf("expected thinking6 to be nil, got: %+v", thinking6)
+	}
+	if !strings.Contains(cleanMd6, "<thought>code inside block</thought>") {
+		t.Errorf("expected fenced code with <thought> preserved, got %q", cleanMd6)
+	}
+	if !strings.Contains(cleanMd6, "`<thought>`") {
+		t.Errorf("expected inline code `<thought>` preserved, got %q", cleanMd6)
+	}
+
+	// Case 7: Unclosed <thought> tag must not be extracted and must preserve full markdown
+	text7 := "Some answer with <thought> unclosed tag and more response text."
+	cleanMd7, thinking7 := ExtractThinkingAndMarkdown(text7)
+	if thinking7 != nil {
+		t.Errorf("expected thinking7 to be nil for unclosed tag, got: %+v", thinking7)
+	}
+	if cleanMd7 != text7 {
+		t.Errorf("expected full text preserved without truncation, got %q", cleanMd7)
+	}
+}
+
+func TestHasThoughts_CodeShieldingAndUnclosed(t *testing.T) {
+	// 1. Unclosed tag -> false
+	if HasThoughts("Some answer with <thought> unclosed tag") {
+		t.Errorf("expected HasThoughts to return false for unclosed <thought>")
+	}
+	if HasThoughts("<think> unclosed") {
+		t.Errorf("expected HasThoughts to return false for unclosed <think>")
+	}
+
+	// 2. Tags inside inline code -> false
+	if HasThoughts("4. **Сворачиваемые цепочки рассуждений (`<thought>`)**") {
+		t.Errorf("expected HasThoughts to return false for inline `<thought>`")
+	}
+
+	// 3. Tags inside fenced code -> false
+	if HasThoughts("```xml\n<thought>code</thought>\n```") {
+		t.Errorf("expected HasThoughts to return false for fenced `<thought>`")
+	}
+	if HasThoughts("```\n<think>code</think>\n```") {
+		t.Errorf("expected HasThoughts to return false for fenced `<think>`")
+	}
+
+	// 4. Real thought tag outside code -> true
+	if !HasThoughts("<thought>real thoughts</thought>") {
+		t.Errorf("expected HasThoughts to return true for valid <thought>")
+	}
+	if !HasThoughts("```go\nx := 1\n```\n<think>real thoughts</think>") {
+		t.Errorf("expected HasThoughts to return true when thought is outside code block")
+	}
 }
 
 func TestSanitizeRichMessageText(t *testing.T) {
