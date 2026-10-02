@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `TruncateMarkdownSafely`: rune-safe Markdown truncation with proportional lookback windows (paragraph, newline, space) and automatic closure of unclosed fenced code blocks (`\n```\n`).
   - Guaranteed atomic deletion of streaming draft messages (`activeMsgID`) upon Tier 2 and Tier 3 dispatch.
   - Eliminated the legacy `strings.Contains(text, "⏳")` footgun in `handlers.go`.
-  - Added comprehensive L2 unit tests: `TestDelivery_Tier1_ClassicBubble`, `TestDelivery_Tier2_RichArticle`, `TestDelivery_Tier3_ExtremePayloadMarkdownArtifact`, `TestDelivery_Tier3_MarkdownTruncationIntegrity`, and `TestSession_FinalizeTurn_Tier3ExtremePayload` (race-detector verified).
+  - Implemented workspace-scoped artifact storage (`sendAdaptiveResponseWithWorkspace`) with multi-agent pool isolation (fallback to `common/scratch/downloads`, 0 hardcoded bot names).
+  - Hardened tier classification in `DetermineDeliveryTier` to check rendered HTML length against `ClassicMessageLimit` (4000), preventing message split cascades on entity-heavy Markdown.
+  - Routed non-classic tiers in `sendChunk(messageID == 0)` to `sendAdaptiveResponse` to eliminate Tier 3 bypass.
+  - Added artifact retention rotation (`RotateArtifactFiles`), pruning files older than 24h and keeping at most 20 recent artifacts to prevent disk exhaustion.
+  - Added comprehensive L2 unit tests: `TestDelivery_Tier1_ClassicBubble`, `TestDelivery_Tier2_RichArticle`, `TestDelivery_Tier3_ExtremePayloadMarkdownArtifact`, `TestDelivery_Tier3_MarkdownTruncationIntegrity`, `TestArtifactSaveDir_Isolation_NoHardcodedBotName`, `TestDetermineDeliveryTier_HTMLLengthExpansion`, `TestSendChunk_Tier3_Routing_MessageIDZero`, `TestRotateArtifactFiles`, and `TestSession_FinalizeTurn_Tier3ExtremePayload` (race-detector verified).
 
 ### Master-Detail Ergonomic Dashboard & Zero Footgun UI (Issue #343)
 - **Two-Tiered Master-Detail Dashboard Architecture (Issue #343)**:

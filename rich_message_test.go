@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -776,5 +778,173 @@ func TestDelivery_Tier3_MarkdownTruncationIntegrity(t *testing.T) {
 	fenceCountClosed := strings.Count(truncatedClosed, "```")
 	if fenceCountClosed != 2 {
 		t.Errorf("expected exactly 2 fences for already closed code block, got %d", fenceCountClosed)
+	}
+}
+
+func TestArtifactSaveDir_Isolation_NoHardcodedBotName(t *testing.T) {
+	// 1. Verify default directory has NO hardcoded bot name
+	defaultDir := getArtifactSaveDir()
+	if strings.Contains(defaultDir, "trickster_gobot") {
+		t.Errorf("expected getArtifactSaveDir() to have zero hardcoded bot names, got %s", defaultDir)
+	}
+	if !strings.HasSuffix(defaultDir, filepath.Join("scratch", "downloads")) {
+		t.Errorf("expected defaultDir to end in scratch/downloads, got %s", defaultDir)
+	}
+
+	// 2. Verify custom session workspace isolation
+	tmpWS, err := os.MkdirTemp("", "test_ws_*")
+	if err != nil {
+		t.Fatalf("failed to create temp ws: %v", err)
+	}
+	defer os.RemoveAll(tmpWS)
+
+	customDir := getArtifactSaveDir(tmpWS)
+	expected := filepath.Join(tmpWS, "scratch", "downloads")
+	if customDir != expected {
+		t.Errorf("expected customDir %s, got %s", expected, customDir)
+	}
+
+	// Verify directory exists with 0700 permissions
+	fi, err := os.Stat(customDir)
+	if err != nil {
+		t.Fatalf("failed to stat customDir: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Errorf("expected customDir to be a directory")
+	}
+	if fi.Mode().Perm() != 0700 {
+		t.Errorf("expected 0700 permissions, got %o", fi.Mode().Perm())
+	}
+}
+
+func TestDetermineDeliveryTier_HTMLLengthExpansion(t *testing.T) {
+	// Construct markdown text with rune count < 3000 runes,
+	// but containing entity-rich links expanding to > 4000 runes in HTML.
+	text := strings.Repeat("Ref: <data> & [item](https://example.com/api?a=1&b=2&c=3&d=4&e=5&f=6) & <token> & results.\n", 30)
+	markdownRunes := utf8.RuneCountInString(text)
+	if markdownRunes >= RichMessageThreshold {
+		t.Fatalf("test prerequisite failed: markdown length must be < %d, got %d", RichMessageThreshold, markdownRunes)
+	}
+	if HasMarkdownTable(text) {
+		t.Fatalf("test prerequisite failed: text should not contain markdown table")
+	}
+	if HasThoughts(text) {
+		t.Fatalf("test prerequisite failed: text should not contain thoughts")
+	}
+
+	html := MarkdownToTelegramHTML(text)
+	htmlRunes := utf8.RuneCountInString(html)
+	if htmlRunes <= ClassicMessageLimit {
+		t.Fatalf("test prerequisite failed: html length must exceed %d, got %d", ClassicMessageLimit, htmlRunes)
+	}
+
+	// Because HTML exceeds ClassicMessageLimit, it MUST route to Tier2RichArticle to prevent SplitHTMLChunks cascade!
+	tier := DetermineDeliveryTier(text)
+	if tier != Tier2RichArticle {
+		t.Errorf("expected Tier2RichArticle due to HTML length expansion (%d runes), got %v", htmlRunes, tier)
+	}
+}
+
+func TestSendChunk_Tier3_Routing_MessageIDZero(t *testing.T) {
+	ts, sentReqs, mu := createStrictTelegramMockServer(t)
+	defer ts.Close()
+
+	endpoint := ts.URL + "/bot%s/%s"
+	bot, err := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ts.Client())
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	// Payload > 32768 runes
+	repeatLine := "Extreme payload line with some content for tier 3 routing via sendChunk.\n"
+	payload := strings.Repeat(repeatLine, 500)
+	totalRunes := utf8.RuneCountInString(payload)
+	if totalRunes <= MaxRichMessageLength {
+		t.Fatalf("payload must exceed %d, got %d", MaxRichMessageLength, totalRunes)
+	}
+
+	mu.Lock()
+	*sentReqs = nil
+	mu.Unlock()
+
+	// Calling sendChunk with messageID == 0 must route to sendAdaptiveResponse (Tier 3)
+	chunks := sendChunk(bot, 12345, 0, payload)
+	if len(chunks) != 1 {
+		t.Errorf("expected sendChunk to return 1 preview chunk for Tier 3, got %d", len(chunks))
+	}
+
+	mu.Lock()
+	reqs := append([]string{}, *sentReqs...)
+	mu.Unlock()
+
+	foundRichPreview := false
+	foundDocument := false
+
+	for _, req := range reqs {
+		vals, _ := url.ParseQuery(req)
+		if richRaw := vals.Get("rich_message"); richRaw != "" {
+			foundRichPreview = true
+		}
+		if strings.Contains(req, "agent_response.md") {
+			foundDocument = true
+		}
+	}
+
+	if !foundRichPreview {
+		t.Errorf("expected sendChunk to invoke sendRichMessage preview for Tier 3 payload")
+	}
+	if !foundDocument {
+		t.Errorf("expected sendChunk to dispatch agent_response.md document for Tier 3 payload")
+	}
+}
+
+func TestRotateArtifactFiles(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "rotate_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	now := time.Now()
+	// Create 25 mock response files
+	for i := 0; i < 25; i++ {
+		fileName := fmt.Sprintf("response_20260101_%04d.md", i)
+		filePath := filepath.Join(tmpDir, fileName)
+		if err := os.WriteFile(filePath, []byte("test artifact content"), 0600); err != nil {
+			t.Fatalf("failed to write mock file: %v", err)
+		}
+		// Stagger mod times: older files have older timestamps
+		modTime := now.Add(-time.Duration(25-i) * time.Minute)
+		_ = os.Chtimes(filePath, modTime, modTime)
+	}
+
+	// 1. Rotate keeping max 10 files
+	removed := RotateArtifactFiles(tmpDir, 10, 24*time.Hour)
+	if removed != 15 {
+		t.Errorf("expected 15 files to be removed, got %d", removed)
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	if len(entries) != 10 {
+		t.Errorf("expected 10 remaining files, got %d", len(entries))
+	}
+
+	// 2. Add an expired file older than 24 hours
+	oldFile := filepath.Join(tmpDir, "response_old_expired.md")
+	if err := os.WriteFile(oldFile, []byte("old content"), 0600); err != nil {
+		t.Fatalf("failed to write old file: %v", err)
+	}
+	oldTime := now.Add(-48 * time.Hour)
+	_ = os.Chtimes(oldFile, oldTime, oldTime)
+
+	removedOld := RotateArtifactFiles(tmpDir, 10, 24*time.Hour)
+	if removedOld < 1 {
+		t.Errorf("expected at least 1 expired file removed, got %d", removedOld)
+	}
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Errorf("expected expired file to be deleted")
 	}
 }

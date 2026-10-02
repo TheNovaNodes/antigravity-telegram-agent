@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -124,14 +125,14 @@ func DetermineDeliveryTier(text string) DeliveryTier {
 	if runeLen > MaxRichMessageLength {
 		return Tier3MarkdownArtifact
 	}
-	if runeLen >= RichMessageThreshold || HasMarkdownTable(text) || HasThoughts(text) {
+	if runeLen >= RichMessageThreshold || HasMarkdownTable(text) || HasThoughts(text) || utf8.RuneCountInString(MarkdownToTelegramHTML(text)) > ClassicMessageLimit {
 		return Tier2RichArticle
 	}
 	return Tier1ClassicBubble
 }
 
 // ShouldUseRichMessage evaluates whether a message warrants routing to sendRichMessage.
-// Returns true for Tier2RichArticle (>= 3000 runes or tables/thoughts, up to 32768 runes).
+// Returns true for Tier2RichArticle (>= 3000 runes or tables/thoughts/large HTML, up to 32768 runes).
 func ShouldUseRichMessage(text string) bool {
 	return DetermineDeliveryTier(text) == Tier2RichArticle
 }
@@ -216,24 +217,90 @@ func TruncateMarkdownSafely(text string, maxRunes int) string {
 	return truncated
 }
 
-func getArtifactSaveDir() string {
-	// 1. Try local scratch/downloads if it exists
+func getArtifactSaveDir(targetDirs ...string) string {
+	for _, dir := range targetDirs {
+		if dir != "" {
+			agentDir := filepath.Join(dir, "scratch", "downloads")
+			if err := os.MkdirAll(agentDir, 0700); err == nil {
+				return agentDir
+			}
+		}
+	}
+
+	// 1. Try local scratch/downloads if it exists in current working dir
 	localDir := filepath.Join("scratch", "downloads")
 	if info, err := os.Stat(localDir); err == nil && info.IsDir() {
 		return localDir
 	}
 
-	// 2. Try agents scratch/downloads
+	// 2. Try common agents scratch/downloads (shared across all bot agents, zero bot name hardcoding)
 	agentsBase := getAgentsDir()
-	agentDir := filepath.Join(agentsBase, "trickster_gobot", "scratch", "downloads")
-	if err := os.MkdirAll(agentDir, 0700); err == nil {
-		return agentDir
+	commonDir := filepath.Join(agentsBase, "common", "scratch", "downloads")
+	if err := os.MkdirAll(commonDir, 0700); err == nil {
+		return commonDir
 	}
 
-	// 3. Fallback to os.TempDir() / scratch / downloads
-	tmpDir := filepath.Join(os.TempDir(), "scratch", "downloads")
+	// 3. Fallback to os.TempDir() / antigravity-bot / scratch / downloads
+	tmpDir := filepath.Join(os.TempDir(), "antigravity-bot", "scratch", "downloads")
 	_ = os.MkdirAll(tmpDir, 0700)
 	return tmpDir
+}
+
+// RotateArtifactFiles prunes older response_*.md artifact files in dir,
+// keeping at most maxKeep newest files and pruning any files older than maxAge.
+func RotateArtifactFiles(dir string, maxKeep int, maxAge time.Duration) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+
+	type fileMeta struct {
+		name    string
+		modTime time.Time
+	}
+	var artifacts []fileMeta
+	now := time.Now()
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "response_") && strings.HasSuffix(name, ".md") {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			artifacts = append(artifacts, fileMeta{
+				name:    name,
+				modTime: info.ModTime(),
+			})
+		}
+	}
+
+	// Sort newest first
+	sort.Slice(artifacts, func(i, j int) bool {
+		return artifacts[i].modTime.After(artifacts[j].modTime)
+	})
+
+	removed := 0
+	for i, f := range artifacts {
+		shouldRemove := false
+		if maxAge > 0 && now.Sub(f.modTime) > maxAge {
+			shouldRemove = true
+		} else if maxKeep > 0 && i >= maxKeep {
+			shouldRemove = true
+		}
+
+		if shouldRemove {
+			fullPath := filepath.Join(dir, f.name)
+			if err := os.Remove(fullPath); err == nil {
+				removed++
+			}
+		}
+	}
+
+	return removed
 }
 
 // ExtractThinkingAndMarkdown extracts thinking / CoT blocks from raw model output,
@@ -344,9 +411,15 @@ func sendRichMessage(bot *tgbotapi.BotAPI, chatID int64, input any, markups ...*
 
 // sendAdaptiveResponse routes outbound responses across the Tri-Modal Delivery Architecture:
 // Tier 1 (Classic Bubble): < 3000 runes, no tables, no thoughts -> classic sendMessage (HTML).
-// Tier 2 (Rich Article): 3000..32768 runes, or contains tables/thoughts -> monolithic sendRichMessage.
+// Tier 2 (Rich Article): 3000..32768 runes, or contains tables/thoughts/large HTML -> monolithic sendRichMessage.
 // Tier 3 (Markdown Artifact): > 32768 runes -> preview summary via sendRichMessage + .md Telegram document.
 func sendAdaptiveResponse(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, text string, markups ...*tgbotapi.InlineKeyboardMarkup) []string {
+	return sendAdaptiveResponseWithWorkspace(bot, chatID, activeMsgID, text, "", markups...)
+}
+
+// sendAdaptiveResponseWithWorkspace routes outbound responses across the Tri-Modal Delivery Architecture
+// while respecting the session workspace for isolated artifact storage.
+func sendAdaptiveResponseWithWorkspace(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, text string, workspace string, markups ...*tgbotapi.InlineKeyboardMarkup) []string {
 	tier := DetermineDeliveryTier(text)
 
 	if bot == nil {
@@ -392,7 +465,9 @@ func sendAdaptiveResponse(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, t
 		}
 
 		// 3. Save full unclipped markdown to scratch/downloads/response_<timestamp>.md (0600)
-		artifactDir := getArtifactSaveDir()
+		artifactDir := getArtifactSaveDir(workspace)
+		RotateArtifactFiles(artifactDir, 20, 24*time.Hour)
+
 		timestamp := time.Now().UTC().Format("20060102_150405")
 		fileName := fmt.Sprintf("response_%s.md", timestamp)
 		filePath := filepath.Join(artifactDir, fileName)
