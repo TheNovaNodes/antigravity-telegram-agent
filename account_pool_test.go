@@ -1043,6 +1043,9 @@ func TestAccountState_String(t *testing.T) {
 	if StateCooldown.String() != "Cooldown" {
 		t.Errorf("expected Cooldown")
 	}
+	if StateFrozen.String() != "Frozen" {
+		t.Errorf("expected Frozen")
+	}
 	if StateExpired.String() != "Expired" {
 		t.Errorf("expected Expired")
 	}
@@ -1629,5 +1632,660 @@ func TestHandleAccountsCommand_DisabledQuotaDisplay(t *testing.T) {
 	expectedLine := "Gemini: 5h disabled • 7d 0%"
 	if !strings.Contains(text, expectedLine) {
 		t.Errorf("Expected dashboard to contain %q, but got:\n%s", expectedLine, text)
+	}
+}
+
+func TestAccountPool_FreezeUnfreezeLifecycle(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	pool.accounts["acc-1"] = &Account{
+		ID:          "acc-1",
+		Email:       "acc1@example.com",
+		HomeDir:     filepath.Join(tmpDir, "acc-1"),
+		State:       StateActive,
+		ActiveTurns: 5,
+	}
+	pool.accounts["acc-2"] = &Account{
+		ID:            "acc-2",
+		Email:         "acc2@example.com",
+		HomeDir:       filepath.Join(tmpDir, "acc-2"),
+		State:         StateCooldown,
+		CooldownUntil: time.Now().Add(1 * time.Hour),
+	}
+
+	pool.activeChat["trickster_gobot:123"] = "acc-1"
+
+	// Mock active session
+	sessionMu.Lock()
+	globalSessions["trickster_gobot:123:456"] = &AgySession{
+		AccountID:      "acc-1",
+		AccountHomeDir: filepath.Join(tmpDir, "acc-1"),
+		ChatID:         123,
+		BotName:        "trickster_gobot",
+	}
+	sessionMu.Unlock()
+
+	// 1. Freeze nonexistent account
+	if err := pool.FreezeAccount("nonexistent"); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("expected ErrAccountNotFound, got %v", err)
+	}
+
+	// 2. Freeze acc-1
+	if err := pool.FreezeAccount("acc-1"); err != nil {
+		t.Fatalf("unexpected error freezing acc-1: %v", err)
+	}
+
+	acc1, _ := pool.GetAccount("acc-1")
+	if acc1.State != StateFrozen {
+		t.Errorf("expected acc-1 to be StateFrozen, got %v", acc1.State)
+	}
+	if acc1.ActiveTurns != 0 {
+		t.Errorf("expected acc-1 ActiveTurns to be reset to 0, got %d", acc1.ActiveTurns)
+	}
+	if !acc1.CooldownUntil.IsZero() {
+		t.Errorf("expected acc-1 CooldownUntil to be zero, got %v", acc1.CooldownUntil)
+	}
+
+	// Verify activeChat mapping removed
+	pool.mu.RLock()
+	if _, exists := pool.activeChat["trickster_gobot:123"]; exists {
+		t.Errorf("expected activeChat mapping to be removed for frozen account")
+	}
+	pool.mu.RUnlock()
+
+	// Verify session evicted from globalSessions
+	sessionMu.Lock()
+	if _, exists := globalSessions["trickster_gobot:123:456"]; exists {
+		t.Errorf("expected globalSessions entry to be evicted")
+	}
+	sessionMu.Unlock()
+
+	// 3. Unfreeze nonexistent account
+	if err := pool.UnfreezeAccount("nonexistent"); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("expected ErrAccountNotFound on unfreeze, got %v", err)
+	}
+
+	// 4. Unfreeze account that is not frozen (acc-2 is StateCooldown)
+	if err := pool.UnfreezeAccount("acc-2"); err == nil || !strings.Contains(err.Error(), "is not frozen") {
+		t.Fatalf("expected error unfreezing non-frozen account, got %v", err)
+	}
+
+	// 5. Unfreeze acc-1 (should become StateActive)
+	if err := pool.UnfreezeAccount("acc-1"); err != nil {
+		t.Fatalf("unexpected error unfreezing acc-1: %v", err)
+	}
+	acc1, _ = pool.GetAccount("acc-1")
+	if acc1.State != StateActive {
+		t.Errorf("expected acc-1 to be StateActive after unfreeze, got %v", acc1.State)
+	}
+}
+
+func TestAccountPool_ReaperAndQuotaImmunityForFrozen(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	expiredTime := time.Now().Add(-1 * time.Hour)
+	pool.accounts["acc-frozen"] = &Account{
+		ID:            "acc-frozen",
+		Email:         "frozen@example.com",
+		HomeDir:       filepath.Join(tmpDir, "acc-frozen"),
+		State:         StateFrozen,
+		CooldownUntil: expiredTime,
+	}
+
+	// 1. StartBackgroundReaperWithInterval should NOT change StateFrozen even if CooldownUntil is expired
+	ctx, cancel := context.WithCancel(context.Background())
+	go pool.StartBackgroundReaperWithInterval(ctx, 10*time.Millisecond, nil)
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	acc, _ := pool.GetAccount("acc-frozen")
+	if acc.State != StateFrozen {
+		t.Fatalf("reaper violated administrative immunity: state changed to %v", acc.State)
+	}
+
+	// 2. MarkCooldown should NOT overwrite StateFrozen
+	pool.MarkCooldown("acc-frozen", 1*time.Hour)
+	acc, _ = pool.GetAccount("acc-frozen")
+	if acc.State != StateFrozen {
+		t.Fatalf("MarkCooldown violated administrative immunity: state changed to %v", acc.State)
+	}
+
+	// 3. ClearCooldown should return error on StateFrozen
+	err := pool.ClearCooldown("acc-frozen")
+	if err == nil || !strings.Contains(err.Error(), "administratively frozen") {
+		t.Fatalf("expected ClearCooldown to fail on frozen account, got: %v", err)
+	}
+
+	// 4. FetchAccountQuotas should update quota but NEVER change State or CooldownUntil of StateFrozen
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	usageJSON := `{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.0,"reset_time":"2026-10-02T22:00:00Z"}]}]}}}`
+	script := fmt.Sprintf("#!/bin/sh\necho '%s'\n", usageJSON)
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to write mock script: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	q, err := pool.FetchAccountQuotas("acc-frozen")
+	if err != nil {
+		t.Fatalf("FetchAccountQuotas returned unexpected error: %v", err)
+	}
+	if q.Gemini5h.RemainingFraction != 0.0 {
+		t.Errorf("expected 0.0 remaining fraction, got %f", q.Gemini5h.RemainingFraction)
+	}
+	acc, _ = pool.GetAccount("acc-frozen")
+	if acc.State != StateFrozen {
+		t.Fatalf("FetchAccountQuotas violated administrative immunity: state changed to %v", acc.State)
+	}
+}
+
+func TestAccountPool_DeleteAccount_PathTraversalProtection(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	// 1. Nonexistent account
+	if err := pool.DeleteAccount("ghost", false); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("expected ErrAccountNotFound, got %v", err)
+	}
+
+	// 2. In-use account cannot be deleted
+	pool.accounts["acc-inuse"] = &Account{
+		ID:      "acc-inuse",
+		HomeDir: filepath.Join(tmpDir, "acc-inuse"),
+		State:   StateInUse,
+	}
+	if err := pool.DeleteAccount("acc-inuse", false); err == nil || !strings.Contains(err.Error(), "currently in-use") {
+		t.Fatalf("expected in-use error, got: %v", err)
+	}
+
+	// 3. Path traversal attack: HomeDir equals pool accountsDir
+	pool.accounts["acc-dir-equal"] = &Account{
+		ID:      "acc-dir-equal",
+		HomeDir: tmpDir,
+		State:   StateActive,
+	}
+	if err := pool.DeleteAccount("acc-dir-equal", false); err == nil || !strings.Contains(err.Error(), "security violation") {
+		t.Fatalf("expected security violation for pool accountsDir, got: %v", err)
+	}
+
+	// 4. Path traversal attack: HomeDir escapes accountsDir with ..
+	pool.accounts["acc-traversal"] = &Account{
+		ID:      "acc-traversal",
+		HomeDir: filepath.Clean(filepath.Join(tmpDir, "..", "secret")),
+		State:   StateActive,
+	}
+	if err := pool.DeleteAccount("acc-traversal", false); err == nil || !strings.Contains(err.Error(), "security violation") {
+		t.Fatalf("expected security violation for escaping path, got: %v", err)
+	}
+
+	// 5. Path traversal attack: HomeDir is root /
+	pool.accounts["acc-root"] = &Account{
+		ID:      "acc-root",
+		HomeDir: "/",
+		State:   StateActive,
+	}
+	if err := pool.DeleteAccount("acc-root", false); err == nil || !strings.Contains(err.Error(), "security violation") {
+		t.Fatalf("expected security violation for root path, got: %v", err)
+	}
+}
+
+func TestAccountPool_DeleteAccount_PreservesCentralSharedStorage(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	// Central shared directory that MUST NEVER BE DELETED
+	centralShared := t.TempDir()
+	sharedFile := filepath.Join(centralShared, "persistent_conversations.json")
+	if err := os.WriteFile(sharedFile, []byte("vital central data"), 0600); err != nil {
+		t.Fatalf("failed to create shared file: %v", err)
+	}
+
+	// Account 1 directory inside accountsDir
+	acc1Dir := filepath.Join(tmpDir, "acc-purge")
+	if err := os.MkdirAll(acc1Dir, 0700); err != nil {
+		t.Fatalf("failed to create acc1Dir: %v", err)
+	}
+	acc1LocalFile := filepath.Join(acc1Dir, "token.json")
+	_ = os.WriteFile(acc1LocalFile, []byte("token"), 0600)
+	// Symlink to central shared storage
+	symlinkPath := filepath.Join(acc1Dir, "conversations")
+	if err := os.Symlink(centralShared, symlinkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	pool.accounts["acc-purge"] = &Account{
+		ID:      "acc-purge",
+		HomeDir: acc1Dir,
+		State:   StateActive,
+	}
+	pool.pinnedChat["trickster:101"] = "acc-purge"
+	pool.activeChat["trickster:101"] = "acc-purge"
+
+	// Add in-memory session for acc-purge
+	sessionMu.Lock()
+	globalSessions["sess:purge"] = &AgySession{
+		AccountID: "acc-purge",
+	}
+	sessionMu.Unlock()
+
+	// Execute Delete with purgeStorage = true
+	if err := pool.DeleteAccount("acc-purge", true); err != nil {
+		t.Fatalf("DeleteAccount failed: %v", err)
+	}
+
+	// 1. Verify pool state
+	if _, exists := pool.accounts["acc-purge"]; exists {
+		t.Errorf("expected acc-purge to be removed from accounts map")
+	}
+	if _, exists := pool.pinnedChat["trickster:101"]; exists {
+		t.Errorf("expected acc-purge to be removed from pinnedChat")
+	}
+	if _, exists := pool.activeChat["trickster:101"]; exists {
+		t.Errorf("expected acc-purge to be removed from activeChat")
+	}
+
+	// 2. Verify session evicted
+	sessionMu.Lock()
+	if _, exists := globalSessions["sess:purge"]; exists {
+		t.Errorf("expected sess:purge to be evicted from globalSessions")
+	}
+	sessionMu.Unlock()
+
+	// 3. Verify acc1Dir is purged from disk
+	if _, err := os.Stat(acc1Dir); !os.IsNotExist(err) {
+		t.Errorf("expected acc1Dir to be deleted, but still exists")
+	}
+
+	// 4. CRITICAL: Central shared directory must still exist and be intact!
+	if content, err := os.ReadFile(sharedFile); err != nil || string(content) != "vital central data" {
+		t.Fatalf("FATAL: Central shared storage was corrupted or deleted! err: %v, content: %s", err, string(content))
+	}
+
+	// 5. Test Delete with purgeStorage = false (Keep Storage)
+	acc2Dir := filepath.Join(tmpDir, "acc-keep")
+	if err := os.MkdirAll(acc2Dir, 0700); err != nil {
+		t.Fatalf("failed to create acc2Dir: %v", err)
+	}
+	acc2File := filepath.Join(acc2Dir, "settings.json")
+	_ = os.WriteFile(acc2File, []byte("settings"), 0600)
+
+	pool.accounts["acc-keep"] = &Account{
+		ID:      "acc-keep",
+		HomeDir: acc2Dir,
+		State:   StateActive,
+	}
+
+	if err := pool.DeleteAccount("acc-keep", false); err != nil {
+		t.Fatalf("DeleteAccount without purge failed: %v", err)
+	}
+	if _, exists := pool.accounts["acc-keep"]; exists {
+		t.Errorf("expected acc-keep to be removed from pool")
+	}
+	// Storage directory should remain on disk
+	if _, err := os.Stat(acc2File); err != nil {
+		t.Errorf("expected acc2Dir to be preserved on disk, but stat failed: %v", err)
+	}
+}
+
+func TestAccountPool_AcquireBypassesFrozen(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	pool.accounts["acc-frozen"] = &Account{
+		ID:       "acc-frozen",
+		Email:    "frozen@example.com",
+		HomeDir:  filepath.Join(tmpDir, "acc-frozen"),
+		State:    StateFrozen,
+		LastUsed: time.Now().Add(-10 * time.Hour), // Very old LRU
+	}
+	pool.accounts["acc-active"] = &Account{
+		ID:       "acc-active",
+		Email:    "active@example.com",
+		HomeDir:  filepath.Join(tmpDir, "acc-active"),
+		State:    StateActive,
+		LastUsed: time.Now(),
+	}
+
+	// 1. Dynamic pool acquire must bypass frozen even if LRU is older
+	acc, err := pool.AcquireAccount(100)
+	if err != nil {
+		t.Fatalf("AcquireAccount failed: %v", err)
+	}
+	if acc.ID != "acc-active" {
+		t.Errorf("expected acc-active, got %s", acc.ID)
+	}
+
+	// 2. Pinned to frozen account fails
+	pool.pinnedChat["200"] = "acc-frozen"
+	_, err = pool.AcquireAccount(200)
+	if err == nil || !errors.Is(err, ErrAccountFrozen) {
+		t.Fatalf("expected ErrAccountFrozen for pinned chat, got %v", err)
+	}
+
+	// 3. Switch to frozen account fails
+	err = pool.SwitchAccount(300, "acc-frozen")
+	if err == nil || !errors.Is(err, ErrAccountFrozen) {
+		t.Fatalf("expected ErrAccountFrozen on SwitchAccount, got %v", err)
+	}
+
+	// 4. When all active accounts are frozen, acquire returns exhaustion
+	pool.accounts["acc-active"].State = StateFrozen
+	_, err = pool.AcquireAccount(100)
+	if err == nil || !errors.Is(err, ErrNoAccountsAvailable) {
+		t.Fatalf("expected ErrNoAccountsAvailable, got %v", err)
+	}
+}
+
+func TestSession_StartReacquiresOnFrozen(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	script := "#!/bin/sh\nexec cat\n"
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to write mock agy: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	home1 := filepath.Join(tmpDir, "acc-1")
+	home2 := filepath.Join(tmpDir, "acc-2")
+	_ = os.MkdirAll(home1, 0755)
+	_ = os.MkdirAll(home2, 0755)
+
+	pool.accounts["acc-1"] = &Account{
+		ID:      "acc-1",
+		Email:   "acc1@example.com",
+		HomeDir: home1,
+		State:   StateFrozen, // Administratively frozen!
+	}
+	pool.accounts["acc-2"] = &Account{
+		ID:       "acc-2",
+		Email:    "acc2@example.com",
+		HomeDir:  home2,
+		State:    StateActive,
+		LastUsed: time.Now().Add(-1 * time.Hour),
+	}
+
+	s := &AgySession{
+		AccountID:      "acc-1",
+		AccountHomeDir: home1,
+		ChatID:         7777,
+		BotName:        "trickster_gobot",
+		Conversation:   "conv-test-frozen",
+	}
+
+	// Calling start() should detect that acc-1 is frozen and auto-reacquire acc-2!
+	if err := s.start(); err != nil {
+		t.Fatalf("s.start() failed: %v", err)
+	}
+	defer s.Kill()
+
+	s.mu.Lock()
+	newAccID := s.AccountID
+	s.mu.Unlock()
+
+	if newAccID != "acc-2" {
+		t.Errorf("Expected session to re-acquire acc-2, got %s", newAccID)
+	}
+}
+
+func TestHandleAccountsCommand_FreezeUnfreezeDelete(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	h1 := filepath.Join(poolDir, "acc-f1")
+	h2 := filepath.Join(poolDir, "acc-f2")
+	_ = os.MkdirAll(h1, 0755)
+	_ = os.MkdirAll(h2, 0755)
+
+	pool.accounts["acc-f1"] = &Account{
+		ID:      "acc-f1",
+		Email:   "f1@novanodes.com",
+		HomeDir: h1,
+		State:   StateActive,
+	}
+	pool.accounts["acc-f2"] = &Account{
+		ID:      "acc-f2",
+		Email:   "f2@novanodes.com",
+		HomeDir: h2,
+		State:   StateActive,
+	}
+
+	// 1. Freeze missing arg
+	handleAccountsCommand(bot, 12345, 999, "/accounts freeze", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Usage: <code>/accounts freeze") {
+		t.Errorf("expected freeze usage message")
+	}
+
+	// 2. Freeze nonexistent
+	handleAccountsCommand(bot, 12345, 999, "/accounts freeze ghost", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Failed to freeze account") {
+		t.Errorf("expected freeze failure for ghost")
+	}
+
+	// 3. Freeze acc-f1
+	handleAccountsCommand(bot, 12345, 999, "/accounts freeze acc-f1", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Account Frozen:") {
+		t.Errorf("expected account frozen confirmation")
+	}
+	if pool.accounts["acc-f1"].State != StateFrozen {
+		t.Errorf("expected acc-f1 state to be StateFrozen")
+	}
+
+	// 4. Unfreeze missing arg
+	handleAccountsCommand(bot, 12345, 999, "/accounts unfreeze", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Usage: <code>/accounts unfreeze") {
+		t.Errorf("expected unfreeze usage message")
+	}
+
+	// 5. Unfreeze nonexistent
+	handleAccountsCommand(bot, 12345, 999, "/accounts unfreeze ghost", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Failed to unfreeze account") {
+		t.Errorf("expected unfreeze failure for ghost")
+	}
+
+	// 6. Unfreeze acc-f1
+	handleAccountsCommand(bot, 12345, 999, "/accounts unfreeze acc-f1", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Account Unfrozen:") {
+		t.Errorf("expected account unfrozen confirmation")
+	}
+	if pool.accounts["acc-f1"].State != StateActive {
+		t.Errorf("expected acc-f1 state to be StateActive")
+	}
+
+	// 7. Delete missing arg
+	handleAccountsCommand(bot, 12345, 999, "/accounts delete", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Usage: <code>/accounts delete") {
+		t.Errorf("expected delete usage message")
+	}
+
+	// 8. Delete nonexistent
+	handleAccountsCommand(bot, 12345, 999, "/accounts delete ghost", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Failed to delete account") {
+		t.Errorf("expected delete failure for ghost")
+	}
+
+	// 9. Delete acc-f1 (without purge)
+	handleAccountsCommand(bot, 12345, 999, "/accounts delete acc-f1", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "Account Deleted:") || !strings.Contains(helper.getLastSentText(), "storage preserved") {
+		t.Errorf("expected account deleted with storage preserved message")
+	}
+	if _, exists := pool.accounts["acc-f1"]; exists {
+		t.Errorf("expected acc-f1 removed from pool")
+	}
+	if _, err := os.Stat(h1); os.IsNotExist(err) {
+		t.Errorf("expected storage directory h1 to still exist")
+	}
+
+	// 10. Delete acc-f2 (with purge)
+	handleAccountsCommand(bot, 12345, 999, "/accounts delete acc-f2 purge", "TestBot", db)
+	if !strings.Contains(helper.getLastSentText(), "permanently purged") {
+		t.Errorf("expected permanently purged confirmation")
+	}
+	if _, exists := pool.accounts["acc-f2"]; exists {
+		t.Errorf("expected acc-f2 removed from pool")
+	}
+	if _, err := os.Stat(h2); !os.IsNotExist(err) {
+		t.Errorf("expected storage directory h2 to be purged")
+	}
+}
+
+func TestHandleAccountCallbackQuery_FreezeUnfreezeDelete(t *testing.T) {
+	db, bot, helper := setupTestDBAndBot(t)
+	defer helper.Close()
+	defer db.Close()
+
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	h1 := filepath.Join(poolDir, "acc-cb1")
+	h2 := filepath.Join(poolDir, "acc-cb2")
+	_ = os.MkdirAll(h1, 0755)
+	_ = os.MkdirAll(h2, 0755)
+
+	pool.accounts["acc-cb1"] = &Account{
+		ID:      "acc-cb1",
+		Email:   "cb1@novanodes.com",
+		HomeDir: h1,
+		State:   StateActive,
+	}
+	pool.accounts["acc-cb2"] = &Account{
+		ID:      "acc-cb2",
+		Email:   "cb2@novanodes.com",
+		HomeDir: h2,
+		State:   StateFrozen,
+	}
+
+	// 1. Freeze callback
+	cbFreeze := &tgbotapi.CallbackQuery{
+		ID:   "cb_frz",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 501,
+		},
+		Data: "acc:freeze:acc-cb1",
+	}
+	if !handleAccountCallbackQuery(bot, cbFreeze, "TestBot", db) {
+		t.Fatalf("freeze callback failed")
+	}
+	if pool.accounts["acc-cb1"].State != StateFrozen {
+		t.Errorf("expected acc-cb1 to be StateFrozen")
+	}
+
+	// 2. Unfreeze callback
+	cbUnfreeze := &tgbotapi.CallbackQuery{
+		ID:   "cb_unfrz",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 502,
+		},
+		Data: "acc:unfreeze:acc-cb1",
+	}
+	if !handleAccountCallbackQuery(bot, cbUnfreeze, "TestBot", db) {
+		t.Fatalf("unfreeze callback failed")
+	}
+	if pool.accounts["acc-cb1"].State != StateActive {
+		t.Errorf("expected acc-cb1 to be StateActive")
+	}
+
+	// 3. Delete confirm callback
+	cbDelConfirm := &tgbotapi.CallbackQuery{
+		ID:   "cb_del_conf",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 503,
+		},
+		Data: "acc:del_confirm:acc-cb1",
+	}
+	if !handleAccountCallbackQuery(bot, cbDelConfirm, "TestBot", db) {
+		t.Fatalf("del_confirm callback failed")
+	}
+	foundConfirm := false
+	helper.mu.Lock()
+	for _, req := range *helper.sent {
+		vals, _ := url.ParseQuery(req)
+		if strings.Contains(vals.Get("text"), "Confirm Deletion of Account") {
+			foundConfirm = true
+			break
+		}
+	}
+	helper.mu.Unlock()
+	if !foundConfirm {
+		t.Errorf("expected confirm deletion prompt in sent requests")
+	}
+
+	// 4. Delete cancel callback
+	cbDelCancel := &tgbotapi.CallbackQuery{
+		ID:   "cb_del_cancel",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 504,
+		},
+		Data: "acc:del_cancel",
+	}
+	if !handleAccountCallbackQuery(bot, cbDelCancel, "TestBot", db) {
+		t.Fatalf("del_cancel callback failed")
+	}
+
+	// 5. Delete exec keep callback
+	cbDelKeep := &tgbotapi.CallbackQuery{
+		ID:   "cb_del_keep",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 505,
+		},
+		Data: "acc:del_exec:acc-cb1:keep",
+	}
+	if !handleAccountCallbackQuery(bot, cbDelKeep, "TestBot", db) {
+		t.Fatalf("del_exec keep callback failed")
+	}
+	if _, exists := pool.accounts["acc-cb1"]; exists {
+		t.Errorf("expected acc-cb1 to be deleted from pool")
+	}
+	if _, err := os.Stat(h1); os.IsNotExist(err) {
+		t.Errorf("expected h1 storage to be preserved")
+	}
+
+	// 6. Delete exec purge callback
+	cbDelPurge := &tgbotapi.CallbackQuery{
+		ID:   "cb_del_purge",
+		From: &tgbotapi.User{ID: 999},
+		Message: &tgbotapi.Message{
+			Chat:      &tgbotapi.Chat{ID: 12345},
+			MessageID: 506,
+		},
+		Data: "acc:del_exec:acc-cb2:purge",
+	}
+	if !handleAccountCallbackQuery(bot, cbDelPurge, "TestBot", db) {
+		t.Fatalf("del_exec purge callback failed")
+	}
+	if _, exists := pool.accounts["acc-cb2"]; exists {
+		t.Errorf("expected acc-cb2 to be deleted from pool")
+	}
+	if _, err := os.Stat(h2); !os.IsNotExist(err) {
+		t.Errorf("expected h2 storage to be purged")
 	}
 }
