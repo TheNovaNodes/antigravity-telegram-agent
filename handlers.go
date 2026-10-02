@@ -413,7 +413,8 @@ func handleModelCommand(bot *tgbotapi.BotAPI, chatID int64) {
 
 	var rows [][]tgbotapi.InlineKeyboardButton
 	if len(cachedModels) == 0 {
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.7 Flash High", "model:gemini-3.7-flash-high")))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.8 Flash High", "model:gemini-3.8-flash-high")))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⚡ 3.8 Flash Medium", "model:gemini-3.8-flash-medium")))
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧠 3.1 Pro High", "model:gemini-3.1-pro-high")))
 	} else {
 		for _, m := range cachedModels {

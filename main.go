@@ -131,6 +131,12 @@ func main() {
 		log.Printf("[AccountPool] Warning: failed to initialize account pool: %v", poolErr)
 	} else {
 		log.Printf("[AccountPool] Initialized successfully with %d accounts", len(GlobalAccountPool.ListAccounts()))
+		modelsMu.RLock()
+		modelCount := len(availableModels)
+		modelsMu.RUnlock()
+		if modelCount == 0 {
+			fetchModels()
+		}
 		var reaperCtx context.Context
 		reaperCtx, reaperCancel = context.WithCancel(context.Background())
 		go GlobalAccountPool.StartBackgroundReaper(reaperCtx, func(acc *Account) {
