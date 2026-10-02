@@ -270,6 +270,7 @@ flowchart LR
    - **Adaptive Dispatcher (`sendAdaptiveResponse`):** Evaluates responses via `ShouldUseRichMessage(text)`. For compact messages ($\le 4000$ runes without tables), classic `sendMessage` is preserved. When text $> 4000$ runes or contains tables, `sendRichMessage` is called.
    - **Graceful Degradation:** Any Bot API or network error during `sendRichMessage` triggers automatic fallback to classic `SplitHTMLChunks(4000)` + `sendMessage`, ensuring 0% message delivery loss.
    - **Hard Sanitization Limit:** Strict UTF-8 rune sanitization (`SanitizeRichMessageText`) clamps text to 32,768 runes.
+   - **Early Disarm & Deduplication Guard:** Prior to `sendAdaptiveResponse` execution, `s.ActiveMessageID` is atomically zeroed (`Early Disarm`) under `s.mu.Lock()` to prevent background streaming throttler ticks from editing the obsolete streaming draft. `s.ActiveTurnStart` is kept active throughout adaptive delivery and artifact dispatch to preserve GC immunity (`ActiveTurnProtection`). In `sendChunk`, errors such as `message to edit not found`, `message can't be edited`, and `message is not modified` suppress secondary message creation, preventing ghost message duplicates in Telegram chats.
 
 ---
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Rich Message Deduplication & Streaming Finalization Race Fix (Issue #340)
+- **Elimination of Race Condition & Duplicate Messages in Rich Message Finalization (Issue #340)**:
+  - Implemented **Early Disarm** in `session.go`: atomically zero out `s.ActiveMessageID = 0` under `s.mu.Lock()` *before* invoking `sendAdaptiveResponse`, preventing concurrent streaming throttler ticks from editing or sending obsolete draft messages.
+  - Guaranteed **Active Turn Immunity** in `session.go`: maintained `s.ActiveTurnStart` active throughout the entire adaptive dispatch and artifact delivery phase, protecting the in-flight turn from aggressive memory GC eviction until finalization finishes.
+  - Hardened `sendChunk` in `handlers.go`: suppressed fallback to `newMsg` when Telegram returns `Bad Request: message to edit not found`, `message can't be edited`, or `message is not modified`, completely eliminating ghost/duplicate message delivery. Fallback to `newMsg` is strictly reserved for genuine markup entity formatting errors.
+  - Added comprehensive L1 unit tests in `handlers_test.go` (`TestStrictTelegram_MessageToEditNotFoundSuppressed` and updated `TestStrictTelegram_EditFailureTriggersNewMessageFallback`).
+  - Added race-detector verified tests in `session_test.go` (`TestSession_StreamingThrottler_RaceWithRichMessageFinalization` and `TestSession_FinalizeTurn_EarlyDisarmAndActiveTurnProtection`) confirming 0 data races, 0 duplicate messages, and 100% active turn protection.
+
 ### Telegram RichMessage & Native Tables Support (Issue #336)
 - **Telegram RichMessage Format & Native Tables (Issue #336)**:
   - Implemented `InputRichMessage` and `RichBlockThinking` structures in `rich_message.go`.
