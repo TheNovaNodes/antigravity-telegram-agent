@@ -1610,6 +1610,27 @@ func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
 		payload.FileID = msg.VideoNote.FileID
 		payload.Ext = ".mp4"
 		payload.OriginalFileName = fmt.Sprintf("videonote_%d.mp4", msg.MessageID)
+	} else if msg.Sticker != nil {
+		stickerEmoji := strings.TrimSpace(msg.Sticker.Emoji)
+		if stickerEmoji == "" {
+			stickerEmoji = "🎨"
+		}
+		setName := strings.TrimSpace(msg.Sticker.SetName)
+		var stickerContext string
+		if setName != "" {
+			stickerContext = fmt.Sprintf("[Пользователь отправил стикер: %s (набор: %s)]", stickerEmoji, setName)
+		} else {
+			stickerContext = fmt.Sprintf("[Пользователь отправил стикер: %s]", stickerEmoji)
+		}
+		accompanying := payload.Text
+		if accompanying == "" {
+			accompanying = payload.Caption
+		}
+		if accompanying != "" {
+			payload.Text = stickerContext + "\n" + accompanying
+		} else {
+			payload.Text = stickerContext
+		}
 	}
 
 	return payload
@@ -1644,7 +1665,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	payload := extractInboundPayload(msg)
 
 	if payload.Text == "" && payload.Caption == "" && payload.FileID == "" {
-		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Stickers, contacts, and locations are not supported. Please send text, photo, document, voice message, or video note."))
+		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Contacts and locations are not supported. Please send text, photo, document, voice message, video note, or sticker."))
 		return
 	}
 

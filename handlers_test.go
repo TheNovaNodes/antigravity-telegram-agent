@@ -204,7 +204,7 @@ func TestHandleUpdate_UnsupportedMedia(t *testing.T) {
 	foundWarning := false
 	for _, body := range ms.sentBodies {
 		unescaped, _ := url.QueryUnescape(body)
-		if strings.Contains(unescaped, "Stickers, contacts, and locations are not supported") {
+		if strings.Contains(unescaped, "Contacts and locations are not supported") {
 			foundWarning = true
 			break
 		}
@@ -330,6 +330,65 @@ func TestExtractInboundPayload(t *testing.T) {
 			t.Errorf("Unexpected video note payload: %+v", p)
 		}
 	})
+
+	t.Run("sticker with emoji and set name", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Sticker: &tgbotapi.Sticker{
+				FileID:  "stk1",
+				Emoji:   "🚀",
+				SetName: "SpacePack",
+			},
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь отправил стикер: 🚀 (набор: SpacePack)]"
+		if p.Text != expected || p.FileID != "" || p.IsVoice {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
+
+	t.Run("sticker without set name", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Sticker: &tgbotapi.Sticker{
+				FileID: "stk2",
+				Emoji:  "👍",
+			},
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь отправил стикер: 👍]"
+		if p.Text != expected || p.FileID != "" {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
+
+	t.Run("sticker without emoji fallback", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Sticker: &tgbotapi.Sticker{
+				FileID:  "stk3",
+				SetName: "AbstractPack",
+			},
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь отправил стикер: 🎨 (набор: AbstractPack)]"
+		if p.Text != expected || p.FileID != "" {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
+
+	t.Run("sticker with accompanying text or caption", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Sticker: &tgbotapi.Sticker{
+				FileID:  "stk4",
+				Emoji:   "🔥",
+				SetName: "FirePack",
+			},
+			Caption: "Look at this deployment",
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь отправил стикер: 🔥 (набор: FirePack)]\nLook at this deployment"
+		if p.Text != expected || p.FileID != "" {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
 }
 
 func TestHandleUpdate_VideoNote(t *testing.T) {
@@ -411,6 +470,52 @@ func TestHandleUpdate_VideoNote(t *testing.T) {
 	}
 	if !foundMP4 {
 		t.Errorf("Did not find downloaded .mp4 file in %s", downloadsDir)
+	}
+}
+
+func TestHandleUpdate_Sticker(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	update := tgbotapi.Update{
+		UpdateID: 401,
+		Message: &tgbotapi.Message{
+			MessageID: 88,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+			Sticker: &tgbotapi.Sticker{
+				FileID:  "stk_123",
+				Emoji:   "🚀",
+				SetName: "LaunchSet",
+			},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	if session != nil {
+		defer session.Kill()
+	}
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Contacts and locations are not supported") {
+			t.Errorf("Sticker triggered unsupported media warning: %s", body)
+		}
 	}
 }
 
@@ -776,38 +881,51 @@ func TestHotModelSwap_ConcurrentSwaps_ThreadSafety(t *testing.T) {
 	const concurrency = 10
 	done := make(chan bool, concurrency)
 
+	type testUserSetup struct {
+		userID        int64
+		chatID        int64
+		newModel      string
+		origSessionID string
+	}
+	setups := make([]testUserSetup, concurrency)
+	for i := 0; i < concurrency; i++ {
+		userID := int64(2000 + i)
+		chatID := int64(3000 + i)
+		u := getUser(db, userID, "TestMockBot")
+		setups[i] = testUserSetup{
+			userID:        userID,
+			chatID:        chatID,
+			newModel:      fmt.Sprintf("model-tier-%d", i%3),
+			origSessionID: u.SessionID,
+		}
+	}
+
 	for i := 0; i < concurrency; i++ {
 		go func(idx int) {
-			userID := int64(2000 + idx)
-			chatID := int64(3000 + idx)
-			newModel := fmt.Sprintf("model-tier-%d", idx%3)
-
-			// Setup initial user
-			u := getUser(db, userID, "TestMockBot")
-			origSessionID := u.SessionID
+			s := setups[idx]
 
 			// Dispatch swap callback
 			cbUpdate := tgbotapi.Update{
 				UpdateID: idx,
 				CallbackQuery: &tgbotapi.CallbackQuery{
 					ID:   fmt.Sprintf("cb_%d", idx),
-					From: &tgbotapi.User{ID: userID},
+					From: &tgbotapi.User{ID: s.userID},
 					Message: &tgbotapi.Message{
 						MessageID: 50,
-						Chat:      &tgbotapi.Chat{ID: chatID},
+						Chat:      &tgbotapi.Chat{ID: s.chatID},
 					},
-					Data: "model:" + newModel,
+					Data: "model:" + s.newModel,
 				},
 			}
 			handleUpdate(bot, cbUpdate, db)
 
 			// Assert preservation
-			afterUser := getUser(db, userID, "TestMockBot")
-			if afterUser.SessionID != origSessionID {
-				t.Errorf("User %d: Expected SessionID %s, got %s", userID, origSessionID, afterUser.SessionID)
+			afterUser := getUser(db, s.userID, "TestMockBot")
+			if afterUser.SessionID != s.origSessionID {
+				t.Errorf("User %d: Expected SessionID %s, got %s", s.userID, s.origSessionID, afterUser.SessionID)
 			}
-			if afterUser.Model != newModel {
-				t.Errorf("User %d: Expected model %s, got %s", userID, newModel, afterUser.Model)
+			if afterUser.Model != s.newModel {
+				t.Errorf("User %d: Expected model %s, got %s", s.userID, s.newModel, afterUser.Model)
 			}
 
 			done <- true
