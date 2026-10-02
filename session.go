@@ -1779,23 +1779,7 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 					}
 				}
 				if s.BotAPI != nil {
-					if activeMsgID == 0 {
-						chunks := SplitHTMLChunks(MarkdownToTelegramHTML(response), 4000)
-						for _, chunk := range chunks {
-							msg := tgbotapi.NewMessage(s.ChatID, chunk)
-							msg.ParseMode = "HTML"
-							s.BotAPI.Send(msg)
-						}
-					} else {
-						chunks := sendChunk(s.BotAPI, s.ChatID, activeMsgID, response)
-						if len(chunks) > 1 {
-							for i := 1; i < len(chunks); i++ {
-								msg := tgbotapi.NewMessage(s.ChatID, chunks[i])
-								msg.ParseMode = "HTML"
-								s.BotAPI.Send(msg)
-							}
-						}
-					}
+					sendAdaptiveResponse(s.BotAPI, s.ChatID, activeMsgID, response)
 					sendArtifacts(s.BotAPI, s.ChatID, response, s.Workspace)
 				}
 

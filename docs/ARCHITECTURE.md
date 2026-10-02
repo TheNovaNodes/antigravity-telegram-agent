@@ -263,6 +263,13 @@ flowchart LR
 4. **Notice Delimiters & Telegram HTML Rendering**:
    - System notices (watchdog stalls, truncations, user interruptions) are delimited using pure Markdown (`_[...]_`).
    - `MarkdownToTelegramHTML` properly escapes raw angle brackets before converting Markdown delimiters into compliant Telegram `<i>...</i>` tags, preventing literal `&lt;i&gt;` text rendering.
+5. **Rich Message Engine (`sendRichMessage`) & Adaptive Routing**:
+   - **Monolithic Article Delivery:** Delivers responses up to **32,768 UTF-8 characters** as a single rich article, eliminating disruptive multi-message cascade splitting.
+   - **Native Telegram Tables:** Markdown tables (`| ... |`) are delivered in raw Markdown directly via `rich_message.markdown`, rendering as native adaptive rounded cards on mobile and desktop clients without monospace `<pre>` distortion.
+   - **Chain-of-Thought (CoT) Packaging:** LLM reasoning blocks (`<thought>`, `<think>`, `<thinking>`) are parsed and packaged into `RichBlockThinking{Collapsed: true}`, isolating background thoughts into clean collapsible sections.
+   - **Adaptive Dispatcher (`sendAdaptiveResponse`):** Evaluates responses via `ShouldUseRichMessage(text)`. For compact messages ($\le 4000$ runes without tables), classic `sendMessage` is preserved. When text $> 4000$ runes or contains tables, `sendRichMessage` is called.
+   - **Graceful Degradation:** Any Bot API or network error during `sendRichMessage` triggers automatic fallback to classic `SplitHTMLChunks(4000)` + `sendMessage`, ensuring 0% message delivery loss.
+   - **Hard Sanitization Limit:** Strict UTF-8 rune sanitization (`SanitizeRichMessageText`) clamps text to 32,768 runes.
 
 ---
 

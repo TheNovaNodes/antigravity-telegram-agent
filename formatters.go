@@ -161,6 +161,15 @@ func MarkdownToTelegramHTML(text string) string {
 		return createPlaceholder(formatted)
 	})
 
+	reThought := regexp.MustCompile(`(?is)<thought>(.*?)(?:</thought>|$)`)
+	text = reThought.ReplaceAllStringFunc(text, func(m string) string {
+		subs := reThought.FindStringSubmatch(m)
+		body := strings.TrimSpace(subs[1])
+		escaped := escapeHTML(body)
+		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
+		return createPlaceholder(formatted)
+	})
+
 	// 2. Fenced Code Blocks
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
