@@ -1840,7 +1840,7 @@ func TestTylerAudit_DispatchUpdate_ReusedTimer(t *testing.T) {
 	delete(chatQueues, testChatID)
 	chatQueuesMu.Unlock()
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}
@@ -2079,7 +2079,7 @@ func TestDispatchUpdate_IdleWorkerEviction(t *testing.T) {
 	}
 
 	// Create in-memory DB
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}

@@ -1117,7 +1117,7 @@ func TestTruncateUTF8Bytes(t *testing.T) {
 }
 
 func TestHandleCommand_PrefixCollisionProtection(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}
@@ -1189,7 +1189,7 @@ func TestHandleExportCommand_EmptySessionID_NoPanic(t *testing.T) {
 }
 
 func TestHandleClearCommand_FreshSession(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}

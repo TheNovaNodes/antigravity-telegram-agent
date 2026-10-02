@@ -297,7 +297,7 @@ func TestHandleWorkspaceCommand_Security(t *testing.T) {
 	t.Setenv("PROJECTS_DIR", projectsDir)
 	t.Setenv("AGENTS_DIR", agentsDir)
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}

@@ -247,7 +247,6 @@ func GenerateVoicePiperTTS(text string, modelPath string) ([]byte, string, error
 	defer cancel()
 
 	// 1. Run Piper -> WAV output
-	// #nosec G204 -- gosec:nri (Need Review)
 	piperCmd := exec.CommandContext(ctx, piperPath, "-m", modelPath, "-f", "-")
 	piperCmd.WaitDelay = 2 * time.Second
 	piperCmd.Env = buildChildEnv("")
@@ -268,7 +267,6 @@ func GenerateVoicePiperTTS(text string, modelPath string) ([]byte, string, error
 
 	// 2. Transcode to OGG Opus via opusenc if available, otherwise return WAV
 	if opusencPath, err := exec.LookPath("opusenc"); err == nil {
-		// #nosec G204 -- gosec:nri (Need Review)
 		opusCmd := exec.CommandContext(ctx, opusencPath, "--quiet", "-", "-")
 		opusCmd.WaitDelay = 2 * time.Second
 		opusCmd.Env = buildChildEnv("")
@@ -334,7 +332,6 @@ func GenerateVoiceElevenLabs(text string) ([]byte, string, error) {
 	timeoutAttempts := 0
 
 	for _, apiKey := range shuffledKeys {
-		// #nosec G704 -- gosec:nri (Need Review)
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyData))
 		if err != nil {
 			lastErr = err
@@ -345,7 +342,6 @@ func GenerateVoiceElevenLabs(text string) ([]byte, string, error) {
 		req.Header.Add("Content-Type", "application/json")
 		req.Header.Add("Accept", "audio/mpeg")
 
-		// #nosec G704 -- gosec:nri (Need Review)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err

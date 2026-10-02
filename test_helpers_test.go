@@ -98,7 +98,7 @@ func (h *httptestServerHelper) getLastSentText() string {
 
 func setupTestDB(t *testing.T) *sql.DB {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}

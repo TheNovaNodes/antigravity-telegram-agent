@@ -174,7 +174,6 @@ func ensureSymlink(targetDir, symlinkPath string) error {
 		return nil
 	}
 	// Guarantee target directory exists before creating symlink (#302)
-	// #nosec G301 -- gosec:nri (Need Review)
 	if err := os.MkdirAll(targetDir, 0700); err != nil {
 		return err
 	}
@@ -197,7 +196,6 @@ func ensureSymlink(targetDir, symlinkPath string) error {
 	}
 
 	parent := filepath.Dir(symlinkPath)
-	// #nosec G301 -- gosec:nri (Need Review)
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return err
 	}
@@ -244,9 +242,7 @@ func EnsureSharedAccountDirectories(accHomeDir string) error {
 				src := filepath.Join(accConvs, e.Name())
 				dst := filepath.Join(sharedConvs, e.Name())
 				if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
-					// #nosec G304 -- gosec:nri (Need Review)
 					if data, readErr := os.ReadFile(src); readErr == nil {
-						// #nosec G703 G306 -- gosec:nri (Need Review)
 						_ = os.WriteFile(dst, data, 0600)
 					}
 				}
@@ -305,7 +301,6 @@ func (p *AccountPool) LoadState() error {
 	defer p.mu.Unlock()
 
 	stateFile := filepath.Clean(p.stateFilePath())
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -391,7 +386,6 @@ func (p *AccountPool) LoadState() error {
 			acc.CooldownUntil = time.Time{}
 		}
 		if acc.HomeDir != "" {
-			// #nosec G703 -- gosec:nri (Need Review)
 			_ = os.MkdirAll(acc.HomeDir, 0700)
 			_ = EnsureSharedAccountDirectories(acc.HomeDir)
 		}
@@ -420,11 +414,9 @@ func (p *AccountPool) SaveState() error {
 
 	stateFile := filepath.Clean(p.stateFilePath())
 	tmpFile := filepath.Clean(stateFile + ".tmp")
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
 		return err
 	}
-	// #nosec G703 -- gosec:nri (Need Review)
 	return os.Rename(tmpFile, stateFile)
 }
 
@@ -869,7 +861,6 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "-p", "/usage", "--output-format", "json")
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = buildChildEnv(acc.HomeDir)
@@ -971,7 +962,6 @@ func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 		home = os.TempDir()
 	}
 	sourceTokenPath := filepath.Clean(filepath.Join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"))
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	data, err := os.ReadFile(sourceTokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token from %s: %w", sourceTokenPath, err)
@@ -1033,13 +1023,11 @@ func (p *AccountPool) IngestCurrentAccount() (*Account, error) {
 
 	// Prepare isolated directory structure with strict permissions
 	profileGeminiDir := filepath.Clean(filepath.Join(targetAccount.HomeDir, ".gemini", "antigravity-cli"))
-	// #nosec G703 -- gosec:nri (Need Review)
 	if err := os.MkdirAll(profileGeminiDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create profile dir %s: %w", profileGeminiDir, err)
 	}
 
 	destTokenPath := filepath.Clean(filepath.Join(profileGeminiDir, "antigravity-oauth-token"))
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	if err := os.WriteFile(destTokenPath, data, 0600); err != nil {
 		return nil, fmt.Errorf("failed to write isolated token %s: %w", destTokenPath, err)
 	}
