@@ -263,14 +263,16 @@ flowchart LR
 4. **Notice Delimiters & Telegram HTML Rendering**:
    - System notices (watchdog stalls, truncations, user interruptions) are delimited using pure Markdown (`_[...]_`).
    - `MarkdownToTelegramHTML` properly escapes raw angle brackets before converting Markdown delimiters into compliant Telegram `<i>...</i>` tags, preventing literal `&lt;i&gt;` text rendering.
-5. **Rich Message Engine (`sendRichMessage`) & Adaptive Routing**:
-   - **Monolithic Article Delivery:** Delivers responses up to **32,768 UTF-8 characters** as a single rich article, eliminating disruptive multi-message cascade splitting.
-   - **Native Telegram Tables:** Markdown tables (`| ... |`) are delivered in raw Markdown directly via `rich_message.markdown`, rendering as native adaptive rounded cards on mobile and desktop clients without monospace `<pre>` distortion.
-   - **Chain-of-Thought (CoT) Packaging:** LLM reasoning blocks (`<thought>`, `<think>`, `<thinking>`) are parsed and packaged into `RichBlockThinking{Collapsed: true}`, isolating background thoughts into clean collapsible sections.
-   - **Adaptive Dispatcher (`sendAdaptiveResponse`):** Evaluates responses via `ShouldUseRichMessage(text)`. For compact messages ($\le 4000$ runes without tables), classic `sendMessage` is preserved. When text $> 4000$ runes or contains tables, `sendRichMessage` is called.
-   - **Graceful Degradation:** Any Bot API or network error during `sendRichMessage` triggers automatic fallback to classic `SplitHTMLChunks(4000)` + `sendMessage`, ensuring 0% message delivery loss.
-   - **Hard Sanitization Limit:** Strict UTF-8 rune sanitization (`SanitizeRichMessageText`) clamps text to 32,768 runes.
-   - **Early Disarm & Deduplication Guard:** Prior to `sendAdaptiveResponse` execution, `s.ActiveMessageID` is atomically zeroed (`Early Disarm`) under `s.mu.Lock()` to prevent background streaming throttler ticks from editing the obsolete streaming draft. `s.ActiveTurnStart` is kept active throughout adaptive delivery and artifact dispatch to preserve GC immunity (`ActiveTurnProtection`). In `sendChunk`, errors such as `message to edit not found`, `message can't be edited`, and `message is not modified` suppress secondary message creation, preventing ghost message duplicates in Telegram chats.
+5. **Tri-Modal Delivery Architecture (`sendAdaptiveResponse`) & Rich Message Engine**:
+   - **Tier 1 (Classic Bubble)**: For compact conversational messages ($< 3000$ UTF-8 runes without Markdown tables or `<thought>` blocks), messages route directly to standard Telegram HTML `sendMessage` (or `editMessageText` when editing an active streaming draft). This preserves lightweight native chat bubbles for short dialogue.
+   - **Tier 2 (Rich Article)**: Messages between $3000 \le \text{runes} \le 32768$, or containing Markdown tables (`HasMarkdownTable`), or containing LLM thinking tags (`HasThoughts`), route to `sendRichMessage`. Responses are delivered as a monolithic native article, eliminating messy HTML chunk fragmentation. Markdown tables render as adaptive rounded cards, and `<thought>`, `<think>`, or `<thinking>` blocks are packaged into `RichBlockThinking{Collapsed: true}`.
+   - **Tier 3 (Markdown Artifact)**: When responses exceed the Telegram Rich Message hard ceiling ($> 32768$ runes), the delivery router dispatches:
+     1. An ergonomic summary preview via `sendRichMessage` safely truncated at 2500 runes using `TruncateMarkdownSafely` (which guarantees rune-safe boundaries and automatically closes any unclosed fenced code blocks `\n```\n`), appended with an informative artifact notice.
+     2. Atomic deletion of the streaming draft message (`activeMsgID`).
+     3. The complete, unclipped Markdown response written to `scratch/downloads/response_<timestamp>.md` with restricted `0600` file permissions.
+     4. Delivery of the full file as a Telegram Document named `agent_response.md`.
+   - **Graceful Degradation**: If `sendRichMessage` encounters Telegram API errors or internal server failures, the engine gracefully degrades to classic `SplitHTMLChunks` cascade delivery, ensuring 0% response loss.
+   - **Early Disarm & Deduplication Guard**: Prior to `sendAdaptiveResponse` execution, `s.ActiveMessageID` is atomically zeroed (`Early Disarm`) under `s.mu.Lock()` to prevent background streaming throttler ticks from editing the obsolete streaming draft. `s.ActiveTurnStart` is kept active throughout adaptive delivery and artifact dispatch to preserve GC immunity (`ActiveTurnProtection`). In `sendChunk`, errors such as `message to edit not found`, `message can't be edited`, and `message is not modified` suppress secondary message creation, preventing ghost message duplicates in Telegram chats.
 
 ---
 

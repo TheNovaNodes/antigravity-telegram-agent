@@ -3306,10 +3306,94 @@ func TestSession_FinalizeTurn_EarlyDisarmAndActiveTurnProtection(t *testing.T) {
 		t.Errorf("Expected ActiveTurnStart to remain active during dispatch for GC protection, got zero time")
 	}
 
-	// Invariant 3: ActiveTurnStart is zeroed out AFTER finalizeTurn completes
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.ActiveTurnStart.IsZero() {
 		t.Errorf("Expected ActiveTurnStart to be zeroed out after finalizeTurn, got %v", s.ActiveTurnStart)
 	}
 }
+
+func TestSession_FinalizeTurn_Tier3ExtremePayload(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+
+	var richPreviewReceived bool
+	var activeMsgDeleted bool
+	var documentReceived bool
+
+	ms.customHandler = func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/getMe") {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "sendRichMessage") {
+			richPreviewReceived = true
+			w.Write([]byte(`{"ok":true,"result":{"message_id":5001,"chat":{"id":12345},"text":"rich preview"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "deleteMessage") {
+			activeMsgDeleted = true
+			w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "sendDocument") {
+			documentReceived = true
+			w.Write([]byte(`{"ok":true,"result":{"message_id":5002,"chat":{"id":12345},"document":{"file_id":"doc123"}}}`))
+			return
+		}
+
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"ok"}}`))
+	}
+
+	bot := createMockBot(ms)
+	extremePayload := "# Extreme Payload Architecture Report\n\n" + strings.Repeat("Deep analysis line with data metrics and cluster telemetry.\n", 600)
+
+	s := &AgySession{
+		BotName:         "test_bot",
+		BotAPI:          bot,
+		ChatID:          12345,
+		ActiveMessageID: 5555,
+		ActiveTurnStart: time.Now(),
+		TextBuffer:      extremePayload,
+	}
+
+	s.finalizeTurn()
+
+	if !richPreviewReceived {
+		t.Error("expected sendRichMessage preview during Tier 3 finalizeTurn")
+	}
+	if !activeMsgDeleted {
+		t.Error("expected activeMsgID 5555 to be deleted during Tier 3 finalizeTurn")
+	}
+	if !documentReceived {
+		t.Error("expected sendDocument to be called during Tier 3 finalizeTurn")
+	}
+
+	// Verify turn state is properly zeroed
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ActiveTurnStart.IsZero() {
+		t.Errorf("expected ActiveTurnStart to be zeroed after finalizeTurn, got %v", s.ActiveTurnStart)
+	}
+	if s.ActiveMessageID != 0 {
+		t.Errorf("expected ActiveMessageID to be 0 after finalizeTurn, got %d", s.ActiveMessageID)
+	}
+
+	// Clean up any test artifact file written during this turn
+	artifactDir := getArtifactSaveDir()
+	if files, err := os.ReadDir(artifactDir); err == nil {
+		for _, f := range files {
+			if strings.HasPrefix(f.Name(), "response_") && strings.HasSuffix(f.Name(), ".md") {
+				_ = os.Remove(filepath.Join(artifactDir, f.Name()))
+			}
+		}
+	}
+}
+

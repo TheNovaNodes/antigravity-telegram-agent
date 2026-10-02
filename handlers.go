@@ -1751,9 +1751,6 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, m
 		chunkToEdit = "<i>(empty message)</i>"
 		chunks[0] = chunkToEdit
 	}
-	if len(chunks) > 1 && strings.Contains(text, "⏳") {
-		chunkToEdit += "\n\n<i>[Truncated while typing...]</i>"
-	}
 
 	if bot == nil {
 		return chunks

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -208,9 +210,21 @@ func TestSanitizeRichMessageText(t *testing.T) {
 }
 
 func TestShouldUseRichMessage(t *testing.T) {
-	// Short text without table
+	// Short text without table or thoughts (< 3000 runes)
 	if ShouldUseRichMessage("Short message") {
 		t.Errorf("short message without table should not use rich message")
+	}
+
+	// Border text just below threshold (2999 runes)
+	borderBelow := strings.Repeat("A", 2999)
+	if ShouldUseRichMessage(borderBelow) {
+		t.Errorf("text == 2999 runes without table should use classic bubble")
+	}
+
+	// Border text at threshold (3000 runes)
+	borderAt := strings.Repeat("A", 3000)
+	if !ShouldUseRichMessage(borderAt) {
+		t.Errorf("text == 3000 runes SHOULD use rich message (Tier 2 threshold)")
 	}
 
 	// Short text with table
@@ -219,28 +233,28 @@ func TestShouldUseRichMessage(t *testing.T) {
 		t.Errorf("short message with table SHOULD use rich message")
 	}
 
-	// Long text (> 4000 runes) without table
+	// Short text with thoughts
+	thoughtText := "<thought>evaluating response</thought>Here is the answer."
+	if !ShouldUseRichMessage(thoughtText) {
+		t.Errorf("short message with thoughts SHOULD use rich message")
+	}
+
+	// Long text (> 3000 runes) without table
 	longText := strings.Repeat("A", 4001)
 	if !ShouldUseRichMessage(longText) {
 		t.Errorf("text > 4000 runes SHOULD use rich message")
 	}
 
-	// Exactly 4000 runes without table
-	borderText := strings.Repeat("A", 4000)
-	if ShouldUseRichMessage(borderText) {
-		t.Errorf("text == 4000 runes without table should use classic message for 100%% compatibility")
-	}
-
-	// Text between 4001 and 32768 runes
+	// Text at upper bound (32768 runes)
 	validRichText := strings.Repeat("A", 32768)
 	if !ShouldUseRichMessage(validRichText) {
 		t.Errorf("text == 32768 runes SHOULD use rich message")
 	}
 
-	// Text > 32768 runes must route to cascade to prevent dropping content
+	// Text > 32768 runes routes to Tier 3 (Markdown Artifact), so ShouldUseRichMessage is false
 	overLimitText := strings.Repeat("A", 32769)
 	if ShouldUseRichMessage(overLimitText) {
-		t.Errorf("text > 32768 runes should route to SplitHTMLChunks cascade to avoid losing content")
+		t.Errorf("text > 32768 runes should route to Tier 3 artifact, not standard Tier 2 rich message")
 	}
 }
 
@@ -483,3 +497,285 @@ func TestSendChunk_RichMessageRouting(t *testing.T) {
 		t.Errorf("expected sendChunk with messageID=0 and table to call sendRichMessage")
 	}
 }
+
+func TestDelivery_Tier1_ClassicBubble(t *testing.T) {
+	ts, sentReqs, mu := createStrictTelegramMockServer(t)
+	defer ts.Close()
+
+	endpoint := ts.URL + "/bot%s/%s"
+	bot, err := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ts.Client())
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	shortText := "Hello, this is a standard short response without tables or thoughts."
+	if tier := DetermineDeliveryTier(shortText); tier != Tier1ClassicBubble {
+		t.Fatalf("expected Tier1ClassicBubble, got %v", tier)
+	}
+
+	// 1. Case activeMsgID == 0 -> sendMessage
+	mu.Lock()
+	*sentReqs = nil
+	mu.Unlock()
+
+	chunks := sendAdaptiveResponse(bot, 12345, 0, shortText)
+	if len(chunks) != 1 {
+		t.Errorf("expected 1 chunk, got %d", len(chunks))
+	}
+
+	mu.Lock()
+	reqs := append([]string{}, *sentReqs...)
+	mu.Unlock()
+
+	foundRich := false
+	for _, req := range reqs {
+		vals, _ := url.ParseQuery(req)
+		if vals.Get("rich_message") != "" {
+			foundRich = true
+		}
+	}
+	if foundRich {
+		t.Errorf("Tier 1 classic bubble should NEVER invoke sendRichMessage")
+	}
+
+	// 2. Case activeMsgID != 0 -> editMessageText
+	mu.Lock()
+	*sentReqs = nil
+	mu.Unlock()
+
+	chunksEdit := sendAdaptiveResponse(bot, 12345, 456, shortText)
+	if len(chunksEdit) != 1 {
+		t.Errorf("expected 1 chunk for edit, got %d", len(chunksEdit))
+	}
+
+	mu.Lock()
+	reqsEdit := append([]string{}, *sentReqs...)
+	mu.Unlock()
+
+	foundEdit := false
+	for _, req := range reqsEdit {
+		vals, _ := url.ParseQuery(req)
+		if vals.Get("rich_message") != "" {
+			t.Errorf("Tier 1 edit should NEVER invoke sendRichMessage")
+		}
+		if vals.Get("message_id") == "456" {
+			foundEdit = true
+		}
+	}
+	if !foundEdit {
+		t.Errorf("expected activeMsgID 456 to be edited via editMessageText")
+	}
+}
+
+func TestDelivery_Tier2_RichArticle(t *testing.T) {
+	ts, sentReqs, mu := createStrictTelegramMockServer(t)
+	defer ts.Close()
+
+	endpoint := ts.URL + "/bot%s/%s"
+	bot, err := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ts.Client())
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "Long text exceeding 3000 runes",
+			text: strings.Repeat("Long article line for tier 2 test.\n", 100), // ~3500 runes
+		},
+		{
+			name: "Short text with Markdown table",
+			text: "Summary:\n| Metric | Value |\n|---|---|\n| Latency | 5ms |",
+		},
+		{
+			name: "Short text with <thought> block",
+			text: "<thought>Analyzing user intent</thought>Here is the analyzed plan.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tier := DetermineDeliveryTier(tc.text); tier != Tier2RichArticle {
+				t.Fatalf("expected Tier2RichArticle, got %v", tier)
+			}
+
+			mu.Lock()
+			*sentReqs = nil
+			mu.Unlock()
+
+			activeMsgID := 888
+			chunks := sendAdaptiveResponse(bot, 12345, activeMsgID, tc.text)
+			if len(chunks) != 1 {
+				t.Errorf("expected 1 chunk, got %d", len(chunks))
+			}
+
+			mu.Lock()
+			reqs := append([]string{}, *sentReqs...)
+			mu.Unlock()
+
+			foundRich := false
+			deletedActiveID := false
+			for _, req := range reqs {
+				vals, _ := url.ParseQuery(req)
+				if vals.Get("rich_message") != "" {
+					foundRich = true
+				}
+				if vals.Get("message_id") == "888" {
+					deletedActiveID = true
+				}
+			}
+
+			if !foundRich {
+				t.Errorf("expected sendRichMessage to be called for Tier 2 payload")
+			}
+			if !deletedActiveID {
+				t.Errorf("expected activeMsgID 888 to be deleted after Tier 2 rich message success")
+			}
+		})
+	}
+}
+
+func TestDelivery_Tier3_ExtremePayloadMarkdownArtifact(t *testing.T) {
+	ts, sentReqs, mu := createStrictTelegramMockServer(t)
+	defer ts.Close()
+
+	endpoint := ts.URL + "/bot%s/%s"
+	bot, err := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ts.Client())
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	// Payload with > 32768 runes
+	repeatLine := "This is line number with some extra padding to reach the artifact size limit.\n"
+	payload := strings.Repeat(repeatLine, 450)
+	totalRunes := utf8.RuneCountInString(payload)
+	if totalRunes <= 32768 {
+		t.Fatalf("payload must exceed 32768 runes, got %d", totalRunes)
+	}
+
+	if tier := DetermineDeliveryTier(payload); tier != Tier3MarkdownArtifact {
+		t.Fatalf("expected Tier3MarkdownArtifact, got %v", tier)
+	}
+
+	mu.Lock()
+	*sentReqs = nil
+	mu.Unlock()
+
+	activeMsgID := 999
+	chunks := sendAdaptiveResponse(bot, 12345, activeMsgID, payload)
+	if len(chunks) != 1 {
+		t.Errorf("expected 1 preview chunk, got %d", len(chunks))
+	}
+	if !strings.Contains(chunks[0], "Полный ответ") {
+		t.Errorf("expected notice in preview chunk, got: %s", chunks[0])
+	}
+
+	mu.Lock()
+	reqs := append([]string{}, *sentReqs...)
+	mu.Unlock()
+
+	foundRichPreview := false
+	deletedActiveMsg := false
+	foundDocument := false
+
+	for _, req := range reqs {
+		vals, _ := url.ParseQuery(req)
+		if richRaw := vals.Get("rich_message"); richRaw != "" {
+			foundRichPreview = true
+			if !strings.Contains(richRaw, "Полный ответ") {
+				t.Errorf("rich preview missing notice: %s", richRaw)
+			}
+		}
+		if vals.Get("message_id") == "999" {
+			deletedActiveMsg = true
+		}
+		if strings.Contains(req, "agent_response.md") {
+			foundDocument = true
+		}
+	}
+
+	if !foundRichPreview {
+		t.Errorf("expected sendRichMessage preview for Tier 3 payload")
+	}
+	if !deletedActiveMsg {
+		t.Errorf("expected activeMsgID 999 to be deleted on Tier 3")
+	}
+	if !foundDocument {
+		t.Errorf("expected Telegram Document (agent_response.md) to be sent for Tier 3")
+	}
+
+	// Verify artifact file on disk
+	artifactDir := getArtifactSaveDir()
+	files, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatalf("failed to read artifact dir %s: %v", artifactDir, err)
+	}
+	var foundArtifact string
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), "response_") && strings.HasSuffix(f.Name(), ".md") {
+			foundArtifact = filepath.Join(artifactDir, f.Name())
+		}
+	}
+	if foundArtifact == "" {
+		t.Fatalf("no response_<timestamp>.md artifact file found in %s", artifactDir)
+	}
+	defer os.Remove(foundArtifact)
+
+	// Check permissions 0600
+	fi, err := os.Stat(foundArtifact)
+	if err != nil {
+		t.Fatalf("failed to stat artifact file: %v", err)
+	}
+	if fi.Mode().Perm() != 0600 {
+		t.Errorf("expected file perm 0600, got %o", fi.Mode().Perm())
+	}
+
+	// Check content matches payload
+	content, err := os.ReadFile(foundArtifact)
+	if err != nil {
+		t.Fatalf("failed to read artifact file: %v", err)
+	}
+	if string(content) != payload {
+		t.Errorf("artifact content does not match payload! length got %d, expected %d", len(string(content)), len(payload))
+	}
+}
+
+func TestDelivery_Tier3_MarkdownTruncationIntegrity(t *testing.T) {
+	// Case 1: Text shorter than maxRunes remains untouched
+	shortText := "Simple markdown text without overflowing limit."
+	if truncated := TruncateMarkdownSafely(shortText, 2500); truncated != shortText {
+		t.Errorf("expected untouched text for short input, got %s", truncated)
+	}
+
+	// Case 2: Plain text longer than limit, truncated cleanly without breaking runes
+	longPlain := strings.Repeat("Абвгдеёжзийклмнопрстуфхцчшщъыьэюя ", 100)
+	truncatedPlain := TruncateMarkdownSafely(longPlain, 500)
+	if utf8.RuneCountInString(truncatedPlain) > 500 {
+		t.Errorf("expected rune count <= 500, got %d", utf8.RuneCountInString(truncatedPlain))
+	}
+	if !utf8.ValidString(truncatedPlain) {
+		t.Errorf("truncated string contains invalid UTF-8 sequences")
+	}
+
+	// Case 3: Truncation inside an open code block closes the fence
+	codeBlockText := "Introduction\n\n```go\nfunc HeavyComputation() {\n" + strings.Repeat("\tfmt.Println(\"processing step\")\n", 50) + "}\n```\nConclusion text."
+	truncatedCode := TruncateMarkdownSafely(codeBlockText, 200)
+	if !strings.HasSuffix(truncatedCode, "```") {
+		t.Errorf("expected truncated text inside code block to end with closing fence ```, got: %s", truncatedCode)
+	}
+	fenceCount := strings.Count(truncatedCode, "```")
+	if fenceCount%2 != 0 {
+		t.Errorf("expected even number of ``` fences (balanced), got %d: %s", fenceCount, truncatedCode)
+	}
+
+	// Case 4: Text with already closed code block before truncation limit
+	closedCodeText := "Intro\n\n```go\nfunc A() {}\n```\n\n" + strings.Repeat("Subsequent paragraph text explaining the function. ", 40)
+	truncatedClosed := TruncateMarkdownSafely(closedCodeText, 300)
+	fenceCountClosed := strings.Count(truncatedClosed, "```")
+	if fenceCountClosed != 2 {
+		t.Errorf("expected exactly 2 fences for already closed code block, got %d", fenceCountClosed)
+	}
+}
+
