@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Clean Sticker Image & Semantic De-hijacking (Issue #347)
+- **Pure Image Sticker Routing**:
+  - Removed synthetic emoji context injection (`[Пользователь отправил стикер: %s]`) in `handlers.go`, eliminating semantic hijacking of agent decision-making.
+  - Stickers are now routed as pure image attachments (`[Attached File: file://...]`), allowing the model to naturally inspect visual triggers and custom button graphics via multimodal sensors (`view_file`).
+  - Preserved authentic accompanying user text/captions without synthetic emoji wrapping.
+  - Implemented dynamic extension detection (`.webm` for video stickers, `.tgs` for animated stickers, `.webp` for static stickers) based on actual Telegram Bot API file paths in `downloadTelegramMedia`.
+  - Added comprehensive test coverage in `handlers_test.go`: `TestExtractInboundPayload` (clean text assertion for all sticker types), `TestHandleUpdate_StickerVideo` (`.webm` download and storage verification), and `TestSticker_PromptFormatting_CleanImageWithoutEmoji`.
+
 ### Tri-Modal Response Delivery Architecture (Issue #345)
 - **Tri-Modal Dispatch Routing (`sendAdaptiveResponse`)**:
   - Implemented three-tier response routing to permanently eliminate routine HTML chunk splitting spam (`SplitHTMLChunks` cascade):

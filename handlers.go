@@ -1284,7 +1284,13 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 	}
 	downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
 	_ = os.MkdirAll(downloadDir, 0700)
-	safePath := filepath.Join(downloadDir, uuid.New().String()+ext)
+	safeExt := ext
+	if fileExt := filepath.Ext(parsedURL.Path); fileExt != "" {
+		safeExt = fileExt
+	} else if fileExt := filepath.Ext(file.FilePath); fileExt != "" {
+		safeExt = fileExt
+	}
+	safePath := filepath.Join(downloadDir, uuid.New().String()+safeExt)
 
 	placeholderMsgID := 0
 	if sentMsg, err := bot.Send(tgbotapi.NewMessage(chatID, "📥 Downloading file...")); err == nil {
@@ -1337,7 +1343,12 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 	if baseText == "" && strings.HasPrefix(strings.ToLower(origName), "session_") && strings.HasSuffix(strings.ToLower(origName), ".md") {
 		baseText = "📋 Previous session context loaded from export file. Review the history, current task state, and continue execution from where it left off."
 	}
-	formattedText := fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, baseText)
+	var formattedText string
+	if strings.TrimSpace(baseText) != "" {
+		formattedText = fmt.Sprintf("[Attached File: file://%s]\n\n%s", safePath, strings.TrimSpace(baseText))
+	} else {
+		formattedText = fmt.Sprintf("[Attached File: file://%s]", safePath)
+	}
 	return formattedText, true, placeholderMsgID, nil
 }
 
@@ -1611,25 +1622,10 @@ func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
 		}
 		payload.OriginalFileName = fmt.Sprintf("sticker_%d%s", msg.MessageID, payload.Ext)
 
-		stickerEmoji := strings.TrimSpace(msg.Sticker.Emoji)
-		if stickerEmoji == "" {
-			stickerEmoji = "🎨"
-		}
-		setName := strings.TrimSpace(msg.Sticker.SetName)
-		var stickerContext string
-		if setName != "" {
-			stickerContext = fmt.Sprintf("[Пользователь отправил стикер: %s (набор: %s)]", stickerEmoji, setName)
-		} else {
-			stickerContext = fmt.Sprintf("[Пользователь отправил стикер: %s]", stickerEmoji)
-		}
-		accompanying := payload.Text
-		if accompanying == "" {
-			accompanying = payload.Caption
-		}
-		if accompanying != "" {
-			payload.Text = stickerContext + "\n" + accompanying
-		} else {
-			payload.Text = stickerContext
+		if payload.Text != "" && payload.Caption != "" && payload.Text != payload.Caption {
+			payload.Text = payload.Text + "\n" + payload.Caption
+		} else if payload.Text == "" && payload.Caption != "" {
+			payload.Text = payload.Caption
 		}
 	} else if msg.Location != nil {
 		lat := msg.Location.Latitude

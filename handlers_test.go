@@ -342,9 +342,8 @@ func TestExtractInboundPayload(t *testing.T) {
 			},
 		}
 		p := extractInboundPayload(msg)
-		expected := "[Пользователь отправил стикер: 🚀 (набор: SpacePack)]"
-		if p.Text != expected || p.FileID != "stk1" || p.Ext != ".webp" || p.OriginalFileName != "sticker_101.webp" || p.IsVoice {
-			t.Errorf("Expected text %q, fileID stk1, ext .webp, original sticker_101.webp, got %+v", expected, p)
+		if p.Text != "" || p.FileID != "stk1" || p.Ext != ".webp" || p.OriginalFileName != "sticker_101.webp" || p.IsVoice {
+			t.Errorf("Expected text %q, fileID stk1, ext .webp, original sticker_101.webp, got %+v", "", p)
 		}
 	})
 
@@ -357,9 +356,8 @@ func TestExtractInboundPayload(t *testing.T) {
 			},
 		}
 		p := extractInboundPayload(msg)
-		expected := "[Пользователь отправил стикер: 👍]"
-		if p.Text != expected || p.FileID != "stk2" || p.Ext != ".webp" || p.OriginalFileName != "sticker_102.webp" {
-			t.Errorf("Expected text %q, fileID stk2, ext .webp, got %+v", expected, p)
+		if p.Text != "" || p.FileID != "stk2" || p.Ext != ".webp" || p.OriginalFileName != "sticker_102.webp" {
+			t.Errorf("Expected text %q, fileID stk2, ext .webp, got %+v", "", p)
 		}
 	})
 
@@ -374,30 +372,28 @@ func TestExtractInboundPayload(t *testing.T) {
 			},
 		}
 		p := extractInboundPayload(msg)
-		expected := "[Пользователь отправил стикер: 🎉 (набор: PartyPack)]"
-		if p.Text != expected || p.FileID != "stk_anim" || p.Ext != ".tgs" || p.OriginalFileName != "sticker_103.tgs" {
-			t.Errorf("Expected text %q, fileID stk_anim, ext .tgs, got %+v", expected, p)
+		if p.Text != "" || p.FileID != "stk_anim" || p.Ext != ".tgs" || p.OriginalFileName != "sticker_103.tgs" {
+			t.Errorf("Expected text %q, fileID stk_anim, ext .tgs, got %+v", "", p)
 		}
 	})
 
 	t.Run("sticker without emoji fallback", func(t *testing.T) {
 		msg := &tgbotapi.Message{
-			MessageID: 104,
+			MessageID: 105,
 			Sticker: &tgbotapi.Sticker{
 				FileID:  "stk3",
 				SetName: "AbstractPack",
 			},
 		}
 		p := extractInboundPayload(msg)
-		expected := "[Пользователь отправил стикер: 🎨 (набор: AbstractPack)]"
-		if p.Text != expected || p.FileID != "stk3" || p.Ext != ".webp" || p.OriginalFileName != "sticker_104.webp" {
-			t.Errorf("Expected text %q, got %+v", expected, p)
+		if p.Text != "" || p.FileID != "stk3" || p.Ext != ".webp" || p.OriginalFileName != "sticker_105.webp" {
+			t.Errorf("Expected text %q, got %+v", "", p)
 		}
 	})
 
 	t.Run("sticker with accompanying text or caption", func(t *testing.T) {
 		msg := &tgbotapi.Message{
-			MessageID: 105,
+			MessageID: 106,
 			Sticker: &tgbotapi.Sticker{
 				FileID:  "stk4",
 				Emoji:   "🔥",
@@ -406,8 +402,25 @@ func TestExtractInboundPayload(t *testing.T) {
 			Caption: "Look at this deployment",
 		}
 		p := extractInboundPayload(msg)
-		expected := "[Пользователь отправил стикер: 🔥 (набор: FirePack)]\nLook at this deployment"
-		if p.Text != expected || p.FileID != "stk4" || p.Ext != ".webp" || p.OriginalFileName != "sticker_105.webp" {
+		expected := "Look at this deployment"
+		if p.Text != expected || p.FileID != "stk4" || p.Ext != ".webp" || p.OriginalFileName != "sticker_106.webp" {
+			t.Errorf("Expected text %q, got %+v", expected, p)
+		}
+	})
+
+	t.Run("sticker with accompanying text in Text field", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			MessageID: 107,
+			Sticker: &tgbotapi.Sticker{
+				FileID:  "stk5",
+				Emoji:   "🔥",
+				SetName: "FirePack",
+			},
+			Text: "Direct prompt message",
+		}
+		p := extractInboundPayload(msg)
+		expected := "Direct prompt message"
+		if p.Text != expected || p.FileID != "stk5" || p.Ext != ".webp" || p.OriginalFileName != "sticker_107.webp" {
 			t.Errorf("Expected text %q, got %+v", expected, p)
 		}
 	})
@@ -738,6 +751,170 @@ func TestHandleUpdate_StickerAnimated(t *testing.T) {
 	}
 	if !foundTGS {
 		t.Errorf("Did not find downloaded .tgs file in %s", downloadsDir)
+	}
+}
+
+func TestHandleUpdate_StickerVideo(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	mockAgents := t.TempDir()
+	os.Setenv("AGENTS_DIR", mockAgents)
+	defer os.Unsetenv("AGENTS_DIR")
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/webm")
+		w.Write([]byte("fake-webm-video-sticker-content"))
+	}))
+	defer fileServer.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	ms.customHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "getFile") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"file_id":"stk_file_video","file_path":"%s"}}`, fileServer.URL+"/sticker.webm")))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"mocked"}}`))
+	})
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	update := tgbotapi.Update{
+		UpdateID: 403,
+		Message: &tgbotapi.Message{
+			MessageID: 90,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+			Sticker: &tgbotapi.Sticker{
+				FileID:  "stk_file_video",
+				Emoji:   "🎬",
+				SetName: "VideoSet",
+			},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	if session != nil {
+		defer session.Kill()
+	}
+
+	downloadsDir := filepath.Join(mockAgents, bot.Self.UserName, "scratch", "downloads")
+	files, err := os.ReadDir(downloadsDir)
+	if err != nil {
+		t.Fatalf("Failed to read downloads dir: %v", err)
+	}
+	foundWebM := false
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".webm") {
+			foundWebM = true
+			content, _ := os.ReadFile(filepath.Join(downloadsDir, f.Name()))
+			if string(content) != "fake-webm-video-sticker-content" {
+				t.Errorf("Unexpected content in downloaded video sticker: %s", string(content))
+			}
+			break
+		}
+	}
+	if !foundWebM {
+		t.Errorf("Did not find downloaded .webm file in %s", downloadsDir)
+	}
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Contacts are not supported") {
+			t.Errorf("Video sticker triggered unsupported media warning: %s", body)
+		}
+	}
+}
+
+func TestSticker_PromptFormatting_CleanImageWithoutEmoji(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/webp")
+		w.Write([]byte("sticker-image-bytes"))
+	}))
+	defer fileServer.Close()
+
+	ms.customHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "getFile") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"file_id":"stk_clean_1","file_path":"%s"}}`, fileServer.URL+"/sticker.webp")))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100}}`))
+	})
+	bot := createMockBot(ms)
+
+	mockAgents := t.TempDir()
+	t.Setenv("AGENTS_DIR", mockAgents)
+
+	// Case 1: Pure sticker without caption/text
+	msgClean := &tgbotapi.Message{
+		MessageID: 201,
+		Sticker: &tgbotapi.Sticker{
+			FileID:  "stk_clean_1",
+			Emoji:   "🫥",
+			SetName: "Agenty301",
+		},
+	}
+	pClean := extractInboundPayload(msgClean)
+	if pClean.Text != "" {
+		t.Errorf("Expected payload.Text to be empty for clean sticker, got %q", pClean.Text)
+	}
+	formattedClean, isFileClean, _, err := downloadTelegramMedia(bot, 12345, pClean.FileID, pClean.Ext, pClean.Text, pClean.Caption, "TestBot", pClean.OriginalFileName)
+	if err != nil {
+		t.Fatalf("downloadTelegramMedia failed: %v", err)
+	}
+	if !isFileClean {
+		t.Errorf("expected isFile to be true")
+	}
+	if strings.Contains(formattedClean, "Пользователь отправил стикер") || strings.Contains(formattedClean, "🫥") || strings.Contains(formattedClean, "Agenty301") {
+		t.Errorf("formatted text must not contain synthetic emoji or sticker text, got: %s", formattedClean)
+	}
+	if !strings.HasPrefix(formattedClean, "[Attached File: file://") || strings.Contains(formattedClean, "\n") {
+		t.Errorf("expected clean one-line [Attached File: file://...], got: %q", formattedClean)
+	}
+
+	// Case 2: Sticker with accompanying caption
+	msgWithCaption := &tgbotapi.Message{
+		MessageID: 202,
+		Sticker: &tgbotapi.Sticker{
+			FileID:  "stk_clean_1",
+			Emoji:   "🫥",
+			SetName: "Agenty301",
+		},
+		Caption: "TL;DR this report",
+	}
+	pWithCaption := extractInboundPayload(msgWithCaption)
+	if pWithCaption.Text != "TL;DR this report" {
+		t.Errorf("Expected payload.Text to preserve user caption, got %q", pWithCaption.Text)
+	}
+	formattedWithCaption, _, _, err := downloadTelegramMedia(bot, 12345, pWithCaption.FileID, pWithCaption.Ext, pWithCaption.Text, pWithCaption.Caption, "TestBot", pWithCaption.OriginalFileName)
+	if err != nil {
+		t.Fatalf("downloadTelegramMedia failed: %v", err)
+	}
+	if strings.Contains(formattedWithCaption, "Пользователь отправил стикер") || strings.Contains(formattedWithCaption, "🫥") {
+		t.Errorf("formatted text must not contain synthetic emoji or sticker text, got: %s", formattedWithCaption)
+	}
+	expectedPrompt := "\n\nTL;DR this report"
+	if !strings.HasSuffix(formattedWithCaption, expectedPrompt) {
+		t.Errorf("expected formatted text to end with user caption %q, got: %q", expectedPrompt, formattedWithCaption)
 	}
 }
 
