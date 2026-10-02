@@ -1807,7 +1807,7 @@ func (s *AgySession) finalizeTurn() {
 		}
 	}
 	if s.BotAPI != nil {
-		sendAdaptiveResponse(s.BotAPI, s.ChatID, activeMsgID, response)
+		sendAdaptiveResponseWithWorkspace(s.BotAPI, s.ChatID, activeMsgID, response, s.Workspace)
 		sendArtifacts(s.BotAPI, s.ChatID, response, s.Workspace)
 	}
 

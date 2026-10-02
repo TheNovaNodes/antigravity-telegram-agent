@@ -47,6 +47,7 @@ The core is decomposed into distinct, focused domain modules:
 | [`models.go`](models.go) | Dynamic LLM discovery from `agy models` with emoji tier badges. |
 | [`tts.go`](tts.go) | Mirror Protocol TTS audio engine with multi-key ElevenLabs rotation and custom base URL support. |
 | [`formatters.go`](formatters.go) | Markdown-to-Telegram-HTML conversion with tag balancing and artifact parsing. |
+| [`rich_message.go`](rich_message.go) | Tri-Modal response router (Classic Bubble, Rich Article, Markdown Artifact), native table cards, and collapsible thoughts. |
 | [`webhook_guard.go`](webhook_guard.go) | Two-tier webhook immunity suite: Layer 1 startup `deleteWebhook` purge & Layer 2 runtime HTTP 409 Conflict auto-recovery with `AllowedUpdates` enforcement. |
 | [`env_builder.go`](env_builder.go) | Strict subprocess environment allowlist (`buildChildEnv`), eliminating supervisor secret bleed into agent subprocesses. |
 | [`metrics.go`](metrics.go) | Prometheus metrics registration (`RegisterEngineMetrics`), context desync counter, and `/metrics` HTTP exporter. |

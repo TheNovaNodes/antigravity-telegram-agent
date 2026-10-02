@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tri-Modal Response Delivery Architecture (Issue #345)
+- **Tri-Modal Dispatch Routing (`sendAdaptiveResponse`)**:
+  - Implemented three-tier response routing to permanently eliminate routine HTML chunk splitting spam (`SplitHTMLChunks` cascade):
+    - **Tier 1 (Classic Bubble)**: Conversational responses under 3000 UTF-8 runes (without tables or thinking tags) route to single HTML `sendMessage` / `editMessageText`, preserving natural chat dialogue.
+    - **Tier 2 (Rich Article)**: Responses between 3000 and 32,768 runes, or containing Markdown tables (`HasMarkdownTable`), or containing LLM reasoning blocks (`HasThoughts`), route to monolithic `sendRichMessage`.
+    - **Tier 3 (Markdown Artifact)**: Extreme payloads exceeding 32,768 runes route to a 2500-rune safe preview summary via `sendRichMessage` + unclipped `.md` file saved to `scratch/downloads/` with `0600` permissions and uploaded as a Telegram Document (`agent_response.md`).
+  - Added `TruncateMarkdownSafely`: rune-safe Markdown truncation with proportional lookback windows (paragraph, newline, space) and automatic closure of unclosed fenced code blocks (`\n```\n`).
+  - Guaranteed atomic deletion of streaming draft messages (`activeMsgID`) upon Tier 2 and Tier 3 dispatch.
+  - Eliminated the legacy `strings.Contains(text, "⏳")` footgun in `handlers.go`.
+  - Implemented workspace-scoped artifact storage (`sendAdaptiveResponseWithWorkspace`) with multi-agent pool isolation (fallback to `common/scratch/downloads`, 0 hardcoded bot names).
+  - Hardened tier classification in `DetermineDeliveryTier` to check rendered HTML length against `ClassicMessageLimit` (4000), preventing message split cascades on entity-heavy Markdown.
+  - Routed non-classic tiers in `sendChunk(messageID == 0)` to `sendAdaptiveResponse` to eliminate Tier 3 bypass.
+  - Added artifact retention rotation (`RotateArtifactFiles`), pruning files older than 24h and keeping at most 20 recent artifacts to prevent disk exhaustion.
+  - Added comprehensive L2 unit tests: `TestDelivery_Tier1_ClassicBubble`, `TestDelivery_Tier2_RichArticle`, `TestDelivery_Tier3_ExtremePayloadMarkdownArtifact`, `TestDelivery_Tier3_MarkdownTruncationIntegrity`, `TestArtifactSaveDir_Isolation_NoHardcodedBotName`, `TestDetermineDeliveryTier_HTMLLengthExpansion`, `TestSendChunk_Tier3_Routing_MessageIDZero`, `TestRotateArtifactFiles`, and `TestSession_FinalizeTurn_Tier3ExtremePayload` (race-detector verified).
+
 ### Master-Detail Ergonomic Dashboard & Zero Footgun UI (Issue #343)
 - **Two-Tiered Master-Detail Dashboard Architecture (Issue #343)**:
   - Eliminated the 30-button wide row wall and horizontal text truncation in `/accounts` by splitting account management into Master (Overview) and Detail (Account Card) views.

@@ -1,23 +1,48 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 const (
+	// RichMessageThreshold is the character threshold (in runes) above which responses switch to sendRichMessage.
+	RichMessageThreshold = 3000
+
 	// ClassicMessageLimit is the maximum character limit for classic Telegram sendMessage (HTML/Markdown).
 	ClassicMessageLimit = 4000
 
 	// MaxRichMessageLength is the hard limit for Telegram sendRichMessage format (32,768 UTF-8 characters).
 	MaxRichMessageLength = 32768
+
+	// PreviewTruncateLimit is the character target for Tier 3 (>32KB) preview summaries.
+	PreviewTruncateLimit = 2500
+)
+
+// DeliveryTier represents the routing strategy for outbound agent responses.
+type DeliveryTier int
+
+const (
+	// Tier1ClassicBubble: < 3000 runes, no tables, no thoughts -> classic sendMessage (HTML).
+	Tier1ClassicBubble DeliveryTier = 1
+
+	// Tier2RichArticle: 3000..32768 runes, or contains tables/thoughts -> monolithic sendRichMessage.
+	Tier2RichArticle DeliveryTier = 2
+
+	// Tier3MarkdownArtifact: > 32768 runes -> preview summary via sendRichMessage + .md Telegram document.
+	Tier3MarkdownArtifact DeliveryTier = 3
 )
 
 // RichBlockThinking represents a collapsible thinking / Chain-of-Thought block for LLM models.
@@ -89,19 +114,193 @@ func HasMarkdownTable(text string) bool {
 	return false
 }
 
-// ShouldUseRichMessage evaluates whether a message warrants routing to sendRichMessage.
-// Returns true if character count (runes) is between 4,001 and 32,768, or if the text
-// contains a Markdown table and fits within the 32,768 rune limit.
-// Content exceeding 32,768 runes routes to SplitHTMLChunks cascade to avoid losing data.
-func ShouldUseRichMessage(text string) bool {
+// HasThoughts checks if the text contains LLM thought/thinking blocks.
+func HasThoughts(text string) bool {
+	return thoughtRegex.MatchString(text)
+}
+
+// DetermineDeliveryTier evaluates which tier should be used to deliver the response.
+func DetermineDeliveryTier(text string) DeliveryTier {
 	runeLen := utf8.RuneCountInString(text)
 	if runeLen > MaxRichMessageLength {
-		return false
+		return Tier3MarkdownArtifact
 	}
-	if runeLen > ClassicMessageLimit {
-		return true
+	if runeLen >= RichMessageThreshold || HasMarkdownTable(text) || HasThoughts(text) || utf8.RuneCountInString(MarkdownToTelegramHTML(text)) > ClassicMessageLimit {
+		return Tier2RichArticle
 	}
-	return HasMarkdownTable(text)
+	return Tier1ClassicBubble
+}
+
+// ShouldUseRichMessage evaluates whether a message warrants routing to sendRichMessage.
+// Returns true for Tier2RichArticle (>= 3000 runes or tables/thoughts/large HTML, up to 32768 runes).
+func ShouldUseRichMessage(text string) bool {
+	return DetermineDeliveryTier(text) == Tier2RichArticle
+}
+
+// TruncateMarkdownSafely truncates text to approximately maxRunes while preserving
+// Markdown integrity (safely closing open fenced code blocks and avoiding mid-token splits).
+func TruncateMarkdownSafely(text string, maxRunes int) string {
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+
+	cutIdx := maxRunes
+	foundCut := false
+
+	// Proportional lookback windows so we don't discard excessive content when maxRunes is small
+	lookbackParagraph := 400
+	if lookbackParagraph > maxRunes/4 {
+		lookbackParagraph = maxRunes / 4
+	}
+	lookbackNewline := 200
+	if lookbackNewline > maxRunes/5 {
+		lookbackNewline = maxRunes / 5
+	}
+	lookbackSpace := 80
+	if lookbackSpace > maxRunes/6 {
+		lookbackSpace = maxRunes / 6
+	}
+
+	// 1. Try paragraph break (\n\n) within lookbackParagraph runes
+	if lookbackParagraph > 0 {
+		limitPara := cutIdx - lookbackParagraph
+		for i := cutIdx - 1; i > limitPara; i-- {
+			if runes[i-1] == '\n' && runes[i] == '\n' {
+				cutIdx = i - 1
+				foundCut = true
+				break
+			}
+		}
+	}
+
+	// 2. Try single newline (\n) within lookbackNewline runes
+	if !foundCut && lookbackNewline > 0 {
+		limitNL := cutIdx - lookbackNewline
+		for i := cutIdx - 1; i >= limitNL; i-- {
+			if runes[i] == '\n' {
+				cutIdx = i
+				foundCut = true
+				break
+			}
+		}
+	}
+
+	// 3. Try space (' ') within lookbackSpace runes
+	if !foundCut && lookbackSpace > 0 {
+		limitSpace := cutIdx - lookbackSpace
+		for i := cutIdx - 1; i >= limitSpace; i-- {
+			if runes[i] == ' ' {
+				cutIdx = i
+				foundCut = true
+				break
+			}
+		}
+	}
+
+	truncated := strings.TrimRight(string(runes[:cutIdx]), " \t\r\n")
+
+	// Scan lines to detect if an open fenced code block is left unclosed
+	lines := strings.Split(truncated, "\n")
+	inCodeBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+		}
+	}
+
+	if inCodeBlock {
+		truncated += "\n```"
+	}
+
+	return truncated
+}
+
+func getArtifactSaveDir(targetDirs ...string) string {
+	for _, dir := range targetDirs {
+		if dir != "" {
+			agentDir := filepath.Join(dir, "scratch", "downloads")
+			if err := os.MkdirAll(agentDir, 0700); err == nil {
+				return agentDir
+			}
+		}
+	}
+
+	// 1. Try local scratch/downloads if it exists in current working dir
+	localDir := filepath.Join("scratch", "downloads")
+	if info, err := os.Stat(localDir); err == nil && info.IsDir() {
+		return localDir
+	}
+
+	// 2. Try common agents scratch/downloads (shared across all bot agents, zero bot name hardcoding)
+	agentsBase := getAgentsDir()
+	commonDir := filepath.Join(agentsBase, "common", "scratch", "downloads")
+	if err := os.MkdirAll(commonDir, 0700); err == nil {
+		return commonDir
+	}
+
+	// 3. Fallback to os.TempDir() / antigravity-bot / scratch / downloads
+	tmpDir := filepath.Join(os.TempDir(), "antigravity-bot", "scratch", "downloads")
+	_ = os.MkdirAll(tmpDir, 0700)
+	return tmpDir
+}
+
+// RotateArtifactFiles prunes older response_*.md artifact files in dir,
+// keeping at most maxKeep newest files and pruning any files older than maxAge.
+func RotateArtifactFiles(dir string, maxKeep int, maxAge time.Duration) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+
+	type fileMeta struct {
+		name    string
+		modTime time.Time
+	}
+	var artifacts []fileMeta
+	now := time.Now()
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "response_") && strings.HasSuffix(name, ".md") {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			artifacts = append(artifacts, fileMeta{
+				name:    name,
+				modTime: info.ModTime(),
+			})
+		}
+	}
+
+	// Sort newest first
+	sort.Slice(artifacts, func(i, j int) bool {
+		return artifacts[i].modTime.After(artifacts[j].modTime)
+	})
+
+	removed := 0
+	for i, f := range artifacts {
+		shouldRemove := false
+		if maxAge > 0 && now.Sub(f.modTime) > maxAge {
+			shouldRemove = true
+		} else if maxKeep > 0 && i >= maxKeep {
+			shouldRemove = true
+		}
+
+		if shouldRemove {
+			fullPath := filepath.Join(dir, f.name)
+			if err := os.Remove(fullPath); err == nil {
+				removed++
+			}
+		}
+	}
+
+	return removed
 }
 
 // ExtractThinkingAndMarkdown extracts thinking / CoT blocks from raw model output,
@@ -210,9 +409,19 @@ func sendRichMessage(bot *tgbotapi.BotAPI, chatID int64, input any, markups ...*
 	return &sentMsg, nil
 }
 
-// sendAdaptiveResponse sends messages via sendRichMessage when length > 4000 or containing tables,
-// gracefully falling back to SplitHTMLChunks + sendMessage upon failure.
+// sendAdaptiveResponse routes outbound responses across the Tri-Modal Delivery Architecture:
+// Tier 1 (Classic Bubble): < 3000 runes, no tables, no thoughts -> classic sendMessage (HTML).
+// Tier 2 (Rich Article): 3000..32768 runes, or contains tables/thoughts/large HTML -> monolithic sendRichMessage.
+// Tier 3 (Markdown Artifact): > 32768 runes -> preview summary via sendRichMessage + .md Telegram document.
 func sendAdaptiveResponse(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, text string, markups ...*tgbotapi.InlineKeyboardMarkup) []string {
+	return sendAdaptiveResponseWithWorkspace(bot, chatID, activeMsgID, text, "", markups...)
+}
+
+// sendAdaptiveResponseWithWorkspace routes outbound responses across the Tri-Modal Delivery Architecture
+// while respecting the session workspace for isolated artifact storage.
+func sendAdaptiveResponseWithWorkspace(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, text string, workspace string, markups ...*tgbotapi.InlineKeyboardMarkup) []string {
+	tier := DetermineDeliveryTier(text)
+
 	if bot == nil {
 		formatted := MarkdownToTelegramHTML(text)
 		if strings.TrimSpace(formatted) == "" {
@@ -229,7 +438,69 @@ func sendAdaptiveResponse(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, t
 		return chunks
 	}
 
-	if ShouldUseRichMessage(text) {
+	switch tier {
+	case Tier3MarkdownArtifact:
+		totalRunes := utf8.RuneCountInString(text)
+		previewText := TruncateMarkdownSafely(text, PreviewTruncateLimit)
+		notice := fmt.Sprintf("\n\n---\n📄 **Полный ответ (%d знаков) сформирован и прикреплён файлом-артефактом ниже.**", totalRunes)
+		fullPreview := previewText + notice
+
+		// 1. Send Preview via sendRichMessage (or fallback to classic HTML)
+		_, err := sendRichMessage(bot, chatID, fullPreview, markups...)
+		if err != nil {
+			log.Printf("Tier 3 sendRichMessage preview failed for chatID %d (len %d): %v, falling back to classic preview", chatID, len(text), err)
+			formattedPreview := MarkdownToTelegramHTML(fullPreview)
+			msg := tgbotapi.NewMessage(chatID, formattedPreview)
+			msg.ParseMode = "HTML"
+			if len(markups) > 0 && markups[0] != nil {
+				msg.ReplyMarkup = markups[0]
+			}
+			bot.Send(msg)
+		}
+
+		// 2. Eliminate streaming draft atomically
+		if activeMsgID != 0 {
+			delMsg := tgbotapi.NewDeleteMessage(chatID, activeMsgID)
+			_, _ = bot.Send(delMsg)
+		}
+
+		// 3. Save full unclipped markdown to scratch/downloads/response_<timestamp>.md (0600)
+		artifactDir := getArtifactSaveDir(workspace)
+		RotateArtifactFiles(artifactDir, 20, 24*time.Hour)
+
+		timestamp := time.Now().UTC().Format("20060102_150405")
+		fileName := fmt.Sprintf("response_%s.md", timestamp)
+		filePath := filepath.Join(artifactDir, fileName)
+
+		if writeErr := os.WriteFile(filePath, []byte(text), 0600); writeErr != nil {
+			log.Printf("[Artifacts] Failed to save Tier 3 artifact %s: %v", filePath, writeErr)
+		}
+
+		// 4. Send as Telegram Document with readable name "agent_response.md"
+		if f, openErr := os.Open(filePath); openErr == nil {
+			defer f.Close()
+			doc := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
+				Name:   "agent_response.md",
+				Reader: f,
+			})
+			doc.Caption = fmt.Sprintf("📄 agent_response.md (%d знаков)", totalRunes)
+			if _, docErr := bot.Send(doc); docErr != nil {
+				log.Printf("[Artifacts] Failed to send Tier 3 document to chat %d: %v", chatID, docErr)
+			}
+		} else {
+			doc := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
+				Name:   "agent_response.md",
+				Reader: bytes.NewReader([]byte(text)),
+			})
+			doc.Caption = fmt.Sprintf("📄 agent_response.md (%d знаков)", totalRunes)
+			if _, docErr := bot.Send(doc); docErr != nil {
+				log.Printf("[Artifacts] Failed to send Tier 3 in-memory document to chat %d: %v", chatID, docErr)
+			}
+		}
+
+		return []string{fullPreview}
+
+	case Tier2RichArticle:
 		_, err := sendRichMessage(bot, chatID, text, markups...)
 		if err == nil {
 			if activeMsgID != 0 {
@@ -239,8 +510,12 @@ func sendAdaptiveResponse(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, t
 			return []string{text}
 		}
 		log.Printf("sendRichMessage failed for chatID %d (len %d), falling back to classic cascade: %v", chatID, len(text), err)
+
+	case Tier1ClassicBubble:
+		// Fall through to classic bubble delivery
 	}
 
+	// Classic delivery (Tier 1 or Tier 2 fallback)
 	if activeMsgID == 0 {
 		formatted := MarkdownToTelegramHTML(text)
 		if strings.TrimSpace(formatted) == "" {
