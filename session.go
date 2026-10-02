@@ -1209,6 +1209,9 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 	if scanner == nil || ctx == nil {
 		return errors.New("nil scanner or context")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	defer func() {
 		s.mu.Lock()
@@ -1237,6 +1240,9 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 			return ctx.Err()
 		case l, ok := <-lines:
 			if !ok {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				return nil
 			}
 			line = l

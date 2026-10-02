@@ -1613,6 +1613,14 @@ func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
 		payload.Ext = ".mp4"
 		payload.OriginalFileName = fmt.Sprintf("videonote_%d.mp4", msg.MessageID)
 	} else if msg.Sticker != nil {
+		payload.FileID = msg.Sticker.FileID
+		if msg.Sticker.IsAnimated {
+			payload.Ext = ".tgs"
+		} else {
+			payload.Ext = ".webp"
+		}
+		payload.OriginalFileName = fmt.Sprintf("sticker_%d%s", msg.MessageID, payload.Ext)
+
 		stickerEmoji := strings.TrimSpace(msg.Sticker.Emoji)
 		if stickerEmoji == "" {
 			stickerEmoji = "🎨"

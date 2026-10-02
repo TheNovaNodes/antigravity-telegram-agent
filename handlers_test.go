@@ -334,6 +334,7 @@ func TestExtractInboundPayload(t *testing.T) {
 
 	t.Run("sticker with emoji and set name", func(t *testing.T) {
 		msg := &tgbotapi.Message{
+			MessageID: 101,
 			Sticker: &tgbotapi.Sticker{
 				FileID:  "stk1",
 				Emoji:   "🚀",
@@ -342,13 +343,14 @@ func TestExtractInboundPayload(t *testing.T) {
 		}
 		p := extractInboundPayload(msg)
 		expected := "[Пользователь отправил стикер: 🚀 (набор: SpacePack)]"
-		if p.Text != expected || p.FileID != "" || p.IsVoice {
-			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		if p.Text != expected || p.FileID != "stk1" || p.Ext != ".webp" || p.OriginalFileName != "sticker_101.webp" || p.IsVoice {
+			t.Errorf("Expected text %q, fileID stk1, ext .webp, original sticker_101.webp, got %+v", expected, p)
 		}
 	})
 
 	t.Run("sticker without set name", func(t *testing.T) {
 		msg := &tgbotapi.Message{
+			MessageID: 102,
 			Sticker: &tgbotapi.Sticker{
 				FileID: "stk2",
 				Emoji:  "👍",
@@ -356,13 +358,31 @@ func TestExtractInboundPayload(t *testing.T) {
 		}
 		p := extractInboundPayload(msg)
 		expected := "[Пользователь отправил стикер: 👍]"
-		if p.Text != expected || p.FileID != "" {
-			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		if p.Text != expected || p.FileID != "stk2" || p.Ext != ".webp" || p.OriginalFileName != "sticker_102.webp" {
+			t.Errorf("Expected text %q, fileID stk2, ext .webp, got %+v", expected, p)
+		}
+	})
+
+	t.Run("sticker animated", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			MessageID: 103,
+			Sticker: &tgbotapi.Sticker{
+				FileID:     "stk_anim",
+				Emoji:      "🎉",
+				SetName:    "PartyPack",
+				IsAnimated: true,
+			},
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь отправил стикер: 🎉 (набор: PartyPack)]"
+		if p.Text != expected || p.FileID != "stk_anim" || p.Ext != ".tgs" || p.OriginalFileName != "sticker_103.tgs" {
+			t.Errorf("Expected text %q, fileID stk_anim, ext .tgs, got %+v", expected, p)
 		}
 	})
 
 	t.Run("sticker without emoji fallback", func(t *testing.T) {
 		msg := &tgbotapi.Message{
+			MessageID: 104,
 			Sticker: &tgbotapi.Sticker{
 				FileID:  "stk3",
 				SetName: "AbstractPack",
@@ -370,13 +390,14 @@ func TestExtractInboundPayload(t *testing.T) {
 		}
 		p := extractInboundPayload(msg)
 		expected := "[Пользователь отправил стикер: 🎨 (набор: AbstractPack)]"
-		if p.Text != expected || p.FileID != "" {
-			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		if p.Text != expected || p.FileID != "stk3" || p.Ext != ".webp" || p.OriginalFileName != "sticker_104.webp" {
+			t.Errorf("Expected text %q, got %+v", expected, p)
 		}
 	})
 
 	t.Run("sticker with accompanying text or caption", func(t *testing.T) {
 		msg := &tgbotapi.Message{
+			MessageID: 105,
 			Sticker: &tgbotapi.Sticker{
 				FileID:  "stk4",
 				Emoji:   "🔥",
@@ -386,8 +407,8 @@ func TestExtractInboundPayload(t *testing.T) {
 		}
 		p := extractInboundPayload(msg)
 		expected := "[Пользователь отправил стикер: 🔥 (набор: FirePack)]\nLook at this deployment"
-		if p.Text != expected || p.FileID != "" {
-			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		if p.Text != expected || p.FileID != "stk4" || p.Ext != ".webp" || p.OriginalFileName != "sticker_105.webp" {
+			t.Errorf("Expected text %q, got %+v", expected, p)
 		}
 	})
 
@@ -557,11 +578,31 @@ func TestHandleUpdate_Sticker(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
+	mockAgents := t.TempDir()
+	os.Setenv("AGENTS_DIR", mockAgents)
+	defer os.Unsetenv("AGENTS_DIR")
+
 	os.Setenv("AGY_BINARY", "cat")
 	defer os.Unsetenv("AGY_BINARY")
 
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/webp")
+		w.Write([]byte("fake-webp-sticker-content"))
+	}))
+	defer fileServer.Close()
+
 	ms := newMockServer()
 	defer ms.Close()
+
+	ms.customHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "getFile") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"file_id":"stk_file_123","file_path":"%s"}}`, fileServer.URL+"/sticker.webp")))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"mocked"}}`))
+	})
 
 	bot := createMockBot(ms)
 	chatID := int64(12345)
@@ -574,7 +615,7 @@ func TestHandleUpdate_Sticker(t *testing.T) {
 			Chat:      &tgbotapi.Chat{ID: chatID},
 			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
 			Sticker: &tgbotapi.Sticker{
-				FileID:  "stk_123",
+				FileID:  "stk_file_123",
 				Emoji:   "🚀",
 				SetName: "LaunchSet",
 			},
@@ -589,6 +630,29 @@ func TestHandleUpdate_Sticker(t *testing.T) {
 		defer session.Kill()
 	}
 
+	downloadsDir := filepath.Join(mockAgents, bot.Self.UserName, "scratch", "downloads")
+	files, err := os.ReadDir(downloadsDir)
+	if err != nil {
+		t.Fatalf("Failed to read downloads dir: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("Expected downloaded .webp file in %s, got 0 files", downloadsDir)
+	}
+	foundWebP := false
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".webp") {
+			foundWebP = true
+			content, _ := os.ReadFile(filepath.Join(downloadsDir, f.Name()))
+			if string(content) != "fake-webp-sticker-content" {
+				t.Errorf("Unexpected content in downloaded sticker: %s", string(content))
+			}
+			break
+		}
+	}
+	if !foundWebP {
+		t.Errorf("Did not find downloaded .webp file in %s", downloadsDir)
+	}
+
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 	for _, body := range ms.sentBodies {
@@ -596,6 +660,84 @@ func TestHandleUpdate_Sticker(t *testing.T) {
 		if strings.Contains(unescaped, "Contacts are not supported") {
 			t.Errorf("Sticker triggered unsupported media warning: %s", body)
 		}
+	}
+}
+
+func TestHandleUpdate_StickerAnimated(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	mockAgents := t.TempDir()
+	os.Setenv("AGENTS_DIR", mockAgents)
+	defer os.Unsetenv("AGENTS_DIR")
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-tgsticker")
+		w.Write([]byte("fake-tgs-animated-sticker-content"))
+	}))
+	defer fileServer.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	ms.customHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "getFile") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"file_id":"stk_file_anim","file_path":"%s"}}`, fileServer.URL+"/sticker.tgs")))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"mocked"}}`))
+	})
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	update := tgbotapi.Update{
+		UpdateID: 402,
+		Message: &tgbotapi.Message{
+			MessageID: 89,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+			Sticker: &tgbotapi.Sticker{
+				FileID:     "stk_file_anim",
+				Emoji:      "🎉",
+				SetName:    "PartySet",
+				IsAnimated: true,
+			},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	if session != nil {
+		defer session.Kill()
+	}
+
+	downloadsDir := filepath.Join(mockAgents, bot.Self.UserName, "scratch", "downloads")
+	files, err := os.ReadDir(downloadsDir)
+	if err != nil {
+		t.Fatalf("Failed to read downloads dir: %v", err)
+	}
+	foundTGS := false
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".tgs") {
+			foundTGS = true
+			content, _ := os.ReadFile(filepath.Join(downloadsDir, f.Name()))
+			if string(content) != "fake-tgs-animated-sticker-content" {
+				t.Errorf("Unexpected content in downloaded animated sticker: %s", string(content))
+			}
+			break
+		}
+	}
+	if !foundTGS {
+		t.Errorf("Did not find downloaded .tgs file in %s", downloadsDir)
 	}
 }
 
