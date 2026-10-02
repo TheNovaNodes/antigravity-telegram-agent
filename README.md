@@ -1,7 +1,7 @@
 # 🛸 Antigravity Telegram Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-82.0%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-82.2%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.25.14+-00ADD8?style=for-the-badge&logo=go)
 
@@ -40,7 +40,7 @@ The core is decomposed into distinct, focused domain modules:
 | [`main.go`](main.go) | Multi-bot long-polling lifecycle, signal traps, and graceful shutdown supervisor. |
 | [`handlers.go`](handlers.go) | Telegram update router, slash-command handlers (`/stop`, `/export`, etc.), interactive callback queries (`cmd:stop`, `cmd:retry`), and media downloads with `.md` drop-to-resume. |
 | [`account_pool.go`](account_pool.go) | Multi-account isolation, dynamic quota monitoring, automatic cooldown backoff & auto-recovery, and cache deduplication. |
-| [`account_handlers.go`](account_handlers.go) | Account management handlers, status dashboards, manual account switching, and `/accounts` command. |
+| [`account_handlers.go`](account_handlers.go) | Account management handlers, Master-Detail UI dashboards & profile cards, manual account switching, and `/accounts` command. |
 | [`session.go`](session.go) | `AgySession` process lifecycle, mutex-decoupled non-blocking I/O, 1200ms streaming throttler, Inactivity Turn Watchdog, Stream Auto-Recovery, and 429 Quota Safe Parking. |
 | [`subprocess_watchdog.go`](subprocess_watchdog.go) | Autonomous `/proc` scanner and reaper eliminating `SIGTTIN`/`SIGTTOU` state `T` deadlocks via two-phase `SIGCONT` + `SIGKILL`. |
 | [`storage.go`](storage.go) | SQLite schema migrations (`data/sessions_<bot>.db`), WAL mode configuration, and user CRUD. |
