@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -1631,6 +1632,26 @@ func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
 		} else {
 			payload.Text = stickerContext
 		}
+	} else if msg.Location != nil {
+		lat := msg.Location.Latitude
+		lon := msg.Location.Longitude
+		if lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && !math.IsNaN(lat) && !math.IsNaN(lon) {
+			var locContext string
+			if msg.Location.HorizontalAccuracy > 0 {
+				locContext = fmt.Sprintf("[Пользователь передал геопозицию: Latitude: %.6f, Longitude: %.6f, точность: ~%.1fм]", lat, lon, msg.Location.HorizontalAccuracy)
+			} else {
+				locContext = fmt.Sprintf("[Пользователь передал геопозицию: Latitude: %.6f, Longitude: %.6f]", lat, lon)
+			}
+			accompanying := payload.Text
+			if accompanying == "" {
+				accompanying = payload.Caption
+			}
+			if accompanying != "" {
+				payload.Text = locContext + "\n" + accompanying
+			} else {
+				payload.Text = locContext
+			}
+		}
 	}
 
 	return payload
@@ -1665,7 +1686,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	payload := extractInboundPayload(msg)
 
 	if payload.Text == "" && payload.Caption == "" && payload.FileID == "" {
-		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Contacts and locations are not supported. Please send text, photo, document, voice message, video note, or sticker."))
+		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Contacts are not supported. Please send text, photo, document, voice message, video note, sticker, or location."))
 		return
 	}
 
