@@ -9,6 +9,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
 	"io"
+	"math"
 	_ "modernc.org/sqlite"
 	"net/http"
 	"net/http/httptest"
@@ -204,7 +205,7 @@ func TestHandleUpdate_UnsupportedMedia(t *testing.T) {
 	foundWarning := false
 	for _, body := range ms.sentBodies {
 		unescaped, _ := url.QueryUnescape(body)
-		if strings.Contains(unescaped, "Contacts and locations are not supported") {
+		if strings.Contains(unescaped, "Contacts are not supported") {
 			foundWarning = true
 			break
 		}
@@ -389,6 +390,85 @@ func TestExtractInboundPayload(t *testing.T) {
 			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
 		}
 	})
+
+	t.Run("location with coordinates and accuracy", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Location: &tgbotapi.Location{
+				Latitude:           52.520000,
+				Longitude:          13.405000,
+				HorizontalAccuracy: 15.5,
+			},
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь передал геопозицию: Latitude: 52.520000, Longitude: 13.405000, точность: ~15.5м]"
+		if p.Text != expected || p.FileID != "" || p.IsVoice {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
+
+	t.Run("location with coordinates without accuracy", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Location: &tgbotapi.Location{
+				Latitude:  48.856600,
+				Longitude: 2.352200,
+			},
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь передал геопозицию: Latitude: 48.856600, Longitude: 2.352200]"
+		if p.Text != expected || p.FileID != "" {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
+
+	t.Run("location with accompanying caption", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Location: &tgbotapi.Location{
+				Latitude:  37.774900,
+				Longitude: -122.419400,
+			},
+			Caption: "San Francisco Office",
+		}
+		p := extractInboundPayload(msg)
+		expected := "[Пользователь передал геопозицию: Latitude: 37.774900, Longitude: -122.419400]\nSan Francisco Office"
+		if p.Text != expected || p.FileID != "" {
+			t.Errorf("Expected text %q, fileID empty, got %+v", expected, p)
+		}
+	})
+
+	t.Run("invalid location coordinates out of bounds", func(t *testing.T) {
+		// Latitude > 90
+		msg1 := &tgbotapi.Message{
+			Location: &tgbotapi.Location{
+				Latitude:  95.0,
+				Longitude: 10.0,
+			},
+		}
+		if p := extractInboundPayload(msg1); p.Text != "" {
+			t.Errorf("Expected empty payload for Lat > 90, got %+v", p)
+		}
+
+		// Longitude < -180
+		msg2 := &tgbotapi.Message{
+			Location: &tgbotapi.Location{
+				Latitude:  10.0,
+				Longitude: -195.0,
+			},
+		}
+		if p := extractInboundPayload(msg2); p.Text != "" {
+			t.Errorf("Expected empty payload for Lon < -180, got %+v", p)
+		}
+
+		// NaN coordinates
+		msg3 := &tgbotapi.Message{
+			Location: &tgbotapi.Location{
+				Latitude:  math.NaN(),
+				Longitude: 10.0,
+			},
+		}
+		if p := extractInboundPayload(msg3); p.Text != "" {
+			t.Errorf("Expected empty payload for NaN Latitude, got %+v", p)
+		}
+	})
 }
 
 func TestHandleUpdate_VideoNote(t *testing.T) {
@@ -513,9 +593,97 @@ func TestHandleUpdate_Sticker(t *testing.T) {
 	defer ms.mu.Unlock()
 	for _, body := range ms.sentBodies {
 		unescaped, _ := url.QueryUnescape(body)
-		if strings.Contains(unescaped, "Contacts and locations are not supported") {
+		if strings.Contains(unescaped, "Contacts are not supported") {
 			t.Errorf("Sticker triggered unsupported media warning: %s", body)
 		}
+	}
+}
+
+func TestHandleUpdate_Location(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	update := tgbotapi.Update{
+		UpdateID: 501,
+		Message: &tgbotapi.Message{
+			MessageID: 99,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+			Location: &tgbotapi.Location{
+				Latitude:           55.7558,
+				Longitude:          37.6173,
+				HorizontalAccuracy: 12.0,
+			},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	if session != nil {
+		defer session.Kill()
+	}
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Contacts are not supported") {
+			t.Errorf("Valid location triggered unsupported media warning: %s", body)
+		}
+	}
+}
+
+func TestHandleUpdate_InvalidLocation(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	// Location out of valid range (-90 <= Lat <= 90)
+	update := tgbotapi.Update{
+		UpdateID: 502,
+		Message: &tgbotapi.Message{
+			MessageID: 101,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+			Location: &tgbotapi.Location{
+				Latitude:  120.0,
+				Longitude: 37.6173,
+			},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	foundWarning := false
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Contacts are not supported") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("Expected unsupported media warning for out-of-bounds location")
 	}
 }
 
