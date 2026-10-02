@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Master-Detail Ergonomic Dashboard & Zero Footgun UI (Issue #343)
+- **Two-Tiered Master-Detail Dashboard Architecture (Issue #343)**:
+  - Eliminated the 30-button wide row wall and horizontal text truncation in `/accounts` by splitting account management into Master (Overview) and Detail (Account Card) views.
+  - Implemented 2-per-row compact grid layout for account selection in `formatAccountsDashboard` (`[ 🟢 ID 🔒 ] [ ⚡ ID • ]`) with dynamic state badges (`🟢 Active`, `⚡ In-Use`, `⏳ Cooldown`, `🧊 Frozen`, `🔴 Expired`) and chat relationship indicators (`🔒 Pinned`, `• Active`).
+  - Added dedicated global action rows in the master dashboard: `[🔓 Unpin (Enable Auto-Pool)]` (dynamic chat unpin) alongside `[🔄 Refresh Quotas]` and `[📥 Ingest Current Login]`.
+  - Implemented interactive in-place `formatAccountCard` (`acc:manage:<id>`): displays comprehensive account dossier (email, home directory, live status, Gemini/Claude quota windows with UTC reset times, active turn counts, total errors, and last used timestamp).
+  - Provided full-width (1 button per row) action palette on account cards: `Switch to this Account`, `Pin to this Chat (Sticky Mode)` / `Unpin`, `Freeze Account` / `Unfreeze Account`, `Delete Account from Pool`, and `[🔙 « Back to Account List]`.
+  - Guaranteed **Zero Footgun & Nil-Safety**: dangerous actions (`Delete`, `Freeze`) quarantined inside detail cards; missing/deleted accounts safely intercepted with callback alerts and automatic dashboard refreshes without nil pointer dereference.
+  - Implemented context-aware deletion cancellation (`acc:del_cancel:<id>`): returning from deletion confirmation returns directly to the specific account card.
+  - Softly suppressed harmless `Bad Request: message is not modified` API errors across in-place navigation transitions (`manage`, `back`, `del_cancel`).
+  - Added comprehensive unit test suite in `account_handlers_test.go` (`TestAccountsDashboard_MasterDetailGridRendering`, `TestAccountCard_ButtonsAndQuotaFormatting`, `TestAccountCallback_NavigationMasterDetailBack`, `TestAccountCallback_ManageNonExistentAccountSafety`).
+
 ### Account Lifecycle Management: Freeze, Unfreeze, Delete & Administrative Immunity (Issue #339)
 - **Profile Lifecycle Supervision (Issue #339)**:
   - Added `StateFrozen` state to `AccountState` with badge `🧊 Frozen (Administrative Hold)`.

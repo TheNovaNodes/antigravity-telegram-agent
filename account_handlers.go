@@ -126,7 +126,7 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 		sb.WriteString("Use <b>[📥 Ingest Current Login]</b> or <code>/accounts ingest</code> to adopt your active CLI login.")
 	}
 
-	var keyboardRows [][]tgbotapi.InlineKeyboardButton
+	var accountButtons []tgbotapi.InlineKeyboardButton
 
 	for _, acc := range accounts {
 		isCurrent := (activeAcc != nil && activeAcc.ID == acc.ID) || (pinnedID == acc.ID)
@@ -137,7 +137,7 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 			statusBadge = "🟢"
 			statusText = "Active (Ready)"
 		case StateInUse:
-			statusBadge = "🟡"
+			statusBadge = "⚡"
 			statusText = "In-Use (Processing turn)"
 		case StateCooldown:
 			statusBadge = "⏳"
@@ -163,14 +163,20 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 		case StateFrozen:
 			statusBadge = "🧊"
 			statusText = "Frozen (Administrative Hold)"
+		default:
+			statusBadge = "⚪"
+			statusText = acc.State.String()
 		}
 
 		currentTag := ""
+		indicator := ""
 		if isCurrent {
 			if isPinned {
 				currentTag = " <b>[CURRENT • PINNED 🔒]</b>"
+				indicator = " 🔒"
 			} else {
 				currentTag = " <b>[CURRENT]</b>"
+				indicator = " •"
 			}
 		}
 
@@ -213,35 +219,31 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 			sb.WriteString("   └─ Last Used: Never\n\n")
 		}
 
-		// Row buttons for this account
-		var row []tgbotapi.InlineKeyboardButton
-		if acc.State == StateFrozen {
-			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🧊 Unfreeze %s", acc.ID), fmt.Sprintf("acc:unfreeze:%s", acc.ID)))
-			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🗑️ Delete %s", acc.ID), fmt.Sprintf("acc:del_confirm:%s", acc.ID)))
-		} else {
-			if !isCurrent && acc.State != StateCooldown {
-				row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("👉 Switch to %s", acc.ID), fmt.Sprintf("acc:switch:%s", acc.ID)))
-			}
-			if acc.State == StateCooldown {
-				row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🔄 Reset Cooldown: %s", acc.ID), fmt.Sprintf("acc:cooldown:%s", acc.ID)))
-			}
-			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("❄️ Freeze %s", acc.ID), fmt.Sprintf("acc:freeze:%s", acc.ID)))
-			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🗑️ Delete %s", acc.ID), fmt.Sprintf("acc:del_confirm:%s", acc.ID)))
-		}
-		if len(row) > 0 {
-			keyboardRows = append(keyboardRows, row)
-		}
+		// Master View button for this account: 2 per row
+		btnLabel := fmt.Sprintf("%s %s%s", statusBadge, acc.ID, indicator)
+		accountButtons = append(accountButtons, tgbotapi.NewInlineKeyboardButtonData(btnLabel, fmt.Sprintf("acc:manage:%s", acc.ID)))
 	}
 
-	// Pin / Unpin controls
-	var pinRow []tgbotapi.InlineKeyboardButton
-	if isPinned {
-		pinRow = append(pinRow, tgbotapi.NewInlineKeyboardButtonData("🔓 Unpin (Enable Auto-Pool)", "acc:unpin"))
-	} else if activeAcc != nil {
-		pinRow = append(pinRow, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🔒 Pin to %s (Sticky)", activeAcc.ID), fmt.Sprintf("acc:pin:%s", activeAcc.ID)))
+	var keyboardRows [][]tgbotapi.InlineKeyboardButton
+
+	// Layout account buttons 2 per row
+	var currentRow []tgbotapi.InlineKeyboardButton
+	for _, btn := range accountButtons {
+		currentRow = append(currentRow, btn)
+		if len(currentRow) == 2 {
+			keyboardRows = append(keyboardRows, currentRow)
+			currentRow = nil
+		}
 	}
-	if len(pinRow) > 0 {
-		keyboardRows = append(keyboardRows, pinRow)
+	if len(currentRow) > 0 {
+		keyboardRows = append(keyboardRows, currentRow)
+	}
+
+	// Pin / Unpin controls for master view: only unpin if currently pinned
+	if isPinned {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🔓 Unpin (Enable Auto-Pool)", "acc:unpin"),
+		})
 	}
 
 	// Actions row
@@ -250,6 +252,157 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 		tgbotapi.NewInlineKeyboardButtonData("📥 Ingest Current Login", "acc:ingest"),
 	}
 	keyboardRows = append(keyboardRows, actionRow)
+
+	return sb.String(), tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
+}
+
+// formatAccountCard builds the detailed single-account card and full-width management keyboard.
+func formatAccountCard(pool *AccountPool, acc *Account, chatID int64, botNames ...string) (string, tgbotapi.InlineKeyboardMarkup) {
+	pinnedID, isPinned := pool.GetPinnedAccount(chatID, botNames...)
+	activeAcc := pool.GetActiveAccountForChat(chatID, botNames...)
+
+	isCurrent := (activeAcc != nil && activeAcc.ID == acc.ID) || (pinnedID == acc.ID)
+	isThisPinned := isPinned && pinnedID == acc.ID
+
+	var statusBadge, statusText string
+	switch acc.State {
+	case StateActive:
+		statusBadge = "🟢"
+		statusText = "Active (Ready)"
+	case StateInUse:
+		statusBadge = "⚡"
+		statusText = "In-Use (Processing turn)"
+	case StateCooldown:
+		statusBadge = "⏳"
+		timeLeft := time.Until(acc.CooldownUntil)
+		if timeLeft < 0 {
+			timeLeft = 0
+		}
+		hours := int(timeLeft.Hours())
+		mins := int(timeLeft.Minutes()) % 60
+		secs := int(timeLeft.Seconds()) % 60
+		if hours > 0 {
+			statusText = fmt.Sprintf("Cooldown (%02dh %02dm remaining, resets %s UTC)",
+				hours, mins, acc.CooldownUntil.UTC().Format("15:04"))
+		} else if mins > 0 {
+			statusText = fmt.Sprintf("Cooldown (Backoff: %02dm %02ds remaining, resets %s UTC)",
+				mins, secs, acc.CooldownUntil.UTC().Format("15:04"))
+		} else {
+			statusText = fmt.Sprintf("Cooldown (Backoff: %02ds remaining)", secs)
+		}
+	case StateExpired:
+		statusBadge = "🔴"
+		statusText = "Expired (Re-authentication required)"
+	case StateFrozen:
+		statusBadge = "🧊"
+		statusText = "Frozen (Administrative Hold)"
+	default:
+		statusBadge = "⚪"
+		statusText = acc.State.String()
+	}
+
+	currentTag := ""
+	if isCurrent {
+		if isThisPinned {
+			currentTag = " <b>[CURRENT • PINNED 🔒]</b>"
+		} else {
+			currentTag = " <b>[CURRENT]</b>"
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("⚙️ <b>Manage Account:</b> <code>%s</code>%s\n", acc.ID, currentTag))
+	sb.WriteString(fmt.Sprintf("📧 <b>Email:</b> <code>%s</code>\n", acc.Email))
+	if acc.HomeDir != "" {
+		sb.WriteString(fmt.Sprintf("📁 <b>Profile:</b> <code>%s</code>\n", acc.HomeDir))
+	}
+	sb.WriteString(fmt.Sprintf("🚥 <b>Status:</b> %s %s\n", statusBadge, statusText))
+
+	if !acc.Quota.LastFetchedAt.IsZero() {
+		g5h := fmt.Sprintf("%.0f%%", acc.Quota.Gemini5h.RemainingFraction*100)
+		if acc.Quota.Gemini5h.Disabled {
+			g5h = "disabled"
+		}
+		gWeekly := fmt.Sprintf("%.0f%%", acc.Quota.GeminiWeekly.RemainingFraction*100)
+		if acc.Quota.GeminiWeekly.Disabled {
+			gWeekly = "disabled"
+		}
+		c5h := fmt.Sprintf("%.0f%%", acc.Quota.Claude5h.RemainingFraction*100)
+		if acc.Quota.Claude5h.Disabled {
+			c5h = "disabled"
+		}
+		cWeekly := fmt.Sprintf("%.0f%%", acc.Quota.ClaudeWeekly.RemainingFraction*100)
+		if acc.Quota.ClaudeWeekly.Disabled {
+			cWeekly = "disabled"
+		}
+
+		reset5h := ""
+		if !acc.Quota.Gemini5h.Disabled && !acc.Quota.Gemini5h.ResetTime.IsZero() && time.Now().Before(acc.Quota.Gemini5h.ResetTime) {
+			reset5h = fmt.Sprintf(" (resets %s UTC)", acc.Quota.Gemini5h.ResetTime.UTC().Format("15:04"))
+		}
+
+		sb.WriteString("📊 <b>Quotas:</b>\n")
+		sb.WriteString(fmt.Sprintf("   ├─ Gemini: 5h %s%s • 7d %s\n", g5h, reset5h, gWeekly))
+		sb.WriteString(fmt.Sprintf("   └─ Claude/GPT: 5h %s • 7d %s\n", c5h, cWeekly))
+	} else {
+		sb.WriteString("📊 <b>Quotas:</b> <i>Not fetched (use [🔄 Refresh Quotas])</i>\n")
+	}
+
+	lastUsedStr := "Never"
+	if !acc.LastUsed.IsZero() {
+		lastUsedStr = acc.LastUsed.Format("15:04:05 UTC")
+	}
+	sb.WriteString(fmt.Sprintf("⏱️ <b>Statistics:</b> Active Turns: %d | Total Errors: %d | Last Used: %s\n\n",
+		acc.ActiveTurns, acc.TotalErrors, lastUsedStr))
+	sb.WriteString("Choose an action for this profile:")
+
+	var keyboardRows [][]tgbotapi.InlineKeyboardButton
+
+	// 1. Switch
+	if !isCurrent && acc.State != StateFrozen && acc.State != StateCooldown {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("👉 Switch to this Account", fmt.Sprintf("acc:switch:%s", acc.ID)),
+		})
+	}
+
+	// 2. Cooldown reset
+	if acc.State == StateCooldown {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Reset Cooldown", fmt.Sprintf("acc:cooldown:%s", acc.ID)),
+		})
+	}
+
+	// 3. Pin / Unpin
+	if isThisPinned {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🔓 Unpin from this Chat", fmt.Sprintf("acc:unpin:%s", acc.ID)),
+		})
+	} else if acc.State != StateFrozen {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🔒 Pin to this Chat (Sticky Mode)", fmt.Sprintf("acc:pin:%s", acc.ID)),
+		})
+	}
+
+	// 4. Freeze / Unfreeze
+	if acc.State == StateFrozen {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🧊 Unfreeze Account", fmt.Sprintf("acc:unfreeze:%s", acc.ID)),
+		})
+	} else {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("❄️ Freeze Account", fmt.Sprintf("acc:freeze:%s", acc.ID)),
+		})
+	}
+
+	// 5. Delete
+	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Account from Pool", fmt.Sprintf("acc:del_confirm:%s", acc.ID)),
+	})
+
+	// 6. Back button
+	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("🔙 « Back to Account List", "acc:back"),
+	})
 
 	return sb.String(), tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 }
@@ -464,10 +617,55 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 	}
 
 	action := parts[1]
+	targetID := ""
+	if len(parts) >= 3 {
+		targetID = parts[2]
+	}
+
+	var stayOnCard bool
+
 	switch action {
+	case "manage":
+		if targetID == "" {
+			bot.Request(tgbotapi.NewCallback(cb.ID, "Invalid account ID"))
+			return true
+		}
+		acc, err := GlobalAccountPool.GetAccount(targetID)
+		if err != nil || acc == nil {
+			bot.Request(tgbotapi.NewCallback(cb.ID, "❌ Account not found or deleted"))
+			dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID, botName)
+			editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, dashboardText)
+			editMsg.ParseMode = "HTML"
+			editMsg.ReplyMarkup = &keyboard
+			if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+				log.Printf("[AccountPool] Failed to refresh dashboard on missing account: %v", err)
+			}
+			return true
+		}
+
+		bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+		cardText, cardKeyboard := formatAccountCard(GlobalAccountPool, acc, chatID, botName)
+		editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, cardText)
+		editMsg.ParseMode = "HTML"
+		editMsg.ReplyMarkup = &cardKeyboard
+		if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			log.Printf("[AccountPool] Failed to render account card: %v", err)
+		}
+		return true
+
+	case "back":
+		bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+		dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID, botName)
+		editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, dashboardText)
+		editMsg.ParseMode = "HTML"
+		editMsg.ReplyMarkup = &keyboard
+		if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			log.Printf("[AccountPool] Failed to return to dashboard: %v", err)
+		}
+		return true
+
 	case "switch":
-		if len(parts) >= 3 {
-			targetID := parts[2]
+		if targetID != "" {
 			if err := GlobalAccountPool.SwitchAccount(chatID, targetID, botName); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
@@ -478,11 +676,11 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 			}
 			resetChatSessionCache(db, botName, userID, chatID, true)
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Switched to %s", targetID)))
+			stayOnCard = true
 		}
 
 	case "pin":
-		if len(parts) >= 3 {
-			targetID := parts[2]
+		if targetID != "" {
 			if err := GlobalAccountPool.PinAccount(chatID, targetID, botName); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
@@ -493,6 +691,7 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 			}
 			resetChatSessionCache(db, botName, userID, chatID, true)
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Pinned to %s", targetID)))
+			stayOnCard = true
 		}
 
 	case "unpin":
@@ -501,30 +700,33 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 			return true
 		}
 		bot.Request(tgbotapi.NewCallback(cb.ID, "Unpinned. Auto-pool enabled."))
+		if targetID != "" {
+			stayOnCard = true
+		}
 
 	case "freeze":
-		if len(parts) >= 3 {
-			targetID := parts[2]
+		if targetID != "" {
 			if err := GlobalAccountPool.FreezeAccount(targetID); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
 			}
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s frozen", targetID)))
+			stayOnCard = true
 		}
 
 	case "unfreeze":
-		if len(parts) >= 3 {
-			targetID := parts[2]
+		if targetID != "" {
 			if err := GlobalAccountPool.UnfreezeAccount(targetID); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
 			}
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s unfrozen", targetID)))
+			stayOnCard = true
 		}
 
 	case "del_confirm":
-		if len(parts) >= 3 {
-			targetID := parts[2]
+		if targetID != "" {
+			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Confirm deletion of %s", targetID)))
 			confirmText := fmt.Sprintf("⚠️ <b>Confirm Deletion of Account:</b> <code>%s</code>\n\n"+
 				"Are you sure you want to remove this account from the pool?\n"+
 				"• Pinned bindings will be removed.\n"+
@@ -538,39 +740,62 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 					tgbotapi.NewInlineKeyboardButtonData("🗑️ Purge Storage & Delete", fmt.Sprintf("acc:del_exec:%s:purge", targetID)),
 				),
 				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("🔙 Cancel", "acc:del_cancel"),
+					tgbotapi.NewInlineKeyboardButtonData("🔙 Cancel", fmt.Sprintf("acc:del_cancel:%s", targetID)),
 				),
 			)
 			editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, confirmText)
 			editMsg.ParseMode = "HTML"
 			editMsg.ReplyMarkup = &confirmKeyboard
-			bot.Send(editMsg)
-			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Confirm deletion of %s", targetID)))
+			if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+				log.Printf("[AccountPool] Failed to send delete confirmation: %v", err)
+			}
 			return true
 		}
 
 	case "del_cancel":
 		bot.Request(tgbotapi.NewCallback(cb.ID, "Deletion cancelled"))
+		if targetID != "" {
+			if acc, err := GlobalAccountPool.GetAccount(targetID); err == nil && acc != nil {
+				cardText, cardKeyboard := formatAccountCard(GlobalAccountPool, acc, chatID, botName)
+				editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, cardText)
+				editMsg.ParseMode = "HTML"
+				editMsg.ReplyMarkup = &cardKeyboard
+				if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+					log.Printf("[AccountPool] Failed to return to card on cancel: %v", err)
+				}
+				return true
+			}
+		}
+		// Fallback to dashboard if account not found or no targetID
+		dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID, botName)
+		editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, dashboardText)
+		editMsg.ParseMode = "HTML"
+		editMsg.ReplyMarkup = &keyboard
+		if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			log.Printf("[AccountPool] Failed to return to dashboard on cancel: %v", err)
+		}
+		return true
 
 	case "del_exec":
 		if len(parts) >= 4 {
-			targetID := parts[2]
+			delTargetID := parts[2]
 			purge := parts[3] == "purge"
-			if err := GlobalAccountPool.DeleteAccount(targetID, purge); err != nil {
+			if err := GlobalAccountPool.DeleteAccount(delTargetID, purge); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
 			}
-			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s deleted", targetID)))
+			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s deleted", delTargetID)))
+			stayOnCard = false // Account deleted, return to dashboard
 		}
 
 	case "cooldown":
-		if len(parts) >= 3 {
-			targetID := parts[2]
+		if targetID != "" {
 			if err := GlobalAccountPool.ClearCooldown(targetID); err != nil {
 				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
 				return true
 			}
 			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Cooldown cleared for %s", targetID)))
+			stayOnCard = true
 		}
 
 	case "ingest":
@@ -586,11 +811,26 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 		GlobalAccountPool.FetchAllQuotas()
 	}
 
-	// Update dashboard message in place
+	// Update message in place: either card (if stayOnCard) or master dashboard
+	if stayOnCard && targetID != "" {
+		if acc, _ := GlobalAccountPool.GetAccount(targetID); acc != nil {
+			cardText, cardKeyboard := formatAccountCard(GlobalAccountPool, acc, chatID, botName)
+			editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, cardText)
+			editMsg.ParseMode = "HTML"
+			editMsg.ReplyMarkup = &cardKeyboard
+			if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+				log.Printf("[AccountPool] Failed to update account card: %v", err)
+			}
+			return true
+		}
+	}
+
 	dashboardText, keyboard := formatAccountsDashboard(GlobalAccountPool, chatID, botName)
 	editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, dashboardText)
 	editMsg.ParseMode = "HTML"
 	editMsg.ReplyMarkup = &keyboard
-	bot.Send(editMsg)
+	if _, err := bot.Send(editMsg); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+		log.Printf("[AccountPool] Failed to update dashboard: %v", err)
+	}
 	return true
 }
