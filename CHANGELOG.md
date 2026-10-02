@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Rich Article First Routing & Structural Markdown Detection (Issue #348)
+- **Rich Article First Delivery Policy (`DetermineDeliveryTier`)**:
+  - Implemented high-performance Markdown structure detector `HasMarkdownStructure(text)`: recognizes headings (`#`..`######`), fenced code blocks (` ``` ` / `~~~`), blockquotes (`>`), bullet lists (`-`, `*`, `+`, `•`), numbered lists (`1.`, `1)`), horizontal rules (`---`, `***`), and bold lead-in headers (`**` / `__`).
+  - Calibrated `RichMessageThreshold` to 1500 runes (down from 3000) so any extensive prose response is delivered as a monolithic Telegram Rich Article.
+  - Aligned runtime behavior with the foundational requirement of Issue #336: any response with structural Markdown formatting or exceeding 1500 runes routes to **Tier 2 (Rich Article)**, rendering native large headers and formatted cards instead of plain HTML chat bubbles.
+  - Preserved **Tier 1 (Classic Bubble)** strictly for compact plain conversational text (< 1500 runes without Markdown formatting) and graceful fallback.
+  - Expanded unit test coverage in `rich_message_test.go` covering headings, bullet lists, unicode bullets, code blocks, blockquotes, horizontal rules, and bold headers.
+
 ### Tri-Modal Response Delivery Architecture (Issue #345)
 - **Tri-Modal Dispatch Routing (`sendAdaptiveResponse`)**:
   - Implemented three-tier response routing to permanently eliminate routine HTML chunk splitting spam (`SplitHTMLChunks` cascade):

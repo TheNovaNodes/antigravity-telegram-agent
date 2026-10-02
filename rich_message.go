@@ -19,7 +19,7 @@ import (
 
 const (
 	// RichMessageThreshold is the character threshold (in runes) above which responses switch to sendRichMessage.
-	RichMessageThreshold = 3000
+	RichMessageThreshold = 1500
 
 	// ClassicMessageLimit is the maximum character limit for classic Telegram sendMessage (HTML/Markdown).
 	ClassicMessageLimit = 4000
@@ -35,10 +35,10 @@ const (
 type DeliveryTier int
 
 const (
-	// Tier1ClassicBubble: < 3000 runes, no tables, no thoughts -> classic sendMessage (HTML).
+	// Tier1ClassicBubble: < 1500 runes, plain text without Markdown structure -> classic sendMessage (HTML).
 	Tier1ClassicBubble DeliveryTier = 1
 
-	// Tier2RichArticle: 3000..32768 runes, or contains tables/thoughts -> monolithic sendRichMessage.
+	// Tier2RichArticle: 1500..32768 runes, or contains tables/thoughts/markdown structure -> monolithic sendRichMessage.
 	Tier2RichArticle DeliveryTier = 2
 
 	// Tier3MarkdownArtifact: > 32768 runes -> preview summary via sendRichMessage + .md Telegram document.
@@ -114,25 +114,109 @@ func HasMarkdownTable(text string) bool {
 	return false
 }
 
+// isAllChar checks if string consists solely of target runes, spaces, or tabs, with at least 3 target runes.
+func isAllChar(s string, target rune) bool {
+	count := 0
+	for _, r := range s {
+		if r == target {
+			count++
+		} else if r != ' ' && r != '\t' {
+			return false
+		}
+	}
+	return count >= 3
+}
+
+// isNumberedListItem checks if line starts with a numbered list prefix like "1. ", "12. ", "1) ".
+func isNumberedListItem(s string) bool {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(s) && (s[i] == '.' || s[i] == ')') && i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\t') {
+		return true
+	}
+	return false
+}
+
+// HasMarkdownStructure inspects text for structural Markdown elements such as
+// headings (#..######), fenced code blocks (``` or ~~~), blockquotes (>), list items (-/*/+ /•/1.),
+// bold section prefixes (** / __), or horizontal rules (---/***).
+func HasMarkdownStructure(text string) bool {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// 1. Headings: #..###### followed by space or tab
+		if strings.HasPrefix(trimmed, "#") {
+			i := 0
+			for i < len(trimmed) && trimmed[i] == '#' {
+				i++
+			}
+			if i >= 1 && i <= 6 && i < len(trimmed) && (trimmed[i] == ' ' || trimmed[i] == '\t') {
+				return true
+			}
+		}
+
+		// 2. Fenced code blocks
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			return true
+		}
+
+		// 3. Blockquotes
+		if strings.HasPrefix(trimmed, "> ") || trimmed == ">" {
+			return true
+		}
+
+		// 4. Horizontal rules (at least 3 dashes, asterisks, or underscores with no other characters)
+		if len(trimmed) >= 3 && (isAllChar(trimmed, '-') || isAllChar(trimmed, '*') || isAllChar(trimmed, '_')) {
+			return true
+		}
+
+		// 5. Bullet lists (- , * , + , • )
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") || strings.HasPrefix(trimmed, "• ") {
+			return true
+		}
+
+		// 6. Numbered lists (1. , 12. , etc.)
+		if isNumberedListItem(trimmed) {
+			return true
+		}
+
+		// 7. Bold lead-in header / section
+		if (strings.HasPrefix(trimmed, "**") && strings.Contains(trimmed[2:], "**")) ||
+			(strings.HasPrefix(trimmed, "__") && strings.Contains(trimmed[2:], "__")) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasThoughts checks if the text contains LLM thought/thinking blocks.
 func HasThoughts(text string) bool {
 	return thoughtRegex.MatchString(text)
 }
 
 // DetermineDeliveryTier evaluates which tier should be used to deliver the response.
+// Enforces "Rich Article First": any response with Markdown structure, tables, thoughts,
+// HTML expansion exceeding ClassicMessageLimit, or reaching RichMessageThreshold (1500 runes)
+// routes to Tier 2 (Rich Article).
 func DetermineDeliveryTier(text string) DeliveryTier {
 	runeLen := utf8.RuneCountInString(text)
 	if runeLen > MaxRichMessageLength {
 		return Tier3MarkdownArtifact
 	}
-	if runeLen >= RichMessageThreshold || HasMarkdownTable(text) || HasThoughts(text) || utf8.RuneCountInString(MarkdownToTelegramHTML(text)) > ClassicMessageLimit {
+	if runeLen >= RichMessageThreshold || HasMarkdownTable(text) || HasThoughts(text) || HasMarkdownStructure(text) || utf8.RuneCountInString(MarkdownToTelegramHTML(text)) > ClassicMessageLimit {
 		return Tier2RichArticle
 	}
 	return Tier1ClassicBubble
 }
 
 // ShouldUseRichMessage evaluates whether a message warrants routing to sendRichMessage.
-// Returns true for Tier2RichArticle (>= 3000 runes or tables/thoughts/large HTML, up to 32768 runes).
+// Returns true for Tier2RichArticle (>= 1500 runes or tables/thoughts/structure/large HTML, up to 32768 runes).
 func ShouldUseRichMessage(text string) bool {
 	return DetermineDeliveryTier(text) == Tier2RichArticle
 }
@@ -410,8 +494,8 @@ func sendRichMessage(bot *tgbotapi.BotAPI, chatID int64, input any, markups ...*
 }
 
 // sendAdaptiveResponse routes outbound responses across the Tri-Modal Delivery Architecture:
-// Tier 1 (Classic Bubble): < 3000 runes, no tables, no thoughts -> classic sendMessage (HTML).
-// Tier 2 (Rich Article): 3000..32768 runes, or contains tables/thoughts/large HTML -> monolithic sendRichMessage.
+// Tier 1 (Classic Bubble): < 1500 runes, plain text without Markdown structure -> classic sendMessage (HTML).
+// Tier 2 (Rich Article): 1500..32768 runes, or contains tables/thoughts/markdown structure -> monolithic sendRichMessage.
 // Tier 3 (Markdown Artifact): > 32768 runes -> preview summary via sendRichMessage + .md Telegram document.
 func sendAdaptiveResponse(bot *tgbotapi.BotAPI, chatID int64, activeMsgID int, text string, markups ...*tgbotapi.InlineKeyboardMarkup) []string {
 	return sendAdaptiveResponseWithWorkspace(bot, chatID, activeMsgID, text, "", markups...)

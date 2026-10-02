@@ -212,21 +212,21 @@ func TestSanitizeRichMessageText(t *testing.T) {
 }
 
 func TestShouldUseRichMessage(t *testing.T) {
-	// Short text without table or thoughts (< 3000 runes)
+	// Short plain text without structure, table, or thoughts (< 1500 runes)
 	if ShouldUseRichMessage("Short message") {
-		t.Errorf("short message without table should not use rich message")
+		t.Errorf("short plain message without table or structure should not use rich message")
 	}
 
-	// Border text just below threshold (2999 runes)
-	borderBelow := strings.Repeat("A", 2999)
+	// Border text just below threshold (1499 runes)
+	borderBelow := strings.Repeat("A", 1499)
 	if ShouldUseRichMessage(borderBelow) {
-		t.Errorf("text == 2999 runes without table should use classic bubble")
+		t.Errorf("text == 1499 runes without table or structure should use classic bubble")
 	}
 
-	// Border text at threshold (3000 runes)
-	borderAt := strings.Repeat("A", 3000)
+	// Border text at threshold (1500 runes)
+	borderAt := strings.Repeat("A", 1500)
 	if !ShouldUseRichMessage(borderAt) {
-		t.Errorf("text == 3000 runes SHOULD use rich message (Tier 2 threshold)")
+		t.Errorf("text == 1500 runes SHOULD use rich message (Tier 2 threshold)")
 	}
 
 	// Short text with table
@@ -241,10 +241,52 @@ func TestShouldUseRichMessage(t *testing.T) {
 		t.Errorf("short message with thoughts SHOULD use rich message")
 	}
 
-	// Long text (> 3000 runes) without table
-	longText := strings.Repeat("A", 4001)
+	// Short text with Markdown structure (heading)
+	headingText := "### Architecture Report\nAll services healthy."
+	if !ShouldUseRichMessage(headingText) {
+		t.Errorf("short message with heading SHOULD use rich message")
+	}
+
+	// Short text with Markdown structure (bullet list)
+	listText := "Actions:\n- First action\n- Second action"
+	if !ShouldUseRichMessage(listText) {
+		t.Errorf("short message with bullet list SHOULD use rich message")
+	}
+
+	// Short text with Markdown structure (unicode bullet list)
+	bulletText := "Actions:\n• First item\n• Second item"
+	if !ShouldUseRichMessage(bulletText) {
+		t.Errorf("short message with unicode bullet list SHOULD use rich message")
+	}
+
+	// Short text with Markdown structure (code block)
+	codeText := "Sample:\n```go\nfunc Run() {}\n```"
+	if !ShouldUseRichMessage(codeText) {
+		t.Errorf("short message with code block SHOULD use rich message")
+	}
+
+	// Short text with Markdown structure (blockquote)
+	quoteText := "> Essential invariant: Rich Article First."
+	if !ShouldUseRichMessage(quoteText) {
+		t.Errorf("short message with blockquote SHOULD use rich message")
+	}
+
+	// Short text with Markdown structure (horizontal rule)
+	dividerText := "Section Top\n---\nSection Bottom"
+	if !ShouldUseRichMessage(dividerText) {
+		t.Errorf("short message with horizontal divider SHOULD use rich message")
+	}
+
+	// Short text with Markdown structure (bold header lead-in)
+	boldText := "**Status:** Deployed successfully."
+	if !ShouldUseRichMessage(boldText) {
+		t.Errorf("short message with bold header lead-in SHOULD use rich message")
+	}
+
+	// Long text (> 1500 runes) without table
+	longText := strings.Repeat("A", 2001)
 	if !ShouldUseRichMessage(longText) {
-		t.Errorf("text > 4000 runes SHOULD use rich message")
+		t.Errorf("text > 1500 runes SHOULD use rich message")
 	}
 
 	// Text at upper bound (32768 runes)
@@ -584,8 +626,8 @@ func TestDelivery_Tier2_RichArticle(t *testing.T) {
 		text string
 	}{
 		{
-			name: "Long text exceeding 3000 runes",
-			text: strings.Repeat("Long article line for tier 2 test.\n", 100), // ~3500 runes
+			name: "Long text exceeding 1500 runes",
+			text: strings.Repeat("Long article line for tier 2 test.\n", 60), // ~2100 runes
 		},
 		{
 			name: "Short text with Markdown table",
@@ -594,6 +636,34 @@ func TestDelivery_Tier2_RichArticle(t *testing.T) {
 		{
 			name: "Short text with <thought> block",
 			text: "<thought>Analyzing user intent</thought>Here is the analyzed plan.",
+		},
+		{
+			name: "Short text with Markdown header",
+			text: "### Architecture Overview\nSystem operates within normal parameters.",
+		},
+		{
+			name: "Short text with bullet list",
+			text: "Tasks:\n- Deploy to production\n- Verify health checks",
+		},
+		{
+			name: "Short text with unicode bullet list",
+			text: "Tasks:\n• Deploy to production\n• Verify health checks",
+		},
+		{
+			name: "Short text with fenced code block",
+			text: "Code snippet:\n```go\nfunc HealthCheck() bool { return true }\n```",
+		},
+		{
+			name: "Short text with blockquote",
+			text: "> Critical reminder: zero hacks allowed.",
+		},
+		{
+			name: "Short text with horizontal divider",
+			text: "Section 1\n---\nSection 2",
+		},
+		{
+			name: "Short text with bold section header",
+			text: "**Status:** Deployed successfully.",
 		},
 	}
 
@@ -818,9 +888,9 @@ func TestArtifactSaveDir_Isolation_NoHardcodedBotName(t *testing.T) {
 }
 
 func TestDetermineDeliveryTier_HTMLLengthExpansion(t *testing.T) {
-	// Construct markdown text with rune count < 3000 runes,
-	// but containing entity-rich links expanding to > 4000 runes in HTML.
-	text := strings.Repeat("Ref: <data> & [item](https://example.com/api?a=1&b=2&c=3&d=4&e=5&f=6) & <token> & results.\n", 30)
+	// Construct plain text with rune count < 1500 runes and without Markdown structure,
+	// but containing entity-rich data expanding to > 4000 runes in HTML.
+	text := strings.Repeat("Entity: <&> <&> <&> <&> <&> <&> <&> <&> <&> <&>\n", 30)
 	markdownRunes := utf8.RuneCountInString(text)
 	if markdownRunes >= RichMessageThreshold {
 		t.Fatalf("test prerequisite failed: markdown length must be < %d, got %d", RichMessageThreshold, markdownRunes)
@@ -830,6 +900,9 @@ func TestDetermineDeliveryTier_HTMLLengthExpansion(t *testing.T) {
 	}
 	if HasThoughts(text) {
 		t.Fatalf("test prerequisite failed: text should not contain thoughts")
+	}
+	if HasMarkdownStructure(text) {
+		t.Fatalf("test prerequisite failed: text should not contain markdown structure")
 	}
 
 	html := MarkdownToTelegramHTML(text)
