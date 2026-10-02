@@ -799,9 +799,11 @@ func (s *AgySession) start() error {
 		} else {
 			acc, err := GlobalAccountPool.GetAccount(accID)
 			now := time.Now()
-			if err == nil && acc != nil && acc.State == StateCooldown && now.Before(acc.CooldownUntil) {
-				log.Printf("[AccountPool] Bound account %s is in cooldown until %s. Re-acquiring fresh account for bot %s chat %d",
-					accID, acc.CooldownUntil.Format(time.RFC3339), s.BotName, s.ChatID)
+			isCooldown := err == nil && acc != nil && acc.State == StateCooldown && now.Before(acc.CooldownUntil)
+			isFrozen := err == nil && acc != nil && acc.State == StateFrozen
+			if isCooldown || isFrozen {
+				log.Printf("[AccountPool] Bound account %s is unavailable (cooldown=%v, frozen=%v). Re-acquiring fresh account for bot %s chat %d",
+					accID, isCooldown, isFrozen, s.BotName, s.ChatID)
 				if freshAcc, errAcq := GlobalAccountPool.AcquireAccount(s.ChatID, s.BotName); errAcq == nil && freshAcc != nil {
 					s.mu.Lock()
 					s.AccountID = freshAcc.ID

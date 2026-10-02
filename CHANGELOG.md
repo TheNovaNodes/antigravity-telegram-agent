@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Account Lifecycle Management: Freeze, Unfreeze, Delete & Administrative Immunity (Issue #339)
+- **Profile Lifecycle Supervision (Issue #339)**:
+  - Added `StateFrozen` state to `AccountState` with badge `🧊 Frozen (Administrative Hold)`.
+  - Implemented `FreezeAccount`, `UnfreezeAccount`, and `DeleteAccount` in `account_pool.go` with thread-safe atomic state transitions and persistence (`SaveState`).
+  - Enforced **Absolute Administrative Immunity**: frozen accounts are completely bypassed during rotation in `AcquireAccount`, `SwitchAccount`, and `PinAccount`, and are strictly immune to automatic background cooldown expiration (`StartBackgroundReaper`) or quota probe recovery (`FetchAccountQuotas`).
+  - Implemented session eviction and child CLI process reaping via `ResetAccountSessions(accountID)` in `account_handlers.go`, guaranteeing that freezing or deleting an account terminates active subprocesses immediately.
+  - Implemented runtime session failover in `session.go`: re-acquires a fresh healthy account if a bound session account is frozen or in cooldown upon launch.
+  - Hardened path traversal security in `DeleteAccount`: verifies that `acc.HomeDir` resides strictly within `p.accountsDir` via `filepath.Rel` and `filepath.Clean`, rejecting escaping paths (`..`), root (`/`), or the pool directory itself.
+  - Ensured **Zero Central Storage Loss**: directory deletion in `DeleteAccount(..., purgeStorage=true)` only unlinks symlinks to shared central resources (`conversations`, caches), preserving central host data.
+  - Added Telegram commands `/accounts freeze <id>`, `/accounts unfreeze <id>`, and `/accounts delete <id> [purge]`, and updated `/accounts help`.
+  - Enhanced interactive Telegram dashboard with `[❄️ Freeze]`, `[🧊 Unfreeze]`, and `[🗑️ Delete]` buttons, including an inline two-step confirmation dialog with Keep Storage vs. Purge Storage choices and Cancel support.
+  - Added comprehensive unit test suite in `account_pool_test.go` covering lifecycle transitions, administrative immunity, reaper/quota bypass, path traversal guards, central storage preservation, session reacquisition, CLI commands, and callback queries.
+
 ### Rich Message Deduplication & Streaming Finalization Race Fix (Issue #340)
 - **Elimination of Race Condition & Duplicate Messages in Rich Message Finalization (Issue #340)**:
   - Implemented **Early Disarm** in `session.go`: atomically zero out `s.ActiveMessageID = 0` under `s.mu.Lock()` *before* invoking `sendAdaptiveResponse`, preventing concurrent streaming throttler ticks from editing or sending obsolete draft messages.

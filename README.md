@@ -202,7 +202,7 @@ make clean            # Remove compiled binaries and test coverage profiles
 
 ## 🧪 Testing & CI Verification
 
-We enforce a strict **zero-data-race** policy (`go test -race`) and verified high test coverage (**81.0%** statement coverage):
+We enforce a strict **zero-data-race** policy (`go test -race`) and verified high test coverage (**82.0%** statement coverage):
 
 ```bash
 # Run complete test suite with race detector and coverage analysis

@@ -70,6 +70,41 @@ func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int6
 	log.Printf("[AccountPool] Cleared session cache and terminated CLI process for bot %s, chat %d, user %d", botName, chatID, userID)
 }
 
+// ResetAccountSessions terminates all running CLI processes and evicts in-memory sessions
+// associated with the given accountID.
+func ResetAccountSessions(accountID string) {
+	if accountID == "" {
+		return
+	}
+	sessionMu.Lock()
+	var sessionsToKill []*AgySession
+	for k, sess := range globalSessions {
+		if sess != nil {
+			sess.mu.Lock()
+			accID := sess.AccountID
+			sess.mu.Unlock()
+			if accID == accountID {
+				sess.mu.Lock()
+				sess.Conversation = ""
+				sess.UseContinue = false
+				sess.AccountID = ""
+				sess.AccountHomeDir = ""
+				sess.mu.Unlock()
+				sessionsToKill = append(sessionsToKill, sess)
+				delete(globalSessions, k)
+			}
+		}
+	}
+	sessionMu.Unlock()
+
+	for _, sess := range sessionsToKill {
+		sess.Kill()
+	}
+	if len(sessionsToKill) > 0 {
+		log.Printf("[AccountPool] Terminated and evicted %d active session(s) for account %s", len(sessionsToKill), accountID)
+	}
+}
+
 // formatAccountsDashboard builds the English dashboard message and inline keyboard.
 func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string) (string, tgbotapi.InlineKeyboardMarkup) {
 	accounts := pool.ListAccounts()
@@ -125,6 +160,9 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 		case StateExpired:
 			statusBadge = "🔴"
 			statusText = "Expired (Re-authentication required)"
+		case StateFrozen:
+			statusBadge = "🧊"
+			statusText = "Frozen (Administrative Hold)"
 		}
 
 		currentTag := ""
@@ -175,13 +213,20 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 			sb.WriteString("   └─ Last Used: Never\n\n")
 		}
 
-		// Row buttons for this account if not current
+		// Row buttons for this account
 		var row []tgbotapi.InlineKeyboardButton
-		if !isCurrent && acc.State != StateCooldown {
-			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("👉 Switch to %s", acc.ID), fmt.Sprintf("acc:switch:%s", acc.ID)))
-		}
-		if acc.State == StateCooldown {
-			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🔄 Reset Cooldown: %s", acc.ID), fmt.Sprintf("acc:cooldown:%s", acc.ID)))
+		if acc.State == StateFrozen {
+			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🧊 Unfreeze %s", acc.ID), fmt.Sprintf("acc:unfreeze:%s", acc.ID)))
+			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🗑️ Delete %s", acc.ID), fmt.Sprintf("acc:del_confirm:%s", acc.ID)))
+		} else {
+			if !isCurrent && acc.State != StateCooldown {
+				row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("👉 Switch to %s", acc.ID), fmt.Sprintf("acc:switch:%s", acc.ID)))
+			}
+			if acc.State == StateCooldown {
+				row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🔄 Reset Cooldown: %s", acc.ID), fmt.Sprintf("acc:cooldown:%s", acc.ID)))
+			}
+			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("❄️ Freeze %s", acc.ID), fmt.Sprintf("acc:freeze:%s", acc.ID)))
+			row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("🗑️ Delete %s", acc.ID), fmt.Sprintf("acc:del_confirm:%s", acc.ID)))
 		}
 		if len(row) > 0 {
 			keyboardRows = append(keyboardRows, row)
@@ -298,6 +343,61 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
 
+	case "freeze":
+		if len(fields) < 3 {
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: <code>/accounts freeze &lt;account-id&gt;</code>"))
+			return
+		}
+		targetID := fields[2]
+		if err := GlobalAccountPool.FreezeAccount(targetID); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to freeze account: %v", err)))
+			return
+		}
+		resp := fmt.Sprintf("🧊 <b>Account Frozen:</b> <code>%s</code> has been administratively suspended and removed from rotation.", targetID)
+		msg := tgbotapi.NewMessage(chatID, resp)
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+
+	case "unfreeze":
+		if len(fields) < 3 {
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: <code>/accounts unfreeze &lt;account-id&gt;</code>"))
+			return
+		}
+		targetID := fields[2]
+		if err := GlobalAccountPool.UnfreezeAccount(targetID); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to unfreeze account: %v", err)))
+			return
+		}
+		acc, _ := GlobalAccountPool.GetAccount(targetID)
+		st := "Active"
+		if acc != nil {
+			st = acc.State.String()
+		}
+		resp := fmt.Sprintf("✅ <b>Account Unfrozen:</b> <code>%s</code> restored to <b>%s</b>.", targetID, st)
+		msg := tgbotapi.NewMessage(chatID, resp)
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+
+	case "delete":
+		if len(fields) < 3 {
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: <code>/accounts delete &lt;account-id&gt; [purge]</code>"))
+			return
+		}
+		targetID := fields[2]
+		purge := len(fields) >= 4 && strings.ToLower(fields[3]) == "purge"
+		if err := GlobalAccountPool.DeleteAccount(targetID, purge); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to delete account: %v", err)))
+			return
+		}
+		purgeNote := "profile storage preserved on disk"
+		if purge {
+			purgeNote = "profile storage permanently purged from disk"
+		}
+		resp := fmt.Sprintf("🗑️ <b>Account Deleted:</b> <code>%s</code> removed from pool (%s).", targetID, purgeNote)
+		msg := tgbotapi.NewMessage(chatID, resp)
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+
 	case "clear_cooldown":
 		if len(fields) < 3 {
 			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Usage: <code>/accounts clear_cooldown &lt;account-id&gt;</code>"))
@@ -330,6 +430,9 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			"• <code>/accounts switch &lt;id&gt;</code> — Switch active account and reset session cache\n" +
 			"• <code>/accounts pin &lt;id&gt;</code> — Lock chat to an account (Sticky Mode)\n" +
 			"• <code>/accounts unpin</code> — Unlock chat and restore dynamic rotation\n" +
+			"• <code>/accounts freeze &lt;id&gt;</code> — Administratively suspend account\n" +
+			"• <code>/accounts unfreeze &lt;id&gt;</code> — Restore frozen account to rotation\n" +
+			"• <code>/accounts delete &lt;id&gt; [purge]</code> — Delete account from pool (optional storage purge)\n" +
 			"• <code>/accounts clear_cooldown &lt;id&gt;</code> — Force account out of cooldown\n" +
 			"• <code>/accounts help</code> — Display this guide"
 		msg := tgbotapi.NewMessage(chatID, helpText)
@@ -398,6 +501,67 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 			return true
 		}
 		bot.Request(tgbotapi.NewCallback(cb.ID, "Unpinned. Auto-pool enabled."))
+
+	case "freeze":
+		if len(parts) >= 3 {
+			targetID := parts[2]
+			if err := GlobalAccountPool.FreezeAccount(targetID); err != nil {
+				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
+				return true
+			}
+			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s frozen", targetID)))
+		}
+
+	case "unfreeze":
+		if len(parts) >= 3 {
+			targetID := parts[2]
+			if err := GlobalAccountPool.UnfreezeAccount(targetID); err != nil {
+				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
+				return true
+			}
+			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s unfrozen", targetID)))
+		}
+
+	case "del_confirm":
+		if len(parts) >= 3 {
+			targetID := parts[2]
+			confirmText := fmt.Sprintf("⚠️ <b>Confirm Deletion of Account:</b> <code>%s</code>\n\n"+
+				"Are you sure you want to remove this account from the pool?\n"+
+				"• Pinned bindings will be removed.\n"+
+				"• Any active sessions bound to this account will be terminated.\n\n"+
+				"Choose deletion mode below:", targetID)
+			confirmKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("❌ Confirm Delete (Keep Storage)", fmt.Sprintf("acc:del_exec:%s:keep", targetID)),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("🗑️ Purge Storage & Delete", fmt.Sprintf("acc:del_exec:%s:purge", targetID)),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("🔙 Cancel", "acc:del_cancel"),
+				),
+			)
+			editMsg := tgbotapi.NewEditMessageText(chatID, cb.Message.MessageID, confirmText)
+			editMsg.ParseMode = "HTML"
+			editMsg.ReplyMarkup = &confirmKeyboard
+			bot.Send(editMsg)
+			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Confirm deletion of %s", targetID)))
+			return true
+		}
+
+	case "del_cancel":
+		bot.Request(tgbotapi.NewCallback(cb.ID, "Deletion cancelled"))
+
+	case "del_exec":
+		if len(parts) >= 4 {
+			targetID := parts[2]
+			purge := parts[3] == "purge"
+			if err := GlobalAccountPool.DeleteAccount(targetID, purge); err != nil {
+				bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Error: %v", err)))
+				return true
+			}
+			bot.Request(tgbotapi.NewCallback(cb.ID, fmt.Sprintf("Account %s deleted", targetID)))
+		}
 
 	case "cooldown":
 		if len(parts) >= 3 {

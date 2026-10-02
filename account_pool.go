@@ -29,6 +29,8 @@ const (
 	StateCooldown
 	// StateExpired indicates the token is invalid or missing and requires re-authentication.
 	StateExpired
+	// StateFrozen indicates the account is administratively frozen and excluded from rotation.
+	StateFrozen
 )
 
 func (s AccountState) String() string {
@@ -41,6 +43,8 @@ func (s AccountState) String() string {
 		return "Cooldown"
 	case StateExpired:
 		return "Expired"
+	case StateFrozen:
+		return "Frozen"
 	default:
 		return "Unknown"
 	}
@@ -101,6 +105,8 @@ var (
 	ErrAccountNotFound = errors.New("account not found")
 	// ErrAccountInCooldown indicates the account cannot be selected because it is in cooldown.
 	ErrAccountInCooldown = errors.New("account is currently in cooldown")
+	// ErrAccountFrozen indicates the account is administratively frozen.
+	ErrAccountFrozen = errors.New("account is frozen")
 )
 
 // GlobalAccountPool is the singleton pool manager accessible across handlers and sessions.
@@ -511,8 +517,12 @@ func (p *AccountPool) PinAccount(chatID int64, accountID string, botNames ...str
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if _, exists := p.accounts[accountID]; !exists {
+	acc, exists := p.accounts[accountID]
+	if !exists {
 		return ErrAccountNotFound
+	}
+	if acc.State == StateFrozen {
+		return fmt.Errorf("%w: cannot pin to frozen account %s", ErrAccountFrozen, accountID)
 	}
 	key := poolChatKey(chatID, botNames...)
 	p.pinnedChat[key] = accountID
@@ -542,6 +552,9 @@ func (p *AccountPool) SwitchAccount(chatID int64, accountID string, botNames ...
 	if !exists {
 		return ErrAccountNotFound
 	}
+	if acc.State == StateFrozen {
+		return fmt.Errorf("%w: cannot switch to frozen account %s", ErrAccountFrozen, accountID)
+	}
 	if acc.State == StateCooldown && time.Now().Before(acc.CooldownUntil) {
 		return ErrAccountInCooldown
 	}
@@ -560,8 +573,11 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 	}
 
 	now := time.Now()
-	// Re-check cooldown expirations
+	// Re-check cooldown expirations (strictly ignore frozen accounts)
 	for _, acc := range p.accounts {
+		if acc.State == StateFrozen {
+			continue
+		}
 		if acc.State == StateCooldown && now.After(acc.CooldownUntil) {
 			acc.State = StateActive
 			acc.CooldownUntil = time.Time{}
@@ -578,6 +594,9 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 	}
 	if ok {
 		if acc, exists := p.accounts[pinnedID]; exists {
+			if acc.State == StateFrozen {
+				return nil, fmt.Errorf("%w: pinned account %s is frozen", ErrAccountFrozen, pinnedID)
+			}
 			if acc.State == StateCooldown && now.Before(acc.CooldownUntil) {
 				return nil, fmt.Errorf("%w: pinned account %s is resting until %s",
 					ErrAccountInCooldown, pinnedID, acc.CooldownUntil.Format(time.Kitchen))
@@ -617,6 +636,9 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 	hasCooldown := false
 
 	for _, acc := range p.accounts {
+		if acc.State == StateFrozen {
+			continue // Never consider frozen accounts
+		}
 		if acc.State == StateActive || acc.State == StateInUse {
 			if !acc.Quota.LastFetchedAt.IsZero() && (acc.Quota.Gemini5h.Disabled || acc.Quota.GeminiWeekly.Disabled) && (acc.Quota.GeminiWeekly.ResetTime.IsZero() || now.Before(acc.Quota.GeminiWeekly.ResetTime)) {
 				hasCooldown = true
@@ -695,6 +717,10 @@ func (p *AccountPool) MarkCooldown(accountID string, duration time.Duration) {
 	if !ok {
 		return
 	}
+	if acc.State == StateFrozen {
+		// Absolute Administrative Immunity: Never overwrite StateFrozen with StateCooldown!
+		return
+	}
 	if duration <= 0 {
 		duration = 1 * time.Minute
 	}
@@ -715,10 +741,117 @@ func (p *AccountPool) ClearCooldown(accountID string) error {
 	if !ok {
 		return ErrAccountNotFound
 	}
+	if acc.State == StateFrozen {
+		return fmt.Errorf("cannot clear cooldown for account %s: account is administratively frozen", accountID)
+	}
 	acc.State = StateActive
 	acc.CooldownUntil = time.Time{}
 	_ = p.SaveState()
 	log.Printf("[AccountPool] Cooldown manually cleared for %s", accountID)
+	return nil
+}
+
+// FreezeAccount administratively freezes an account, excluding it from rotation and clearing active assignments.
+func (p *AccountPool) FreezeAccount(accountID string) error {
+	p.mu.Lock()
+	acc, ok := p.accounts[accountID]
+	if !ok {
+		p.mu.Unlock()
+		return ErrAccountNotFound
+	}
+	acc.State = StateFrozen
+	acc.ActiveTurns = 0
+	acc.CooldownUntil = time.Time{}
+
+	// Disconnect from active chat assignments
+	for k, v := range p.activeChat {
+		if v == accountID {
+			delete(p.activeChat, k)
+		}
+	}
+	_ = p.SaveState()
+	p.mu.Unlock()
+
+	// Terminate active CLI subprocesses and evict in-memory sessions
+	ResetAccountSessions(accountID)
+
+	log.Printf("[AccountPool] Account %s placed in administrative freeze", accountID)
+	return nil
+}
+
+// UnfreezeAccount removes administrative freeze, restoring the account to StateActive or StateCooldown.
+func (p *AccountPool) UnfreezeAccount(accountID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	acc, ok := p.accounts[accountID]
+	if !ok {
+		return ErrAccountNotFound
+	}
+	if acc.State != StateFrozen {
+		return fmt.Errorf("account %s is not frozen (current state: %s)", accountID, acc.State)
+	}
+
+	now := time.Now()
+	if !acc.CooldownUntil.IsZero() && now.Before(acc.CooldownUntil) {
+		acc.State = StateCooldown
+	} else {
+		acc.State = StateActive
+		acc.CooldownUntil = time.Time{}
+	}
+	_ = p.SaveState()
+	log.Printf("[AccountPool] Account %s unfrozen, restored to state %s", accountID, acc.State)
+	return nil
+}
+
+// DeleteAccount removes an account from the pool and optionally purges its isolated storage directory.
+func (p *AccountPool) DeleteAccount(accountID string, purgeStorage bool) error {
+	p.mu.Lock()
+	acc, ok := p.accounts[accountID]
+	if !ok {
+		p.mu.Unlock()
+		return ErrAccountNotFound
+	}
+	if acc.State == StateInUse {
+		p.mu.Unlock()
+		return fmt.Errorf("cannot delete account %s: account is currently in-use", accountID)
+	}
+
+	cleanDir := filepath.Clean(acc.HomeDir)
+	rel, err := filepath.Rel(p.accountsDir, cleanDir)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == "." || rel == "/" {
+		p.mu.Unlock()
+		return fmt.Errorf("security violation: invalid account home directory %s", cleanDir)
+	}
+
+	// Remove references from sticky and active maps
+	for k, v := range p.pinnedChat {
+		if v == accountID {
+			delete(p.pinnedChat, k)
+		}
+	}
+	for k, v := range p.activeChat {
+		if v == accountID {
+			delete(p.activeChat, k)
+		}
+	}
+
+	delete(p.accounts, accountID)
+	_ = p.SaveState()
+	p.mu.Unlock()
+
+	// Terminate active CLI subprocesses and evict in-memory sessions
+	ResetAccountSessions(accountID)
+
+	if purgeStorage {
+		if err := os.RemoveAll(cleanDir); err != nil {
+			return fmt.Errorf("account removed from pool, but failed to purge storage %s: %w", cleanDir, err)
+		}
+		log.Printf("[AccountPool] Account %s deleted and storage purged: %s", accountID, cleanDir)
+	} else {
+		log.Printf("[AccountPool] Account %s deleted from pool (storage preserved at %s)", accountID, cleanDir)
+	}
+
 	return nil
 }
 
@@ -877,6 +1010,13 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 	p.mu.Lock()
 	if currentAcc, exists := p.accounts[accountID]; exists {
 		currentAcc.Quota = *quota
+
+		if currentAcc.State == StateFrozen {
+			// Absolute Administrative Immunity: Never modify State or CooldownUntil of a frozen account!
+			_ = p.SaveState()
+			p.mu.Unlock()
+			return quota, nil
+		}
 
 		now := time.Now()
 		if !quota.Gemini5h.Disabled && quota.Gemini5h.RemainingFraction == 0 && !quota.Gemini5h.ResetTime.IsZero() && now.Before(quota.Gemini5h.ResetTime) {
@@ -1077,6 +1217,9 @@ func (p *AccountPool) StartBackgroundReaperWithInterval(ctx context.Context, int
 			var recovered []*Account
 
 			for _, acc := range p.accounts {
+				if acc.State == StateFrozen {
+					continue // Absolute Administrative Immunity: Never recover a frozen account!
+				}
 				if acc.State == StateCooldown && now.After(acc.CooldownUntil) {
 					acc.State = StateActive
 					acc.CooldownUntil = time.Time{}
