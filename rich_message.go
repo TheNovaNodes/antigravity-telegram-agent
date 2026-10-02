@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/google/uuid"
 )
 
 const (
@@ -60,9 +61,53 @@ type InputRichMessage struct {
 }
 
 // Regex to capture LLM thought/thinking blocks like <thought>...</thought> or <think>...</think>.
+// Strict closing tags are required without greedy trailing capture ($).
 var (
-	thoughtRegex = regexp.MustCompile(`(?is)<(?:thought|think|thinking)>(.*?)(?:</(?:thought|think|thinking)>|$)`)
+	thoughtRegex = regexp.MustCompile(`(?is)<thought>(.*?)</thought>|<think>(.*?)</think>|<thinking>(.*?)</thinking>`)
 )
+
+// shieldMarkdownCode replaces fenced and inline code blocks with unique tokens
+// so thinking tag parsers ignore any tags inside code blocks.
+func shieldMarkdownCode(text string) (string, map[string]string) {
+	placeholders := make(map[string]string)
+
+	normText := strings.ReplaceAll(text, "\r\n", "\n")
+	normText = strings.ReplaceAll(normText, "\r", "\n")
+	if strings.Count(normText, "```")%2 != 0 {
+		normText += "\n```"
+	}
+
+	shielded := reTGFenced.ReplaceAllStringFunc(normText, func(m string) string {
+		token := fmt.Sprintf("@@TGCODEPLACEHOLDER%s@@", strings.ReplaceAll(uuid.New().String(), "-", ""))
+		placeholders[token] = m
+		return token
+	})
+
+	shielded = reTGInline.ReplaceAllStringFunc(shielded, func(m string) string {
+		token := fmt.Sprintf("@@TGCODEPLACEHOLDER%s@@", strings.ReplaceAll(uuid.New().String(), "-", ""))
+		placeholders[token] = m
+		return token
+	})
+
+	return shielded, placeholders
+}
+
+// restoreMarkdownCode restores previously shielded code blocks in markdown text.
+func restoreMarkdownCode(text string, placeholders map[string]string) string {
+	for {
+		replacedAny := false
+		for token, original := range placeholders {
+			if strings.Contains(text, token) {
+				text = strings.ReplaceAll(text, token, original)
+				replacedAny = true
+			}
+		}
+		if !replacedAny {
+			break
+		}
+	}
+	return text
+}
 
 // SanitizeRichMessageText enforces a strict UTF-8 rune limit of 32,768 characters.
 func SanitizeRichMessageText(text string) string {
@@ -114,9 +159,16 @@ func HasMarkdownTable(text string) bool {
 	return false
 }
 
-// HasThoughts checks if the text contains LLM thought/thinking blocks.
+// HasThoughts checks if the text contains LLM thought/thinking blocks outside code blocks.
 func HasThoughts(text string) bool {
-	return thoughtRegex.MatchString(text)
+	if !strings.Contains(text, "<") {
+		return false
+	}
+	if !strings.Contains(text, "`") {
+		return thoughtRegex.MatchString(text)
+	}
+	shielded, _ := shieldMarkdownCode(text)
+	return thoughtRegex.MatchString(shielded)
 }
 
 // DetermineDeliveryTier evaluates which tier should be used to deliver the response.
@@ -305,18 +357,32 @@ func RotateArtifactFiles(dir string, maxKeep int, maxAge time.Duration) int {
 
 // ExtractThinkingAndMarkdown extracts thinking / CoT blocks from raw model output,
 // returning clean markdown and an optional RichBlockThinking struct.
+// Any thought tags inside code blocks (fenced or inline) are preserved in markdown.
 func ExtractThinkingAndMarkdown(text string) (string, *RichBlockThinking) {
+	shielded := text
+	var placeholders map[string]string
+	if strings.Contains(text, "`") {
+		shielded, placeholders = shieldMarkdownCode(text)
+	}
+
 	var thoughts []string
-	cleanText := thoughtRegex.ReplaceAllStringFunc(text, func(m string) string {
+	cleanText := thoughtRegex.ReplaceAllStringFunc(shielded, func(m string) string {
 		subs := thoughtRegex.FindStringSubmatch(m)
-		if len(subs) > 1 {
-			t := strings.TrimSpace(subs[1])
-			if t != "" {
-				thoughts = append(thoughts, t)
+		for i := 1; i < len(subs); i++ {
+			if subs[i] != "" {
+				t := strings.TrimSpace(subs[i])
+				if t != "" {
+					thoughts = append(thoughts, t)
+				}
+				break
 			}
 		}
 		return ""
 	})
+
+	if len(placeholders) > 0 {
+		cleanText = restoreMarkdownCode(cleanText, placeholders)
+	}
 
 	var thinking *RichBlockThinking
 	if len(thoughts) > 0 {

@@ -104,6 +104,21 @@ func TestMarkdownToTelegramHTML(t *testing.T) {
 			in:   "- item 1\n- item 2",
 			out:  "• item 1\n• item 2",
 		},
+		{
+			name: "Inline code with thought tag",
+			in:   "4. **Сворачиваемые цепочки рассуждений (`<thought>`)**",
+			out:  "4. <b>Сворачиваемые цепочки рассуждений (<code>&lt;thought&gt;</code>)</b>",
+		},
+		{
+			name: "Unclosed thought tag in text preserves trailing content",
+			in:   "Leading text <thought> trailing text",
+			out:  "Leading text &lt;thought&gt; trailing text",
+		},
+		{
+			name: "Fenced code block containing think tag",
+			in:   "```xml\n<think>code</think>\n```",
+			out:  "<pre><code class=\"language-xml\">&lt;think&gt;code&lt;/think&gt;\n</code></pre>",
+		},
 	}
 
 	for _, tc := range tests {
@@ -112,6 +127,42 @@ func TestMarkdownToTelegramHTML(t *testing.T) {
 				t.Errorf("\nexpected: %s\ngot:      %s", tc.out, got)
 			}
 		})
+	}
+}
+
+func TestMarkdownToTelegramHTML_ThoughtTagsShielding(t *testing.T) {
+	// 1. Inline code with thinking tags must remain code and not generate blockquote
+	in1 := "4. **Сворачиваемые цепочки рассуждений (`<thought>`)**"
+	got1 := MarkdownToTelegramHTML(in1)
+	if strings.Contains(got1, "blockquote") {
+		t.Errorf("inline code with <thought> produced blockquote: %q", got1)
+	}
+	if !strings.Contains(got1, "<code>&lt;thought&gt;</code>") {
+		t.Errorf("inline code with <thought> missing sanitized code tag: %q", got1)
+	}
+	if !strings.Contains(got1, "<b>Сворачиваемые цепочки рассуждений") {
+		t.Errorf("expected bold formatting preserved: %q", got1)
+	}
+
+	// 2. Unclosed thought tag must not eat trailing text
+	in2 := "Prefix answer <thought> suffix answer that must be preserved."
+	got2 := MarkdownToTelegramHTML(in2)
+	if strings.Contains(got2, "blockquote") {
+		t.Errorf("unclosed <thought> produced blockquote: %q", got2)
+	}
+	if !strings.Contains(got2, "Prefix answer") || !strings.Contains(got2, "suffix answer that must be preserved.") {
+		t.Errorf("unclosed <thought> ate surrounding text: %q", got2)
+	}
+
+	// 3. Fenced code with <think> tag preserved inside <pre><code>
+	in3 := "```xml\n<think>nested code</think>\n```"
+	got3 := MarkdownToTelegramHTML(in3)
+	if strings.Contains(got3, "blockquote") {
+		t.Errorf("fenced code produced blockquote: %q", got3)
+	}
+	expectedCode := "<pre><code class=\"language-xml\">&lt;think&gt;nested code&lt;/think&gt;\n</code></pre>"
+	if got3 != expectedCode {
+		t.Errorf("expected %q, got %q", expectedCode, got3)
 	}
 }
 
