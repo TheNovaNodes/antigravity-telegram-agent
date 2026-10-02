@@ -1264,7 +1264,7 @@ func sendOrEditError(bot *tgbotapi.BotAPI, chatID int64, placeholderMsgID int, e
 	bot.Send(tgbotapi.NewMessage(chatID, errorText))
 }
 
-// downloadTelegramMedia downloads incoming Telegram media attachment (file, photo, voice, audio).
+// downloadTelegramMedia downloads incoming Telegram media attachment (file, photo, voice, audio, video note).
 func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text, caption, botName string, originalFileName ...string) (string, bool, int, error) {
 	if fileID == "" {
 		return text, false, 0, nil
@@ -1560,6 +1560,61 @@ func dispatchUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	}
 }
 
+// InboundPayload represents normalized incoming content and media attachments extracted from a Telegram message.
+type InboundPayload struct {
+	Text             string
+	Caption          string
+	FileID           string
+	Ext              string
+	OriginalFileName string
+	IsVoice          bool
+}
+
+// extractInboundPayload polymorphically extracts text, captions, and media attachments
+// from a Telegram message into a normalized InboundPayload.
+func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
+	if msg == nil {
+		return InboundPayload{}
+	}
+
+	text := msg.Text
+	if strings.HasPrefix(text, "/grill_me") {
+		text = strings.Replace(text, "/grill_me", "/grill-me", 1)
+	} else if strings.HasPrefix(text, "/teamwork_preview") {
+		text = strings.Replace(text, "/teamwork_preview", "/teamwork-preview", 1)
+	}
+
+	payload := InboundPayload{
+		Text:    text,
+		Caption: msg.Caption,
+	}
+
+	if msg.Document != nil {
+		payload.FileID = msg.Document.FileID
+		payload.OriginalFileName = msg.Document.FileName
+		payload.Ext = filepath.Ext(msg.Document.FileName)
+		if payload.Ext == "" {
+			payload.Ext = ".bin"
+		}
+	} else if len(msg.Photo) > 0 {
+		payload.FileID = msg.Photo[len(msg.Photo)-1].FileID
+		payload.Ext = ".jpg"
+	} else if msg.Voice != nil {
+		payload.FileID = msg.Voice.FileID
+		payload.Ext = ".ogg"
+		payload.IsVoice = true
+	} else if msg.Audio != nil {
+		payload.FileID = msg.Audio.FileID
+		payload.Ext = ".mp3"
+	} else if msg.VideoNote != nil {
+		payload.FileID = msg.VideoNote.FileID
+		payload.Ext = ".mp4"
+		payload.OriginalFileName = fmt.Sprintf("videonote_%d.mp4", msg.MessageID)
+	}
+
+	return payload
+}
+
 // handleUpdate is the primary router for incoming Telegram messages and inline callbacks.
 func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	defer func() {
@@ -1585,48 +1640,21 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	msg := update.Message
 	chatID := msg.Chat.ID
 	userID := msg.From.ID
-	text := msg.Text
-	caption := msg.Caption
 
-	// Alias telegram-safe commands to agy commands
-	if strings.HasPrefix(text, "/grill_me") {
-		text = strings.Replace(text, "/grill_me", "/grill-me", 1)
-	} else if strings.HasPrefix(text, "/teamwork_preview") {
-		text = strings.Replace(text, "/teamwork_preview", "/teamwork-preview", 1)
-	}
+	payload := extractInboundPayload(msg)
 
-	var fileID, ext, originalFileName string
-	isVoice := false
-	if msg.Document != nil {
-		fileID = msg.Document.FileID
-		originalFileName = msg.Document.FileName
-		ext = filepath.Ext(msg.Document.FileName)
-		if ext == "" {
-			ext = ".bin"
-		}
-	} else if len(msg.Photo) > 0 {
-		fileID = msg.Photo[len(msg.Photo)-1].FileID
-		ext = ".jpg"
-	} else if msg.Voice != nil {
-		fileID = msg.Voice.FileID
-		ext = ".ogg"
-		isVoice = true
-	} else if msg.Audio != nil {
-		fileID = msg.Audio.FileID
-		ext = ".mp3"
-	}
-
-	if text == "" && caption == "" && fileID == "" {
-		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Stickers, contacts, and locations are not supported. Please send text, photo, document, or voice message."))
+	if payload.Text == "" && payload.Caption == "" && payload.FileID == "" {
+		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Stickers, contacts, and locations are not supported. Please send text, photo, document, voice message, or video note."))
 		return
 	}
 
 	user := getUser(db, userID, botName)
 
+	text := payload.Text
 	downloadedFile := false
 	placeholderMsgID := 0
-	if fileID != "" {
-		formattedText, isFile, pID, err := downloadTelegramMedia(bot, chatID, fileID, ext, text, caption, botName, originalFileName)
+	if payload.FileID != "" {
+		formattedText, isFile, pID, err := downloadTelegramMedia(bot, chatID, payload.FileID, payload.Ext, payload.Text, payload.Caption, botName, payload.OriginalFileName)
 		if err != nil {
 			return
 		}
@@ -1646,7 +1674,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	}
 
 	// 4. Process Normal Text & Media Payloads
-	handleMessagePayload(bot, chatID, userID, text, botName, user, isVoice, downloadedFile, db, placeholderMsgID)
+	handleMessagePayload(bot, chatID, userID, text, botName, user, payload.IsVoice, downloadedFile, db, placeholderMsgID)
 }
 
 // sendChunk safely breaks a large text into valid HTML chunks and sends them sequentially.

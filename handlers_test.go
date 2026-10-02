@@ -198,6 +198,220 @@ func TestHandleUpdate_UnsupportedMedia(t *testing.T) {
 	}
 
 	handleUpdate(bot, update, db)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	foundWarning := false
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Stickers, contacts, and locations are not supported") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("Expected unsupported media warning message sent to chat")
+	}
+}
+
+func TestExtractInboundPayload(t *testing.T) {
+	t.Run("nil message", func(t *testing.T) {
+		payload := extractInboundPayload(nil)
+		if payload != (InboundPayload{}) {
+			t.Errorf("Expected empty payload for nil message, got %+v", payload)
+		}
+	})
+
+	t.Run("plain text message", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Text: "Hello agent",
+		}
+		p := extractInboundPayload(msg)
+		if p.Text != "Hello agent" || p.FileID != "" || p.IsVoice {
+			t.Errorf("Unexpected payload: %+v", p)
+		}
+	})
+
+	t.Run("telegram command aliases", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Text: "/grill_me architecture",
+		}
+		p := extractInboundPayload(msg)
+		if p.Text != "/grill-me architecture" {
+			t.Errorf("Expected /grill-me alias, got %s", p.Text)
+		}
+
+		msg2 := &tgbotapi.Message{
+			Text: "/teamwork_preview swarm",
+		}
+		p2 := extractInboundPayload(msg2)
+		if p2.Text != "/teamwork-preview swarm" {
+			t.Errorf("Expected /teamwork-preview alias, got %s", p2.Text)
+		}
+	})
+
+	t.Run("document with extension", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Document: &tgbotapi.Document{
+				FileID:   "doc123",
+				FileName: "report.pdf",
+			},
+			Caption: "Check this PDF",
+		}
+		p := extractInboundPayload(msg)
+		if p.FileID != "doc123" || p.OriginalFileName != "report.pdf" || p.Ext != ".pdf" || p.Caption != "Check this PDF" || p.IsVoice {
+			t.Errorf("Unexpected document payload: %+v", p)
+		}
+	})
+
+	t.Run("document without extension", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Document: &tgbotapi.Document{
+				FileID:   "doc456",
+				FileName: "rawdata",
+			},
+		}
+		p := extractInboundPayload(msg)
+		if p.FileID != "doc456" || p.OriginalFileName != "rawdata" || p.Ext != ".bin" {
+			t.Errorf("Unexpected document payload: %+v", p)
+		}
+	})
+
+	t.Run("photo selection", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Photo: []tgbotapi.PhotoSize{
+				{FileID: "thumb", Width: 100, Height: 100},
+				{FileID: "medium", Width: 320, Height: 320},
+				{FileID: "full_res", Width: 1024, Height: 1024},
+			},
+			Caption: "Look at this",
+		}
+		p := extractInboundPayload(msg)
+		if p.FileID != "full_res" || p.Ext != ".jpg" || p.Caption != "Look at this" {
+			t.Errorf("Unexpected photo payload: %+v", p)
+		}
+	})
+
+	t.Run("voice message", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Voice: &tgbotapi.Voice{
+				FileID: "voice123",
+			},
+		}
+		p := extractInboundPayload(msg)
+		if p.FileID != "voice123" || p.Ext != ".ogg" || !p.IsVoice {
+			t.Errorf("Unexpected voice payload: %+v", p)
+		}
+	})
+
+	t.Run("audio message", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			Audio: &tgbotapi.Audio{
+				FileID: "audio123",
+			},
+		}
+		p := extractInboundPayload(msg)
+		if p.FileID != "audio123" || p.Ext != ".mp3" || p.IsVoice {
+			t.Errorf("Unexpected audio payload: %+v", p)
+		}
+	})
+
+	t.Run("video note message", func(t *testing.T) {
+		msg := &tgbotapi.Message{
+			MessageID: 88,
+			VideoNote: &tgbotapi.VideoNote{
+				FileID:   "vnote999",
+				Length:   240,
+				Duration: 15,
+			},
+		}
+		p := extractInboundPayload(msg)
+		if p.FileID != "vnote999" || p.Ext != ".mp4" || p.OriginalFileName != "videonote_88.mp4" || p.IsVoice {
+			t.Errorf("Unexpected video note payload: %+v", p)
+		}
+	})
+}
+
+func TestHandleUpdate_VideoNote(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	tempDir := t.TempDir()
+	mockAgents := filepath.Join(tempDir, "agents")
+	t.Setenv("AGENTS_DIR", mockAgents)
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("fake-mp4-video-stream-content"))
+	}))
+	defer fileServer.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	ms.customHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "getFile") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"file_id":"vn_file_123","file_path":"%s"}}`, fileServer.URL+"/videonote.mp4")))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"mocked"}}`))
+	})
+
+	bot := createMockBot(ms)
+	chatID := int64(12345)
+	userID := int64(777)
+
+	update := tgbotapi.Update{
+		UpdateID: 301,
+		Message: &tgbotapi.Message{
+			MessageID: 77,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID, UserName: "testuser"},
+			VideoNote: &tgbotapi.VideoNote{
+				FileID:   "vn_file_123",
+				Length:   240,
+				Duration: 10,
+			},
+		},
+	}
+
+	handleUpdate(bot, update, db)
+
+	user := getUser(db, userID, "TestMockBot")
+	session := getSession("TestMockBot", user, chatID)
+	if session != nil {
+		defer session.Kill()
+	}
+
+	// Verify the file was downloaded into scratch/downloads with .mp4 extension
+	downloadsDir := filepath.Join(mockAgents, bot.Self.UserName, "scratch", "downloads")
+	files, err := os.ReadDir(downloadsDir)
+	if err != nil {
+		t.Fatalf("Failed to read downloads dir: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("Expected downloaded .mp4 file in %s, got 0 files", downloadsDir)
+	}
+	foundMP4 := false
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".mp4") {
+			foundMP4 = true
+			content, _ := os.ReadFile(filepath.Join(downloadsDir, f.Name()))
+			if string(content) != "fake-mp4-video-stream-content" {
+				t.Errorf("Unexpected content in downloaded video note: %s", string(content))
+			}
+			break
+		}
+	}
+	if !foundMP4 {
+		t.Errorf("Did not find downloaded .mp4 file in %s", downloadsDir)
+	}
 }
 
 func TestHandleUpdate_TextMessage_Stream(t *testing.T) {
