@@ -1765,7 +1765,15 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, m
 		editMsg.ReplyMarkup = markups[0]
 	}
 	_, err := bot.Send(editMsg)
-	if err != nil && err.Error() != "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message" {
+	if err != nil {
+		errLower := strings.ToLower(err.Error())
+		if strings.Contains(errLower, "message is not modified") ||
+			strings.Contains(errLower, "message to edit not found") ||
+			strings.Contains(errLower, "message can't be edited") ||
+			strings.Contains(errLower, "message can’t be edited") {
+			// Suppress fallback on message not found / unmodifiable / uneditable to prevent duplicate messages in chat.
+			return chunks
+		}
 		log.Printf("Edit error: %v, falling back to new message", err)
 		newMsg := tgbotapi.NewMessage(chatID, chunkToEdit)
 		newMsg.ParseMode = "HTML"

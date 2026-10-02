@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/goleak"
+	"io"
 	_ "modernc.org/sqlite"
 	"net/http"
 	"net/url"
@@ -3090,5 +3092,224 @@ func TestAgySession_ReadStdout_StrictTypingAndNilSafety(t *testing.T) {
 	err := s.readStdout(scanner, canceledCtx)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Expected context.Canceled, got %v", err)
+	}
+}
+
+func TestSession_StreamingThrottler_RaceWithRichMessageFinalization(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+
+	var mu sync.Mutex
+	deletedMsgIDs := make(map[string]bool)
+	var richMessageCalls int
+	var deleteMessageCalls int
+	var editMessageCalls int
+	var fallbackSendMessages []string
+
+	ms.customHandler = func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		vals, _ := url.ParseQuery(string(bodyBytes))
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/getMe") {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "sendRichMessage") {
+			mu.Lock()
+			richMessageCalls++
+			mu.Unlock()
+			w.Write([]byte(`{"ok":true,"result":{"message_id":5000,"chat":{"id":12345},"text":"rich response"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "deleteMessage") {
+			delID := vals.Get("message_id")
+			mu.Lock()
+			deleteMessageCalls++
+			deletedMsgIDs[delID] = true
+			mu.Unlock()
+			w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "editMessageText") {
+			editID := vals.Get("message_id")
+			mu.Lock()
+			editMessageCalls++
+			isDeleted := deletedMsgIDs[editID]
+			mu.Unlock()
+
+			if isDeleted {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}`))
+				return
+			}
+			w.Write([]byte(`{"ok":true,"result":{"message_id":4036,"chat":{"id":12345},"text":"edited"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "sendMessage") {
+			txt := vals.Get("text")
+			mu.Lock()
+			fallbackSendMessages = append(fallbackSendMessages, txt)
+			mu.Unlock()
+			w.Write([]byte(`{"ok":true,"result":{"message_id":6000,"chat":{"id":12345},"text":"new message"}}`))
+			return
+		}
+
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"ok"}}`))
+	}
+
+	bot := createMockBot(ms)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := &AgySession{
+		BotName:         "test_bot",
+		BotAPI:          bot,
+		ChatID:          12345,
+		ActiveMessageID: 4036,
+		ActiveTurnStart: time.Now(),
+		UpdateChan:      make(chan struct{}, 100),
+	}
+
+	// Start streaming throttler with high frequency (5ms) to test concurrent race condition
+	s.startStreamingThrottler(ctx, 5*time.Millisecond)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Goroutine 1: Rapid streaming token generator pushing into buffer and signaling UpdateChan
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 40; i++ {
+			s.mu.Lock()
+			s.TextBuffer += fmt.Sprintf(" chunk-%d ", i)
+			s.mu.Unlock()
+			select {
+			case s.UpdateChan <- struct{}{}:
+			default:
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	// Goroutine 2: Concurrently finalizes turn with a rich message (>4000 chars)
+	go func() {
+		defer wg.Done()
+		time.Sleep(15 * time.Millisecond) // Let some streaming ticks happen
+		largeArticle := "# Architecture Guide\n\n" + strings.Repeat("Long article paragraph details. ", 150)
+		s.mu.Lock()
+		s.TextBuffer = largeArticle
+		s.mu.Unlock()
+		s.finalizeTurn()
+	}()
+
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond) // Allow any pending throttler ticks to finish
+
+	mu.Lock()
+	rCount := richMessageCalls
+	dCount := deleteMessageCalls
+	fallbacks := len(fallbackSendMessages)
+	mu.Unlock()
+
+	if rCount != 1 {
+		t.Errorf("Expected exactly 1 rich message call, got %d", rCount)
+	}
+	if dCount != 1 {
+		t.Errorf("Expected exactly 1 deleteMessage call for draft message, got %d", dCount)
+	}
+	if fallbacks != 0 {
+		t.Errorf("Expected 0 fallback sendMessages (no duplicate messages!), got %d: %v", fallbacks, fallbackSendMessages)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ActiveMessageID != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 after turn finalization, got %d", s.ActiveMessageID)
+	}
+	if !s.ActiveTurnStart.IsZero() {
+		t.Errorf("Expected ActiveTurnStart to be zeroed after finalizeTurn, got %v", s.ActiveTurnStart)
+	}
+}
+
+func TestSession_FinalizeTurn_EarlyDisarmAndActiveTurnProtection(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+
+	var checkedDuringDispatch bool
+	var activeMsgIDDuringDispatch int
+	var activeTurnStartDuringDispatch time.Time
+
+	var s *AgySession
+
+	ms.customHandler = func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/getMe") {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "sendRichMessage") {
+			// Verify invariants during adaptive network dispatch:
+			s.mu.Lock()
+			activeMsgIDDuringDispatch = s.ActiveMessageID
+			activeTurnStartDuringDispatch = s.ActiveTurnStart
+			checkedDuringDispatch = true
+			s.mu.Unlock()
+
+			w.Write([]byte(`{"ok":true,"result":{"message_id":5001,"chat":{"id":12345},"text":"rich text"}}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "deleteMessage") {
+			w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"ok"}}`))
+	}
+
+	bot := createMockBot(ms)
+
+	startTurn := time.Now()
+	s = &AgySession{
+		BotName:         "test_bot",
+		BotAPI:          bot,
+		ChatID:          12345,
+		ActiveMessageID: 4036,
+		ActiveTurnStart: startTurn,
+		TextBuffer:      "# Long Doc\n\n" + strings.Repeat("Testing early disarm and active turn immunity. ", 100),
+	}
+
+	s.finalizeTurn()
+
+	if !checkedDuringDispatch {
+		t.Fatal("Expected sendRichMessage to be invoked during finalizeTurn")
+	}
+
+	// Invariant 1: ActiveMessageID must be 0 DURING dispatch (Early Disarm)
+	if activeMsgIDDuringDispatch != 0 {
+		t.Errorf("Expected ActiveMessageID to be 0 during dispatch (Early Disarm), got %d", activeMsgIDDuringDispatch)
+	}
+
+	// Invariant 2: ActiveTurnStart must remain active DURING dispatch (Active Turn Protection)
+	if activeTurnStartDuringDispatch.IsZero() {
+		t.Errorf("Expected ActiveTurnStart to remain active during dispatch for GC protection, got zero time")
+	}
+
+	// Invariant 3: ActiveTurnStart is zeroed out AFTER finalizeTurn completes
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ActiveTurnStart.IsZero() {
+		t.Errorf("Expected ActiveTurnStart to be zeroed out after finalizeTurn, got %v", s.ActiveTurnStart)
 	}
 }

@@ -2706,7 +2706,7 @@ func TestStrictTelegram_MessageNotModifiedSuppression(t *testing.T) {
 }
 
 func TestStrictTelegram_EditFailureTriggersNewMessageFallback(t *testing.T) {
-	// Server returns 400 Bad Request: message to edit not found (generic error)
+	// Server returns 400 Bad Request: can't parse entities: can't find end tag (formatting error triggers fallback)
 	var sentBodies []string
 	var mu sync.Mutex
 
@@ -2725,7 +2725,7 @@ func TestStrictTelegram_EditFailureTriggersNewMessageFallback(t *testing.T) {
 
 		if strings.Contains(r.URL.Path, "editMessageText") {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}`))
+			w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities: can't find end tag"}`))
 			return
 		}
 
@@ -2747,6 +2747,75 @@ func TestStrictTelegram_EditFailureTriggersNewMessageFallback(t *testing.T) {
 	// Should have sent 2 requests: 1 editMessageText (which failed), followed by 1 fallback sendMessage
 	if count != 2 {
 		t.Errorf("Expected 2 requests (edit + fallback new message), got %d: %v", count, sentBodies)
+	}
+}
+
+func TestStrictTelegram_MessageToEditNotFoundSuppressed(t *testing.T) {
+	cases := []struct {
+		name        string
+		description string
+	}{
+		{
+			name:        "MessageToEditNotFound",
+			description: "Bad Request: message to edit not found",
+		},
+		{
+			name:        "MessageCantBeEditedStraight",
+			description: "Bad Request: message can't be edited",
+		},
+		{
+			name:        "MessageCantBeEditedCurly",
+			description: "Bad Request: message can’t be edited",
+		},
+		{
+			name:        "MessageIsNotModified",
+			description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sentBodies []string
+			var mu sync.Mutex
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				bodyBytes, _ := io.ReadAll(r.Body)
+
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(r.URL.Path, "/getMe") {
+					w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
+					return
+				}
+
+				mu.Lock()
+				sentBodies = append(sentBodies, string(bodyBytes))
+				mu.Unlock()
+
+				if strings.Contains(r.URL.Path, "editMessageText") {
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(fmt.Sprintf(`{"ok":false,"error_code":400,"description":%q}`, tc.description)))
+					return
+				}
+
+				// If fallback is called, it would hit sendMessage
+				w.Write([]byte(`{"ok":true,"result":{"message_id":555,"chat":{"id":12345},"text":"should not happen"}}`))
+			}))
+			defer ts.Close()
+
+			endpoint := ts.URL + "/bot%s/%s"
+			bot, _ := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ts.Client())
+
+			sendChunk(bot, 12345, 999, "Update text")
+
+			mu.Lock()
+			count := len(sentBodies)
+			mu.Unlock()
+
+			// Must be exactly 1 request (editMessageText attempt), NO fallback sendMessage!
+			if count != 1 {
+				t.Errorf("Expected exactly 1 request (edit without fallback), got %d: %v", count, sentBodies)
+			}
+		})
 	}
 }
 

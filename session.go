@@ -862,60 +862,7 @@ func (s *AgySession) start() error {
 	s.mu.Unlock()
 
 	// Streaming throttler loop: coalesces rapid token updates and edits Telegram at most once every 1200ms
-	go func(ctx context.Context) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[PANIC RECOVERED in session throttler for bot %s] %v", s.BotName, r)
-			}
-		}()
-		ticker := time.NewTicker(1200 * time.Millisecond)
-		defer ticker.Stop()
-		var lastSentText string
-		hasDelta := false
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.UpdateChan:
-				hasDelta = true
-			case <-ticker.C:
-				if !hasDelta {
-					continue
-				}
-
-				s.mu.Lock()
-				truncated := s.TextTruncated
-				text := s.TextBuffer
-				activeMsgID := s.ActiveMessageID
-				botAPI := s.BotAPI
-				chatID := s.ChatID
-				s.mu.Unlock()
-
-				trimmed := strings.TrimSpace(text)
-				if activeMsgID == 0 || botAPI == nil || trimmed == "" {
-					continue
-				}
-				if trimmed == lastSentText {
-					hasDelta = false
-					continue
-				}
-
-				if truncated {
-					text += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
-				}
-
-				stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("🛑 Stop", "cmd:stop"),
-					),
-				)
-				sendChunk(botAPI, chatID, activeMsgID, text, &stopMarkup)
-				lastSentText = trimmed
-				hasDelta = false
-			}
-		}
-	}(ctx)
+	s.startStreamingThrottler(ctx, 1200*time.Millisecond)
 
 	// Typing indicator loop
 	go func(ctx context.Context) {
@@ -1767,56 +1714,125 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 
 					continue
 				}
-				s.mu.Lock()
-				response := s.TextBuffer
-				if s.TextTruncated {
-					response += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
-				}
-				activeMsgID := s.ActiveMessageID
-				convID := s.Conversation
-				hadStreamRecovery := s.StreamRetries > 0 || s.TurnFailovers > 0
-				s.mu.Unlock()
-
-				if response == "" {
-					response = "No response from agent."
-				} else {
-					if hint := getCompactionHint(convID, hadStreamRecovery); hint != "" {
-						response += hint
-					}
-				}
-				if s.BotAPI != nil {
-					sendAdaptiveResponse(s.BotAPI, s.ChatID, activeMsgID, response)
-					sendArtifacts(s.BotAPI, s.ChatID, response, s.Workspace)
-				}
-
-				// Mirror Protocol: Trigger TTS on final response
-				s.mu.Lock()
-				shouldVoice := s.VoiceReply
-				s.VoiceReply = false
-				s.ActiveMessageID = 0
-				s.ActiveTurnStart = time.Time{}
-				s.StreamRetries = 0
-				s.TurnFailovers = 0
-				s.TextBuffer = ""
-				botAPI := s.BotAPI
-				targetChatID := s.ChatID
-				accountID := s.AccountID
-				s.mu.Unlock()
-
-				if GlobalAccountPool != nil && accountID != "" {
-					GlobalAccountPool.ReleaseAccount(accountID)
-				}
-
-				if shouldVoice && response != "" && botAPI != nil {
-					go func(b *tgbotapi.BotAPI, cID int64, txt string) {
-						err := GenerateAndSendVoice(b, cID, txt)
-						if err != nil {
-							msg := tgbotapi.NewMessage(cID, "❌ TTS Error: "+err.Error())
-							b.Send(msg)
-						}
-					}(botAPI, targetChatID, response)
-				}
+				s.finalizeTurn()
 			}
 		}
+	}
+}
+
+// startStreamingThrottler starts the background streaming throttler loop with a configurable ticker interval.
+func (s *AgySession) startStreamingThrottler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 1200 * time.Millisecond
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC RECOVERED in session throttler for bot %s] %v", s.BotName, r)
+			}
+		}()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var lastSentText string
+		hasDelta := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.UpdateChan:
+				hasDelta = true
+			case <-ticker.C:
+				if !hasDelta {
+					continue
+				}
+
+				s.mu.Lock()
+				truncated := s.TextTruncated
+				text := s.TextBuffer
+				activeMsgID := s.ActiveMessageID
+				botAPI := s.BotAPI
+				chatID := s.ChatID
+				s.mu.Unlock()
+
+				trimmed := strings.TrimSpace(text)
+				if activeMsgID == 0 || botAPI == nil || trimmed == "" {
+					continue
+				}
+				if trimmed == lastSentText {
+					hasDelta = false
+					continue
+				}
+
+				if truncated {
+					text += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+				}
+
+				stopMarkup := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("🛑 Stop", "cmd:stop"),
+					),
+				)
+				sendChunk(botAPI, chatID, activeMsgID, text, &stopMarkup)
+				lastSentText = trimmed
+				hasDelta = false
+			}
+		}
+	}()
+}
+
+// finalizeTurn executes early disarm, sends adaptive response and artifacts,
+// and resets turn state while guaranteeing active turn immunity throughout the network calls.
+func (s *AgySession) finalizeTurn() {
+	s.mu.Lock()
+	response := s.TextBuffer
+	if s.TextTruncated {
+		response += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+	}
+	activeMsgID := s.ActiveMessageID
+	// Early Disarm: atomically clear s.ActiveMessageID before sendAdaptiveResponse
+	// so the background streaming throttler ticker will never attempt to edit/send this message concurrently during finalization.
+	s.ActiveMessageID = 0
+	convID := s.Conversation
+	hadStreamRecovery := s.StreamRetries > 0 || s.TurnFailovers > 0
+	s.mu.Unlock()
+
+	if response == "" {
+		response = "No response from agent."
+	} else {
+		if hint := getCompactionHint(convID, hadStreamRecovery); hint != "" {
+			response += hint
+		}
+	}
+	if s.BotAPI != nil {
+		sendAdaptiveResponse(s.BotAPI, s.ChatID, activeMsgID, response)
+		sendArtifacts(s.BotAPI, s.ChatID, response, s.Workspace)
+	}
+
+	// Mirror Protocol: Trigger TTS on final response
+	s.mu.Lock()
+	shouldVoice := s.VoiceReply
+	s.VoiceReply = false
+	s.ActiveTurnStart = time.Time{}
+	s.StreamRetries = 0
+	s.TurnFailovers = 0
+	s.TextBuffer = ""
+	botAPI := s.BotAPI
+	targetChatID := s.ChatID
+	accountID := s.AccountID
+	s.mu.Unlock()
+
+	if GlobalAccountPool != nil && accountID != "" {
+		GlobalAccountPool.ReleaseAccount(accountID)
+	}
+
+	if shouldVoice && response != "" && botAPI != nil {
+		go func(b *tgbotapi.BotAPI, cID int64, txt string) {
+			err := GenerateAndSendVoice(b, cID, txt)
+			if err != nil {
+				msg := tgbotapi.NewMessage(cID, "❌ TTS Error: "+err.Error())
+				b.Send(msg)
+			}
+		}(botAPI, targetChatID, response)
 	}
 }
