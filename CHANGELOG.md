@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Telegram RichMessage & Native Tables Support (Issue #336)
+- **Telegram RichMessage Format & Native Tables (Issue #336)**:
+  - Implemented `InputRichMessage` and `RichBlockThinking` structures in `rich_message.go`.
+  - Added `sendRichMessage` Bot API endpoint client method sending monolithic articles up to 32,768 UTF-8 characters.
+  - Implemented `HasMarkdownTable` table detector and `ExtractThinkingAndMarkdown` CoT parser.
+  - Implemented `sendAdaptiveResponse` intelligent router with automatic fallback to classic `SplitHTMLChunks(4000)` + `sendMessage` on any Bot API failure (0% message loss).
+  - Enforced strict UTF-8 rune limit of 32,768 characters via `SanitizeRichMessageText`.
+  - Extended `MarkdownToTelegramHTML` to support `<thought>` blocks in classic mode.
+  - Added comprehensive test suite `rich_message_test.go` covering serialization, table detection, thinking extraction, 32K sanitization, adaptive routing, and graceful degradation fallback.
+
 ### Documentation & Codebase Invariants Synchronization
 - **Codebase-Wide Documentation Re-alignment**:
   - Synchronized `README.md` test coverage badge to verified benchmark of `81.0%` (2289/2827 statements).

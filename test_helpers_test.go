@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -209,6 +210,37 @@ func createStrictTelegramMockServer(t *testing.T) (*httptest.Server, *[]string, 
 		}
 
 		vals, _ := url.ParseQuery(string(bodyBytes))
+
+		if strings.Contains(r.URL.Path, "sendRichMessage") {
+			richMessageRaw := vals.Get("rich_message")
+			var richMsg InputRichMessage
+			if err := json.Unmarshal([]byte(richMessageRaw), &richMsg); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: invalid rich_message payload"}`))
+				return
+			}
+			if len([]rune(richMsg.Markdown)) > MaxRichMessageLength {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: rich_message is too long (exceeds 32768 characters)"}`))
+				return
+			}
+			respBytes, _ := json.Marshal(map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"message_id": 2125,
+					"chat":       map[string]any{"id": 12345},
+					"text":       richMsg.Markdown,
+				},
+			})
+			w.Write(respBytes)
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "deleteMessage") {
+			w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+
 		text := vals.Get("text")
 
 		// Rule 1: Real Telegram 4096 character hard limit

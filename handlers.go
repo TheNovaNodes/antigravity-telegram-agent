@@ -1014,17 +1014,7 @@ func handleStopCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName strin
 				trimmed += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
 			}
 			trimmed += "\n\n🛑 _[Execution interrupted by user. Output preserved above]_"
-			if activeID != 0 {
-				sendChunk(bot, chatID, activeID, trimmed)
-			} else {
-				htmlFormatted := MarkdownToTelegramHTML(trimmed)
-				chunks := SplitHTMLChunks(htmlFormatted, 4000)
-				for _, ch := range chunks {
-					msg := tgbotapi.NewMessage(chatID, ch)
-					msg.ParseMode = "HTML"
-					bot.Send(msg)
-				}
-			}
+			sendAdaptiveResponse(bot, chatID, activeID, trimmed)
 			sendArtifacts(bot, chatID, trimmed, s.Workspace)
 		} else {
 			stopMsg := "🛑 *Execution interrupted by user.*\nSession context preserved. Ready for new commands."
@@ -1736,6 +1726,13 @@ func sendChunk(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, m
 		}
 	}()
 	log.Printf("sendChunk called for chatID %d, msgID %d, text len %d", chatID, messageID, len(text))
+	if messageID == 0 && bot != nil && ShouldUseRichMessage(text) {
+		_, err := sendRichMessage(bot, chatID, text, markups...)
+		if err == nil {
+			return []string{text}
+		}
+		log.Printf("sendRichMessage in sendChunk failed for chatID %d, falling back to SplitHTMLChunks: %v", chatID, err)
+	}
 	formatted := MarkdownToTelegramHTML(text)
 	if strings.TrimSpace(formatted) == "" {
 		if strings.TrimSpace(text) != "" {
