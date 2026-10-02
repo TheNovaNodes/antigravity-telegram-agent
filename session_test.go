@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/goleak"
@@ -3060,4 +3061,34 @@ func TestHandleUpdate_PanicRecovery(t *testing.T) {
 
 	// Should recover gracefully from nil db and not panic the test
 	handleUpdate(bot, update, nil)
+}
+
+func TestAgySession_ReadStdout_StrictTypingAndNilSafety(t *testing.T) {
+	s := &AgySession{
+		BotName: "test_bot",
+		ChatID:  12345,
+	}
+
+	// 1. Nil scanner or nil context must return error
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := s.readStdout(nil, ctx); err == nil {
+		t.Error("Expected error when scanner is nil, got nil")
+	}
+	scanner := bufio.NewScanner(strings.NewReader(""))
+	if err := s.readStdout(scanner, nil); err == nil {
+		t.Error("Expected error when context is nil, got nil")
+	}
+
+	// 2. readStdoutLoop facade with nil scanner and ctx should not panic and gracefully return
+	s.readStdoutLoop()
+
+	// 3. readStdout with cancelled context returns context.Canceled
+	canceledCtx, cancelImmediate := context.WithCancel(context.Background())
+	cancelImmediate()
+	err := s.readStdout(scanner, canceledCtx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Expected context.Canceled, got %v", err)
+	}
 }

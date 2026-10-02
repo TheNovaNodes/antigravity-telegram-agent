@@ -2317,3 +2317,64 @@ func TestHandleStartCommand_PinnedAccountDisplay(t *testing.T) {
 		t.Errorf("Expected pinned account indicator 'acc-pinned-vip 🔒', got: %v", sentBodies)
 	}
 }
+
+func TestStoreQuestionOption_DeterministicFIFORotation(t *testing.T) {
+	questionOptionsMu.Lock()
+	savedOptions := make(map[string]string)
+	for k, v := range questionOptions {
+		savedOptions[k] = v
+	}
+	savedKeys := append([]string{}, questionOptionsKeys...)
+	questionOptions = make(map[string]string)
+	questionOptionsKeys = nil
+	questionOptionsMu.Unlock()
+
+	defer func() {
+		questionOptionsMu.Lock()
+		questionOptions = savedOptions
+		questionOptionsKeys = savedKeys
+		questionOptionsMu.Unlock()
+	}()
+
+	totalOptions := 150
+	cbKeys := make([]string, totalOptions)
+	expectedTexts := make([]string, totalOptions)
+
+	for i := 0; i < totalOptions; i++ {
+		text := fmt.Sprintf("Question Option #%03d - Very long detailed response text exceeding 64 bytes in length [%03d]", i, i)
+		expectedTexts[i] = text
+		cb := storeQuestionOption(text)
+		if !strings.HasPrefix(cb, "ans_id:") {
+			t.Fatalf("Expected ans_id: prefix for long option %d, got %s", i, cb)
+		}
+		cbKeys[i] = cb
+
+		questionOptionsMu.RLock()
+		curLen := len(questionOptions)
+		curKeysLen := len(questionOptionsKeys)
+		questionOptionsMu.RUnlock()
+
+		if curLen > maxQuestionOptions {
+			t.Fatalf("questionOptions exceeded maxQuestionOptions (%d): got %d at step %d", maxQuestionOptions, curLen, i)
+		}
+		if curKeysLen != curLen {
+			t.Fatalf("Mismatch between map size (%d) and keys slice length (%d) at step %d", curLen, curKeysLen, i)
+		}
+	}
+
+	for i := 0; i < 50; i++ {
+		_, found := getQuestionOption(cbKeys[i])
+		if found {
+			t.Errorf("Expected option %d (%s) to be evicted by FIFO queue, but it was found", i, cbKeys[i])
+		}
+	}
+
+	for i := 50; i < totalOptions; i++ {
+		got, found := getQuestionOption(cbKeys[i])
+		if !found {
+			t.Errorf("Expected option %d (%s) to be present in cache, but it was not found", i, cbKeys[i])
+		} else if got != expectedTexts[i] {
+			t.Errorf("Option %d content mismatch: got %q, want %q", i, got, expectedTexts[i])
+		}
+	}
+}

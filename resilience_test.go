@@ -374,7 +374,7 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		defer cancel()
 
 		scanner := bufio.NewScanner(strings.NewReader(errorPayload))
-		s.readStdoutLoop(scanner, ctx)
+		_ = s.readStdout(scanner, ctx)
 
 		sentMsgs := getSentTelegramMessages(ms)
 		if len(sentMsgs) != 0 {
@@ -410,7 +410,7 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 			cancel()
 		}()
 
-		s.readStdoutLoop(scanner, ctx)
+		_ = s.readStdout(scanner, ctx)
 
 		sentMsgs := getSentTelegramMessages(ms)
 		if len(sentMsgs) != 0 {
@@ -449,7 +449,7 @@ func TestReadStdoutLoop_SuppressesTeardownErrorWhenIdleOrDead(t *testing.T) {
 		defer cancel()
 
 		scanner := bufio.NewScanner(strings.NewReader(fatalErrorPayload))
-		s.readStdoutLoop(scanner, ctx)
+		_ = s.readStdout(scanner, ctx)
 
 		sentMsgs := getSentTelegramMessages(ms)
 		if len(sentMsgs) == 0 {
@@ -1711,7 +1711,7 @@ func TestTylerAudit_ReadStdoutLoop_PreservesBufferOnActiveTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.readStdoutLoop(scanner, ctx)
+		_ = s.readStdout(scanner, ctx)
 	}()
 
 	select {
@@ -1748,7 +1748,7 @@ func TestTylerAudit_ReadStdoutLoop_ClearsBufferWhenNoActiveTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.readStdoutLoop(scanner, ctx)
+		_ = s.readStdout(scanner, ctx)
 	}()
 
 	select {
