@@ -10,11 +10,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// maskEmail returns the full email address without obfuscation (#228).
-func maskEmail(email string) string {
-	return email
-}
-
 // resetChatSessionCache resets the conversation identifier in SQLite and terminates/evicts in-memory sessions.
 // If preserveDBSession is true, the in-memory session is evicted but the SQLite user session_id is preserved (#236).
 func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int64, preserveDBSession ...bool) {
@@ -241,7 +236,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			"• <b>Status:</b> Active\n"+
 			"• <b>Profile:</b> <code>%s</code>\n\n"+
 			"Account is now registered in the multi-account rotation pool.",
-			acc.ID, maskEmail(acc.Email), acc.HomeDir)
+			acc.ID, acc.Email, acc.HomeDir)
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -264,7 +259,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 		acc, _ := GlobalAccountPool.GetAccount(targetID)
 		emailStr := targetID
 		if acc != nil {
-			emailStr = maskEmail(acc.Email)
+			emailStr = acc.Email
 		}
 		resp := fmt.Sprintf("✅ <b>Switched to Account:</b> <code>%s</code> (%s)\n\n"+
 			"🧹 <i>In-memory session evicted and safely exported. Session context preserved for next prompt.</i>", targetID, emailStr)

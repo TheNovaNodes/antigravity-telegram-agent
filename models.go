@@ -45,7 +45,6 @@ func fetchModels() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "models")
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = buildChildEnv("")

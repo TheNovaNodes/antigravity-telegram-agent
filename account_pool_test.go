@@ -266,25 +266,6 @@ func TestAccountPool_ConcurrencyRace(t *testing.T) {
 	wg.Wait()
 }
 
-func TestAccountHandlers_MaskEmail(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"john.doe@gmail.com", "john.doe@gmail.com"},
-		{"ab@example.com", "ab@example.com"},
-		{"a@domain.com", "a@domain.com"},
-		{"notanemail", "notanemail"},
-	}
-
-	for _, tc := range tests {
-		got := maskEmail(tc.input)
-		if got != tc.expected {
-			t.Errorf("maskEmail(%q) = %q, expected %q", tc.input, got, tc.expected)
-		}
-	}
-}
-
 func TestAccountHandlers_ResetSessionCache(t *testing.T) {
 	tmpDB, err := os.CreateTemp("", "test_users_*.db")
 	if err != nil {
@@ -293,7 +274,7 @@ func TestAccountHandlers_ResetSessionCache(t *testing.T) {
 	defer os.Remove(tmpDB.Name())
 	tmpDB.Close()
 
-	db, err := sql.Open("sqlite3", tmpDB.Name())
+	db, err := sql.Open("sqlite", tmpDB.Name())
 	if err != nil {
 		t.Fatalf("Failed to open sqlite: %v", err)
 	}

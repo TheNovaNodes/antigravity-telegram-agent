@@ -1185,7 +1185,7 @@ func TestExtractAllowedArtifacts_ProjectsDirAndFileValidation(t *testing.T) {
 }
 
 func TestHandleVoiceToggleCommand_SyncsInMemorySession(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test db: %v", err)
 	}
@@ -1517,7 +1517,7 @@ Define canonical state machine events for agent collaboration and artifact exhum
 		t.Fatalf("failed to write sidecar metadata: %v", err)
 	}
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
@@ -1650,7 +1650,7 @@ func TestHandleClearCommand_AntiGarbageSieves(t *testing.T) {
 	mBytes, _ := json.Marshal(meta)
 	os.WriteFile(internalPath+".metadata.json", mBytes, 0644)
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
@@ -1696,7 +1696,7 @@ func TestHandleClearCommand_EmptyOrInvalidSession_Graceful(t *testing.T) {
 	defer ms.Close()
 	bot := createMockBot(ms)
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
@@ -1769,7 +1769,7 @@ func TestHandleClearCommand_InboxCollisionAvoidance(t *testing.T) {
 		t.Fatalf("failed to write session artifact: %v", err)
 	}
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}

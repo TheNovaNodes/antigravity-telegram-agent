@@ -780,7 +780,6 @@ func (s *AgySession) start() error {
 	}
 
 	agyPath := getAgyPath()
-	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.Command(agyPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 2 * time.Second
@@ -831,7 +830,6 @@ func (s *AgySession) start() error {
 
 	// Set the actual OS-level CWD (Personal Office) for the agent
 	agentDir := filepath.Join(getAgentsDir(), s.BotName)
-	// #nosec G703 -- gosec:nri (Need Review)
 	_ = os.MkdirAll(agentDir, 0700)
 	cmd.Dir = agentDir
 
@@ -1100,7 +1098,6 @@ func ExtractAllowedArtifacts(text string, extraRoots ...string) []string {
 			continue
 		}
 
-		// #nosec G703 -- gosec:nri (Need Review)
 		if info, err := os.Stat(realPath); err == nil && !info.IsDir() {
 			if !seen[realPath] {
 				seen[realPath] = true
@@ -1115,7 +1112,6 @@ func ExtractAllowedArtifacts(text string, extraRoots ...string) []string {
 func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string, extraRoots ...string) {
 	paths := ExtractAllowedArtifacts(text, extraRoots...)
 	for _, realPath := range paths {
-		// #nosec G304 -- gosec:nri (Need Review)
 		info, err := os.Stat(realPath)
 		if err != nil || info.IsDir() {
 			continue
@@ -1475,7 +1471,7 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 								streamRotated = true
 								if botAPI != nil && activeID != 0 {
 									rotateNotice := fmt.Sprintf("⚠️ <b>[Stream Failover]</b> Connection severed on <code>%s</code>. Auto-switching to <code>%s</code> (%s)...",
-										currentAccID, nextAcc.ID, maskEmail(nextAcc.Email))
+										currentAccID, nextAcc.ID, nextAcc.Email)
 									sendChunk(botAPI, chatID, activeID, rotateNotice)
 								}
 
@@ -1621,7 +1617,7 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 
 									if botAPI != nil && activeID != 0 {
 										rotateNotice := fmt.Sprintf("⚠️ <b>[429 Quota Exceeded]</b> Account <code>%s</code> reached quota limits. Rotating to <code>%s</code> (%s). Session context preserved. Resuming...",
-											currentAccID, nextAcc.ID, maskEmail(nextAcc.Email))
+											currentAccID, nextAcc.ID, nextAcc.Email)
 										sendChunk(botAPI, chatID, activeID, rotateNotice)
 									}
 

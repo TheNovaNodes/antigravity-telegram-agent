@@ -197,13 +197,11 @@ func handleStartCommand(bot *tgbotapi.BotAPI, chatID int64, botName string, user
 		sessionDir := filepath.Join(brainDir, user.SessionID)
 
 		titleFile := filepath.Join(sessionDir, ".title")
-		// #nosec G304 -- gosec:nri (Need Review)
 		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
 			sessionTitle = string(bytes.TrimSpace(b))
 		}
 
 		transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
-		// #nosec G304 -- gosec:nri (Need Review)
 		if f, err := os.Open(transcriptFile); err == nil {
 			scanner := bufio.NewScanner(f)
 			var firstStepTime time.Time
@@ -324,14 +322,12 @@ func handleResumeCommand(bot *tgbotapi.BotAPI, chatID, userID int64, db *sql.DB)
 		if err != nil {
 			continue
 		}
-		// #nosec G304 -- gosec:nri (Need Review)
 		f, err := os.Open(transcript)
 		if err != nil {
 			continue
 		}
 		title := ""
 		titleFile := filepath.Join(brainDir, sid, ".title")
-		// #nosec G304 -- gosec:nri (Need Review)
 		if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
 			title = string(bytes.TrimSpace(b))
 			if len(title) > 45 {
@@ -438,7 +434,6 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	// #nosec G204 -- gosec:nri (Need Review)
 	cmd := exec.CommandContext(ctx, agyPath, "--print", "/usage")
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = buildChildEnv("")
@@ -533,7 +528,6 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	sessionDir := filepath.Join(brainDir, user.SessionID)
 	transcriptFile := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
 
-	// #nosec G304 -- gosec:nri (Need Review)
 	f, err := os.Open(transcriptFile)
 	if err != nil {
 		if bot != nil && chatID != 0 {
@@ -545,7 +539,6 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 
 	sessionTitle := "(untitled session)"
 	titleFile := filepath.Join(sessionDir, ".title")
-	// #nosec G304 -- gosec:nri (Need Review)
 	if b, err := os.ReadFile(titleFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
 		sessionTitle = string(bytes.TrimSpace(b))
 	}
@@ -625,7 +618,6 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	}
 
 	exportDir := filepath.Join(getAgentsDir(), botName, "scratch", "exports")
-	// #nosec G703 -- gosec:nri (Need Review)
 	_ = os.MkdirAll(exportDir, 0700)
 	safeFilename := fmt.Sprintf("session_%s.md", safePrefix(user.SessionID, 8))
 	zipFilename := fmt.Sprintf("artifacts_%s.zip", safePrefix(user.SessionID, 8))
@@ -635,7 +627,6 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	}
 	exportPath := filepath.Join(exportDir, safeFilename)
 
-	// #nosec G703 G306 -- gosec:nri (Need Review)
 	if err := os.WriteFile(exportPath, []byte(sb.String()), 0600); err != nil {
 		if bot != nil && chatID != 0 {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to generate export file: "+err.Error()))
@@ -865,10 +856,8 @@ func handleRenameCommand(bot *tgbotapi.BotAPI, chatID int64, text, botName strin
 	conv := session.GetConversation()
 	if conv != "" && isValidSessionID(conv) {
 		sessionDir := filepath.Join(getBrainDir(), conv)
-		// #nosec G703 -- gosec:nri (Need Review)
 		_ = os.MkdirAll(sessionDir, 0700)
 		titleFile := filepath.Join(sessionDir, ".title")
-		// #nosec G703 G306 -- gosec:nri (Need Review)
 		err := os.WriteFile(titleFile, []byte(newName), 0600)
 		if err != nil {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to save name: "+err.Error()))
@@ -1302,7 +1291,6 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 		return "", false, 0, fmt.Errorf("invalid file URL: %s", fileURL)
 	}
 	downloadDir := filepath.Join(getAgentsDir(), botName, "scratch", "downloads")
-	// #nosec G703 -- gosec:nri (Need Review)
 	_ = os.MkdirAll(downloadDir, 0700)
 	safePath := filepath.Join(downloadDir, uuid.New().String()+ext)
 
@@ -1312,7 +1300,6 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	// #nosec G107 G704 -- gosec:nri (Need Review)
 	resp, err := client.Get(fileURL)
 	if err != nil {
 		sendOrEditError(bot, chatID, placeholderMsgID, "❌ Failed to download file.")
@@ -1325,7 +1312,6 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 		return "", false, placeholderMsgID, fmt.Errorf("file download failed with HTTP status %d", resp.StatusCode)
 	}
 
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	out, err := os.Create(safePath)
 	if err != nil {
 		sendOrEditError(bot, chatID, placeholderMsgID, "❌ Failed to save file to disk.")
@@ -1335,7 +1321,6 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 
 	const maxUploadBytes = 100 << 20 // 100 MB
 	if resp.ContentLength > maxUploadBytes {
-		// #nosec G703 -- gosec:nri (Need Review)
 		_ = os.Remove(safePath)
 		sendOrEditError(bot, chatID, placeholderMsgID, "❌ File too large (max 100 MB)")
 		return "", false, placeholderMsgID, fmt.Errorf("file too large")
@@ -1343,7 +1328,6 @@ func downloadTelegramMedia(bot *tgbotapi.BotAPI, chatID int64, fileID, ext, text
 
 	n, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
 	if err != nil || n > maxUploadBytes {
-		// #nosec G703 -- gosec:nri (Need Review)
 		_ = os.Remove(safePath)
 		sendOrEditError(bot, chatID, placeholderMsgID, "❌ File exceeds 100 MB limit")
 		return "", false, placeholderMsgID, fmt.Errorf("file exceeds limit")

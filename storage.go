@@ -11,17 +11,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	sqliteDriver "modernc.org/sqlite"
+	_ "modernc.org/sqlite"
 )
-
-func init() {
-	for _, d := range sql.Drivers() {
-		if d == "sqlite3" {
-			return
-		}
-	}
-	sql.Register("sqlite3", &sqliteDriver.Driver{})
-}
 
 // User represents the User data structure.
 type User struct {
@@ -47,7 +38,6 @@ var migrateOnce sync.Once
 func getDataDir() string {
 	if env := os.Getenv("DATA_DIR"); env != "" {
 		cleaned := filepath.Clean(env)
-		// #nosec G301 G703 -- gosec:nri (Need Review)
 		_ = os.MkdirAll(cleaned, 0700)
 		return cleaned
 	}
@@ -58,14 +48,12 @@ func getDataDir() string {
 	}
 
 	for _, dir := range candidates {
-		// #nosec G301 -- gosec:nri (Need Review)
 		if err := os.MkdirAll(dir, 0700); err == nil {
 			return dir
 		}
 	}
 
 	dir := "data"
-	// #nosec G301 -- gosec:nri (Need Review)
 	if err := os.MkdirAll(dir, 0700); err == nil {
 		return dir
 	}
@@ -116,7 +104,6 @@ func MigrateDataFiles(srcDir, dstDir string) (int, error) {
 		return 0, err
 	}
 
-	// #nosec G301 -- gosec:nri (Need Review)
 	if err := os.MkdirAll(dstDir, 0700); err != nil {
 		return 0, err
 	}
@@ -157,14 +144,12 @@ func MigrateDataFiles(srcDir, dstDir string) (int, error) {
 
 // copyFileSecure copies data from src to dst and enforces the specified file mode.
 func copyFileSecure(src, dst string, mode os.FileMode) error {
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
@@ -174,7 +159,6 @@ func copyFileSecure(src, dst string, mode os.FileMode) error {
 	if _, err := io.Copy(out, in); err != nil {
 		return err
 	}
-	// #nosec G703 -- gosec:nri (Need Review)
 	return os.Chmod(dst, mode)
 }
 
@@ -189,7 +173,6 @@ func loadEnvFile() {
 		envFile = "/etc/antigravity-bot/env"
 	}
 
-	// #nosec G703 -- gosec:nri (Need Review)
 	info, err := os.Stat(envFile)
 	if err != nil {
 		// Production mode: fail-closed if missing
@@ -199,7 +182,6 @@ func loadEnvFile() {
 
 		// Development mode: fallback to .env in current directory
 		envFile = ".env"
-		// #nosec G703 -- gosec:nri (Need Review)
 		info, err = os.Stat(envFile)
 		if err != nil {
 			// In dev mode, if neither exists, log warning and rely on already exported environment
@@ -210,7 +192,6 @@ func loadEnvFile() {
 
 	// Fail-closed permission check: enforce 0600
 	if mode := info.Mode().Perm(); mode != 0600 {
-		// #nosec G703 -- gosec:nri (Need Review)
 		if err := os.Chmod(envFile, 0600); err != nil {
 			log.Fatalf("FATAL [Security]: Insecure file permissions on %s (%04o) and failed to enforce 0600: %v", envFile, mode, err)
 		}
@@ -218,7 +199,6 @@ func loadEnvFile() {
 	}
 
 	// Parse and populate environment variables
-	// #nosec G304 G703 -- gosec:nri (Need Review)
 	data, err := os.ReadFile(envFile)
 	if err != nil {
 		log.Fatalf("FATAL [Security]: Failed to read env file %s: %v", envFile, err)
@@ -261,16 +241,7 @@ func initDB(botName string) *sql.DB {
 	})
 	dbPath := filepath.Join(dbDir, fmt.Sprintf("sessions_%s.db", botName))
 
-	// Ensure secure permissions (0600) on database file to prevent unauthorized local reading
-	// #nosec G304 G703 -- gosec:nri (Need Review)
-	if f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600); err == nil {
-		f.Close()
-	}
-	// #nosec G703 -- gosec:nri (Need Review)
-	if err := os.Chmod(dbPath, 0600); err != nil {
-		log.Printf("⚠️ Warning: Failed to enforce 0600 permissions on db %s: %v", dbPath, err)
-	}
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open db %s: %v", dbPath, err)
 	}
@@ -288,6 +259,11 @@ func initDB(botName string) *sql.DB {
 	}
 	if _, err := db.Exec("PRAGMA synchronous=NORMAL;"); err != nil {
 		log.Fatalf("FATAL: Failed to set PRAGMA synchronous=NORMAL for %s: %v", botName, err)
+	}
+
+	// Ensure secure permissions (0600) on database file to prevent unauthorized local reading
+	if err := os.Chmod(dbPath, 0600); err != nil {
+		log.Printf("⚠️ Warning: Failed to enforce 0600 permissions on db %s: %v", dbPath, err)
 	}
 
 	_, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS users (

@@ -1,7 +1,7 @@
 # 🛸 Antigravity Telegram Agent
 
 [![CI](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-81.0%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
+[![Coverage](https://img.shields.io/badge/Coverage-82.0%25-brightgreen.svg)](https://github.com/TheNovaNodes/antigravity-telegram-agent/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![Go Version](https://img.shields.io/badge/Go-1.25.14+-00ADD8?style=for-the-badge&logo=go)
 
