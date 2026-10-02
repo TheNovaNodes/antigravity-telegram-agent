@@ -140,12 +140,16 @@ func formatToolCalls(tcs []interface{}) string {
 	return sb.String()
 }
 
+const maxQuestionOptions = 100
+
 var (
-	questionOptionsMu sync.RWMutex
-	questionOptions   = make(map[string]string)
+	questionOptionsMu   sync.RWMutex
+	questionOptions     = make(map[string]string)
+	questionOptionsKeys []string
 )
 
 // storeQuestionOption safely registers an agent question option and returns safe callback data (<= 64 bytes).
+// It maintains a deterministic FIFO bounded cache of up to maxQuestionOptions entries.
 func storeQuestionOption(opt string) string {
 	cbData := "ans:" + opt
 	if len([]byte(cbData)) <= 64 {
@@ -153,17 +157,17 @@ func storeQuestionOption(opt string) string {
 	}
 	questionOptionsMu.Lock()
 	defer questionOptionsMu.Unlock()
-	if len(questionOptions) > 1000 {
-		for k := range questionOptions {
-			delete(questionOptions, k)
-			if len(questionOptions) <= 500 {
-				break
-			}
-		}
+
+	for len(questionOptionsKeys) >= maxQuestionOptions {
+		oldest := questionOptionsKeys[0]
+		questionOptionsKeys = questionOptionsKeys[1:]
+		delete(questionOptions, oldest)
 	}
+
 	id := uuid.New().String()[:8]
 	cbKey := "ans_id:" + id
 	questionOptions[cbKey] = opt
+	questionOptionsKeys = append(questionOptionsKeys, cbKey)
 	return cbKey
 }
 

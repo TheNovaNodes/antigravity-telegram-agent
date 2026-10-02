@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -961,7 +962,7 @@ func (s *AgySession) start() error {
 	stdoutDone := make(chan struct{})
 	go func() {
 		defer close(stdoutDone)
-		s.readStdoutLoop(scanner, ctx)
+		_ = s.readStdout(scanner, ctx)
 	}()
 	go func(c *exec.Cmd, epoch uint64) {
 		defer func() {
@@ -1188,38 +1189,29 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string, extraRoots .
 }
 
 // readStdoutLoop asynchronously reads JSONL output from the agent's stdout and processes events.
-func (s *AgySession) readStdoutLoop(params ...interface{}) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[PANIC RECOVERED in readStdoutLoop for bot %s] %v", s.BotName, r)
-		}
-	}()
-
-	var scanner *bufio.Scanner
-	var ctx context.Context
-
-	if len(params) >= 2 {
-		if sc, ok := params[0].(*bufio.Scanner); ok {
-			scanner = sc
-		}
-		if c, ok := params[1].(context.Context); ok {
-			ctx = c
-		}
-	}
-
-	if scanner == nil || ctx == nil {
-		s.mu.Lock()
-		if scanner == nil {
-			scanner = s.StdoutScanner
-		}
-		if ctx == nil {
-			ctx = s.ctx
-		}
-		s.mu.Unlock()
-	}
+// It serves as the session-level facade, delegating to readStdout with the session's active scanner and context.
+func (s *AgySession) readStdoutLoop() {
+	s.mu.Lock()
+	scanner := s.StdoutScanner
+	ctx := s.ctx
+	s.mu.Unlock()
 
 	if scanner == nil || ctx == nil {
 		return
+	}
+	_ = s.readStdout(scanner, ctx)
+}
+
+// readStdout reads JSONL output from the provided scanner under the given context and processes events.
+func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED in readStdout for bot %s] %v", s.BotName, r)
+		}
+	}()
+
+	if scanner == nil || ctx == nil {
+		return errors.New("nil scanner or context")
 	}
 
 	defer func() {
@@ -1246,10 +1238,10 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 		var line string
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case l, ok := <-lines:
 			if !ok {
-				return
+				return nil
 			}
 			line = l
 		}
@@ -1467,7 +1459,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 									_, _ = s.Stdin.Write(b)
 								}
 								s.mu.Unlock()
-								return
+								return nil
 							}
 						}
 
@@ -1527,7 +1519,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 										_, _ = s.Stdin.Write(b)
 									}
 									s.mu.Unlock()
-									return
+									return nil
 								}
 							}
 						}
@@ -1671,7 +1663,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 											_, _ = s.Stdin.Write(b)
 										}
 										s.mu.Unlock()
-										return
+										return nil
 									}
 								}
 							}
@@ -1717,7 +1709,7 @@ func (s *AgySession) readStdoutLoop(params ...interface{}) {
 							sessionKey := fmt.Sprintf("%s:%d:%d", botName, chatID, uID)
 							delete(globalSessions, sessionKey)
 							sessionMu.Unlock()
-							return
+							return nil
 						}
 					}
 
