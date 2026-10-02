@@ -126,8 +126,8 @@ The monolithic message processing loop has been refactored into modular, testabl
 | :--- | :--- | :--- |
 | `handleStartCommand` | Live agent terminal dashboard (CWD, model, session uptime, steps count, quick action buttons). | Non-blocking file reads from `.title` and `transcript.jsonl`. |
 | `handleResumeCommand` | Interactive session picker with relative modification timestamps and `<USER_REQUEST>` prompt titles. | Queries SQLite history + reads `brain` directory. |
-| `handleModelCommand` | Dynamic model selection keyboard. | Read-locked cache (`modelsMu.RLock()`). |
-| `handleRefreshModelsCommand` | Live fetch of supported LLMs from `agy models`. | Write-locked cache update (`modelsMu.Lock()`). |
+| `handleModelCommand` | Dynamic model selection keyboard with modern 3.8/3.1 fallbacks. | Read-locked cache (`modelsMu.RLock()`). |
+| `handleRefreshModelsCommand` | Live fetch of supported LLMs from `agy models` using authorized account environment and output sanitization. | Write-locked cache update (`modelsMu.Lock()`), ANSI/spinner cleanup, 3-tier `getPrimaryAccountHome()` resolution. |
 | `handleUsageCommand` | Token quota and API tier usage display. | Executes `agy --print /usage`. |
 | `handleAccountsCommand` | Multi-account pool manager, live account switching, and quota diagnostics (`/accounts`). | Thread-safe pool reads, interactive action callbacks, and admin-guarded mutations. |
 | `handleHelpCommand` | Quick command reference and operational guide. | Pure static format. |
@@ -222,6 +222,18 @@ sequenceDiagram
 1. **Zero Context Loss**: Previous messages, tool executions, and user inputs stored in `~/.gemini/antigravity-cli/brain/<UUID>/` are reloaded by `agy` on startup under the new model.
 2. **Atomic Process Handoff**: `replaceSession` closes active I/O pipes and terminates the old process group before provisioning the new model runner, avoiding CPU/memory leaks.
 3. **Database Consistency**: Only `users.model` is updated in SQLite; `users.session_id` remains immutable across swaps until the user explicitly runs `/clear`.
+
+### Dynamic Model Discovery & Sanitization (`models.go`):
+1. **Authorized Environment Resolution (`getPrimaryAccountHome`)**: `agy models` requires an authorized user home directory. The resolver follows a 3-tier strategy:
+   - Tier 1: First registered account from `GlobalAccountPool`.
+   - Tier 2: First valid profile in `getAccountsDir()` (`/etc/antigravity-bot/accounts`), preferring directories with `.gemini`.
+   - Tier 3: Fallback to `getSystemBaseHome()`.
+2. **Terminal & Spinner Sanitization (`parseModelsOutput`)**:
+   - Strips ANSI escape sequences (e.g. `\x1b[2K`, `\x1b[K`).
+   - Normalizes carriage returns (`\r` -> `\n`) to cleanly separate progress overwrite frames.
+   - Ignores CLI progress messages (`Fetching available models...`) and invalid/error lines.
+   - Validates model identifiers (`isValidModelID`) and deduplicates entries.
+3. **Resilient Fallback**: In the event of network isolation or missing CLI binaries, `handleModelCommand` defaults to a modernized fallback trio (`gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.1-pro-high`).
 
 ---
 
