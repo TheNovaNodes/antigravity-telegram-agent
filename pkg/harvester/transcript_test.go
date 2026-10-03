@@ -136,3 +136,69 @@ func TestParseTranscriptStream_Benchmark1000Steps(t *testing.T) {
 		t.Errorf("performance SLA violated: 1200 steps took %v (limit: 100ms)", elapsed)
 	}
 }
+
+func TestExtractLastModelResponse(t *testing.T) {
+	t.Run("ExtractsFinalResponseIgnoringToolCallsAndGenericSteps", func(t *testing.T) {
+		lines := []string{
+			`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Please check the status"}`,
+			`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","content":"","tool_calls":[{"name":"run_command"}]}`,
+			`{"step_index":3,"source":"MODEL","type":"GENERIC","content":"command output: build clean"}`,
+			`{"step_index":4,"source":"MODEL","type":"PLANNER_RESPONSE","content":"First intermediate answer"}`,
+			`{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","content":null,"tool_calls":[{"name":"view_file"}]}`,
+			`{"step_index":6,"source":"MODEL","type":"GENERIC","content":"file contents..."}`,
+			`{"step_index":7,"source":"MODEL","type":"PLANNER_RESPONSE","content":"Final restored model response with 100% fidelity."}`,
+		}
+
+		raw := strings.Join(lines, "\n")
+		content, err := ExtractLastModelResponse(strings.NewReader(raw))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Final restored model response with 100% fidelity."
+		if content != expected {
+			t.Errorf("expected %q, got %q", expected, content)
+		}
+	})
+
+	t.Run("ResilientToCorruptedJSONLinesAndEmptyContent", func(t *testing.T) {
+		lines := []string{
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","content":"Partial valid response"}`,
+			`MALFORMED_JSON_LINE_THAT_SHOULD_BE_IGNORED{{`,
+			`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","content":"   "}`,
+			`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","content":"Real final response after bad line"}`,
+			`ANOTHER_GARBAGE_LINE`,
+		}
+
+		raw := strings.Join(lines, "\n")
+		content, err := ExtractLastModelResponse(strings.NewReader(raw))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Real final response after bad line"
+		if content != expected {
+			t.Errorf("expected %q, got %q", expected, content)
+		}
+	})
+
+	t.Run("EmptyStreamOrNoModelResponseReturnsEmpty", func(t *testing.T) {
+		lines := []string{
+			`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Hello"}`,
+			`{"step_index":2,"source":"MODEL","type":"GENERIC","content":"some output"}`,
+		}
+		content, err := ExtractLastModelResponse(strings.NewReader(strings.Join(lines, "\n")))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if content != "" {
+			t.Errorf("expected empty string, got %q", content)
+		}
+
+		emptyContent, err := ExtractLastModelResponse(strings.NewReader(""))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if emptyContent != "" {
+			t.Errorf("expected empty string for empty reader, got %q", emptyContent)
+		}
+	})
+}

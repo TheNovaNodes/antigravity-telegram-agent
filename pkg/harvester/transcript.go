@@ -18,6 +18,7 @@ type TranscriptStep struct {
 	Type      string           `json:"type"`
 	Status    string           `json:"status"`
 	CreatedAt string           `json:"created_at"`
+	Content   string           `json:"content,omitempty"`
 	ToolCalls []TranscriptCall `json:"tool_calls,omitempty"`
 }
 
@@ -133,4 +134,48 @@ func ParseAndExtractTranscriptArtifacts(sessionDir string, sessionID string) ([]
 	}
 
 	return artifacts, nil
+}
+
+var (
+	stepModelBytes   = []byte(`"MODEL"`)
+	stepPlannerBytes = []byte(`"PLANNER_RESPONSE"`)
+)
+
+// ExtractLastModelResponse reads a JSONL transcript stream (transcript_full.jsonl or transcript.jsonl)
+// and extracts the text content of the last model response step (source == "MODEL" && type == "PLANNER_RESPONSE" && content != "").
+// Steps representing tool calls (with empty content) or generic tool outputs are ignored.
+func ExtractLastModelResponse(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 8*1024*1024) // support steps up to 8MB
+
+	var lastContent string
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Fast byte filter before JSON unmarshal
+		if !bytes.Contains(line, stepPlannerBytes) || !bytes.Contains(line, stepModelBytes) {
+			continue
+		}
+
+		var step struct {
+			Source  string      `json:"source"`
+			Type    string      `json:"type"`
+			Content interface{} `json:"content"`
+		}
+		if err := json.Unmarshal(line, &step); err != nil {
+			continue
+		}
+
+		if step.Source == "MODEL" && step.Type == "PLANNER_RESPONSE" {
+			if s, ok := step.Content.(string); ok && strings.TrimSpace(s) != "" {
+				lastContent = s
+			}
+		}
+	}
+
+	return lastContent, scanner.Err()
 }

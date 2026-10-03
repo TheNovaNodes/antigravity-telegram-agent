@@ -3396,3 +3396,307 @@ func TestSession_FinalizeTurn_Tier3ExtremePayload(t *testing.T) {
 		}
 	}
 }
+
+func TestSession_Stream_InStreamFusion_ThinkingDelta(t *testing.T) {
+	t.Run("ThinkingDeltaAppendedWhenTextAlreadyStarted", func(t *testing.T) {
+		jsonl := strings.Join([]string{
+			`{"event":"step_update","step_update":{"text_delta":"• PR #352 — нейтрализация тегов мыслей ` + "`" + `"}}`,
+			`{"event":"step_update","step_update":{"thinking_delta":"<thought>` + "`" + ` и защита стрима"}}`,
+			`{"event":"step_update","step_update":{"text_delta":" успешно завершена."}}`,
+		}, "\n") + "\n"
+
+		scanner := bufio.NewScanner(strings.NewReader(jsonl))
+		session := &AgySession{
+			BotName:         "FusionTestBot",
+			ActiveMessageID: 100,
+			UpdateChan:      make(chan struct{}, 10),
+			StdoutScanner:   scanner,
+		}
+		session.ctx, session.cancel = context.WithCancel(context.Background())
+		defer session.cancel()
+
+		session.readStdoutLoop()
+
+		session.mu.Lock()
+		gotBuffer := session.TextBuffer
+		isTruncated := session.TextTruncated
+		session.mu.Unlock()
+
+		expected := "• PR #352 — нейтрализация тегов мыслей `<thought>` и защита стрима успешно завершена."
+		if gotBuffer != expected {
+			t.Errorf("expected buffer %q, got %q", expected, gotBuffer)
+		}
+		if isTruncated {
+			t.Error("expected TextTruncated to be false")
+		}
+	})
+
+	t.Run("PreResponseThinkingIgnoredWhenBufferEmpty", func(t *testing.T) {
+		jsonl := `{"event":"step_update","step_update":{"thinking_delta":"Hidden chain-of-thought that must not leak into chat"}}` + "\n"
+		scanner := bufio.NewScanner(strings.NewReader(jsonl))
+		session := &AgySession{
+			BotName:         "FusionTestBotEmpty",
+			ActiveMessageID: 100,
+			UpdateChan:      make(chan struct{}, 10),
+			StdoutScanner:   scanner,
+		}
+		session.ctx, session.cancel = context.WithCancel(context.Background())
+		defer session.cancel()
+
+		session.readStdoutLoop()
+
+		session.mu.Lock()
+		gotBuffer := session.TextBuffer
+		session.mu.Unlock()
+
+		if gotBuffer != "" {
+			t.Errorf("expected empty buffer for pre-response thinking, got %q", gotBuffer)
+		}
+	})
+
+	t.Run("InStreamFusion_BufferLimitOverflow", func(t *testing.T) {
+		session := &AgySession{
+			BotName:         "FusionOverflowBot",
+			ActiveMessageID: 100,
+			TextBuffer:      strings.Repeat("A", maxTextBufferBytes-10),
+			UpdateChan:      make(chan struct{}, 10),
+			StdoutScanner:   bufio.NewScanner(strings.NewReader(`{"event":"step_update","step_update":{"thinking_delta":"12345678901234567890"}}` + "\n")),
+		}
+		session.ctx, session.cancel = context.WithCancel(context.Background())
+		defer session.cancel()
+
+		session.readStdoutLoop()
+
+		session.mu.Lock()
+		isTruncated := session.TextTruncated
+		bufLen := len(session.TextBuffer)
+		session.mu.Unlock()
+
+		if !isTruncated {
+			t.Error("expected TextTruncated to be true after overflow")
+		}
+		if bufLen != maxTextBufferBytes-10 {
+			t.Errorf("expected buffer not to exceed limit, got len %d", bufLen)
+		}
+	})
+}
+
+func TestSession_FinalizeTurn_TranscriptFallback_Recovery(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+
+	var richMessageSent bool
+	var sentRichText string
+	var draftDeleted bool
+
+	ms.customHandler = func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		vals, _ := url.ParseQuery(string(bodyBytes))
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/getMe") {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "sendRichMessage") {
+			richMessageSent = true
+			if rm := vals.Get("rich_message"); rm != "" {
+				var rmData struct {
+					Markdown string `json:"markdown"`
+				}
+				_ = json.Unmarshal([]byte(rm), &rmData)
+				sentRichText = rmData.Markdown
+			}
+			w.Write([]byte(`{"ok":true,"result":{"message_id":5001,"chat":{"id":12345},"text":"rich article"}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "deleteMessage") {
+			draftDeleted = true
+			w.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"ok"}}`))
+	}
+
+	bot := createMockBot(ms)
+
+	tmpDir := t.TempDir()
+	accHome := filepath.Join(tmpDir, "acc-pool")
+	convID := "test-conv-recovery-355"
+	logsDir := filepath.Join(accHome, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		t.Fatalf("failed to create logs dir: %v", err)
+	}
+
+	fullResponseText := "# Full Restored Architecture Specification\n\n" + strings.Repeat("Extensive deep analysis of streaming and state machine invariants.\n", 60)
+	if len(fullResponseText) < 3200 {
+		t.Fatalf("payload should exceed 3000 chars for Tier 2 Rich Article, got %d", len(fullResponseText))
+	}
+
+	steps := []string{
+		`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"Please analyze the system architecture"}`,
+		`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","content":"","tool_calls":[{"name":"view_file"}]}`,
+		`{"step_index":3,"source":"MODEL","type":"GENERIC","content":"file content preview"}`,
+	}
+	stepFinal, _ := json.Marshal(map[string]interface{}{
+		"step_index": 4,
+		"source":     "MODEL",
+		"type":       "PLANNER_RESPONSE",
+		"content":    fullResponseText,
+	})
+	steps = append(steps, string(stepFinal))
+
+	transcriptPath := filepath.Join(logsDir, "transcript_full.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(strings.Join(steps, "\n")+"\n"), 0644); err != nil {
+		t.Fatalf("failed to write transcript file: %v", err)
+	}
+
+	// Simulate Incident: TextBuffer was cut off mid-stream at byte 1000
+	truncatedPartialBuffer := fullResponseText[:1000]
+
+	s := &AgySession{
+		BotName:         "RecoveryTestBot",
+		BotAPI:          bot,
+		ChatID:          12345,
+		ActiveMessageID: 8888,
+		ActiveTurnStart: time.Now(),
+		Conversation:    convID,
+		AccountHomeDir:  accHome,
+		TextBuffer:      truncatedPartialBuffer,
+	}
+
+	s.finalizeTurn()
+
+	if !richMessageSent {
+		t.Error("expected sendRichMessage to be called for recovered >3000 chars article (Tier 2 Rich Text)")
+	}
+	if !draftDeleted {
+		t.Error("expected streaming draft activeMsgID 8888 to be deleted on Tier 2 delivery")
+	}
+	if !strings.Contains(sentRichText, "Extensive deep analysis") || len(sentRichText) < 3200 {
+		t.Errorf("expected full restored response from transcript, got length %d", len(sentRichText))
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ActiveMessageID != 0 {
+		t.Errorf("expected ActiveMessageID to be zeroed out, got %d", s.ActiveMessageID)
+	}
+	if !s.ActiveTurnStart.IsZero() {
+		t.Errorf("expected ActiveTurnStart to be zeroed out, got %v", s.ActiveTurnStart)
+	}
+}
+
+func TestSession_FinalizeTurn_TranscriptFallback_FailSafe(t *testing.T) {
+	ms := newMockServer()
+	defer ms.Close()
+
+	var mu sync.Mutex
+	var sentText string
+	ms.customHandler = func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		vals, _ := url.ParseQuery(string(bodyBytes))
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/getMe") {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "sendMessage") {
+			mu.Lock()
+			sentText = vals.Get("text")
+			mu.Unlock()
+			w.Write([]byte(`{"ok":true,"result":{"message_id":6001,"chat":{"id":12345},"text":"ok"}}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true,"result":{"message_id":100,"chat":{"id":12345},"text":"ok"}}`))
+	}
+	bot := createMockBot(ms)
+
+	t.Run("MissingTranscript_PreservesBuffer", func(t *testing.T) {
+		mu.Lock()
+		sentText = ""
+		mu.Unlock()
+
+		s := &AgySession{
+			BotName:         "FailSafeBot",
+			BotAPI:          bot,
+			ChatID:          12345,
+			Conversation:    "nonexistent-session-355",
+			AccountHomeDir:  "/nonexistent/dir",
+			TextBuffer:      "Preserved buffer text without panic",
+			ActiveTurnStart: time.Now(),
+		}
+
+		s.finalizeTurn()
+
+		mu.Lock()
+		got := sentText
+		mu.Unlock()
+		if !strings.Contains(got, "Preserved buffer text without panic") {
+			t.Errorf("expected original buffer to be preserved, got %q", got)
+		}
+	})
+
+	t.Run("CorruptedTranscript_PreservesBuffer", func(t *testing.T) {
+		mu.Lock()
+		sentText = ""
+		mu.Unlock()
+
+		tmpDir := t.TempDir()
+		accHome := filepath.Join(tmpDir, "acc-corrupted")
+		convID := "corrupted-session-355"
+		logsDir := filepath.Join(accHome, ".gemini", "antigravity-cli", "brain", convID, ".system_generated", "logs")
+		_ = os.MkdirAll(logsDir, 0755)
+
+		badPath := filepath.Join(logsDir, "transcript_full.jsonl")
+		_ = os.WriteFile(badPath, []byte("INVALID_NON_JSON_CORRUPTED_BYTES\n{bad json}\n"), 0644)
+
+		s := &AgySession{
+			BotName:         "CorruptedTestBot",
+			BotAPI:          bot,
+			ChatID:          12345,
+			Conversation:    convID,
+			AccountHomeDir:  accHome,
+			TextBuffer:      "Preserved partial response despite corrupted JSONL",
+			ActiveTurnStart: time.Now(),
+		}
+
+		s.finalizeTurn()
+
+		mu.Lock()
+		got := sentText
+		mu.Unlock()
+		if !strings.Contains(got, "Preserved partial response despite corrupted JSONL") {
+			t.Errorf("expected original buffer to be preserved, got %q", got)
+		}
+	})
+
+	t.Run("MultiAccountCascadeResolution", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		convID := "cascade-session-355"
+		brainDir := filepath.Join(tmpDir, "custom-brain", convID)
+		logsDir := filepath.Join(brainDir, ".system_generated", "logs")
+		_ = os.MkdirAll(logsDir, 0755)
+
+		t.Setenv("BRAIN_DIR", filepath.Join(tmpDir, "custom-brain"))
+		step, _ := json.Marshal(map[string]interface{}{
+			"step_index": 1,
+			"source":     "MODEL",
+			"type":       "PLANNER_RESPONSE",
+			"content":    "Resolved via cascade fallback",
+		})
+		_ = os.WriteFile(filepath.Join(logsDir, "transcript_full.jsonl"), append(step, '\n'), 0644)
+
+		path := resolveSessionTranscriptPath("", convID)
+		if path == "" {
+			t.Errorf("expected path to be resolved via cascade BRAIN_DIR fallback, got empty")
+		}
+		content := readLastModelResponseFromTranscript("", convID)
+		if content != "Resolved via cascade fallback" {
+			t.Errorf("expected content 'Resolved via cascade fallback', got %q", content)
+		}
+	})
+}

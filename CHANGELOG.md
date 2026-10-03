@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Dual-Circuit Streaming Resilience & Transcript Fallback (Issue #355)
+- **In-Stream Fusion (`session.go`)**:
+  - Enhanced `readStdoutLoop` to handle `step_update` events with `su["thinking_delta"]`: when response text generation has already begun (`s.TextBuffer != ""`), incoming thinking deltas are fused directly into `s.TextBuffer` as visible text continuation.
+  - Enforced 1MB buffer ceiling (`maxTextBufferBytes`), refreshed `s.LastActivity`, and signaled `s.UpdateChan` to ensure real-time streaming edits in Telegram never freeze when thinking tags (`<thought>`, `<think>`) are emitted in the response.
+  - Suppressed thinking deltas when `s.TextBuffer == ""` to safeguard internal Chain-of-Thought reasoning from leaking into chat.
+- **Fail-Safe Transcript Fallback (`finalizeTurn` & `pkg/harvester`)**:
+  - Implemented multi-account aware session transcript resolver (`resolveSessionTranscriptPath`): cascade `s.AccountHomeDir` $\to$ `harvester.DiscoverSession(s.Conversation)` $\to$ `getBrainDir()`, preferring untruncated `transcript_full.jsonl` with fallback to `transcript.jsonl`.
+  - Added `harvester.ExtractLastModelResponse`: scans JSONL steps with an 8MB buffer, skipping empty tool calls and generic tool outputs, extracting the final model response step (`source == "MODEL"` and `type == "PLANNER_RESPONSE"`).
+  - Enhanced `finalizeTurn` to verify and restore the complete 100% response from disk outside `s.mu` lock whenever the transcript has more content than the in-memory buffer (`len(transcriptText) > len(bufferedText)`), restoring Tier 2 Rich Article routing for long messages (> 3000 runes).
+  - Fail-safe error handling: invalid paths, corrupted JSONL lines, and EOF errors gracefully fall back to in-memory buffer without panics.
+- **Regression Test Suite**:
+  - Added unit tests in `pkg/harvester/transcript_test.go` (`TestExtractLastModelResponse`).
+  - Added unit tests in `session_test.go`: `TestSession_Stream_InStreamFusion_ThinkingDelta`, `TestSession_FinalizeTurn_TranscriptFallback_Recovery`, and `TestSession_FinalizeTurn_TranscriptFallback_FailSafe`.
+
 ### Robust Markdown Telegram HTML Parser & CommonMark Compliance (Issue #353)
 - **Deterministic Two-Phase Parser (`BlockLexer` & `InlineScanner`)**:
   - Implemented standalone `parser.go` with deterministic CommonMark 0.31.2 compliant block lexing and inline scanning, completely eliminating fragile regular expressions for code fences and inline code spans.
