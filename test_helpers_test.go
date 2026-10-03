@@ -252,6 +252,45 @@ func createStrictTelegramMockServer(t *testing.T) (*httptest.Server, *[]string, 
 
 		// Rule 2: Real Telegram message is not modified
 		if strings.Contains(r.URL.Path, "editMessageText") {
+			if richMessageRaw := vals.Get("rich_message"); richMessageRaw != "" {
+				var richMsg InputRichMessage
+				if err := json.Unmarshal([]byte(richMessageRaw), &richMsg); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: invalid rich_message payload"}`))
+					return
+				}
+				if len([]rune(richMsg.Markdown)) > MaxRichMessageLength {
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: rich_message is too long (exceeds 32768 characters)"}`))
+					return
+				}
+				msgIDStr := vals.Get("message_id")
+				var msgID int
+				fmt.Sscanf(msgIDStr, "%d", &msgID)
+
+				mu.Lock()
+				prev, seen := lastEditedText[msgID]
+				if seen && prev == richMsg.Markdown {
+					mu.Unlock()
+					w.WriteHeader(http.StatusBadRequest)
+					w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: message is not modified"}`))
+					return
+				}
+				lastEditedText[msgID] = richMsg.Markdown
+				mu.Unlock()
+
+				respBytes, _ := json.Marshal(map[string]any{
+					"ok": true,
+					"result": map[string]any{
+						"message_id": msgID,
+						"chat":       map[string]any{"id": 12345},
+						"text":       richMsg.Markdown,
+					},
+				})
+				w.Write(respBytes)
+				return
+			}
+
 			msgIDStr := vals.Get("message_id")
 			var msgID int
 			fmt.Sscanf(msgIDStr, "%d", &msgID)

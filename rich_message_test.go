@@ -479,7 +479,7 @@ func TestSendAdaptiveResponse_GracefulDegradation_Fallback(t *testing.T) {
 	}
 }
 
-func TestSendAdaptiveResponse_ActiveMsgID_Cleanup(t *testing.T) {
+func TestSendAdaptiveResponse_ActiveMsgID_InPlaceMorphing(t *testing.T) {
 	ts, sentReqs, mu := createStrictTelegramMockServer(t)
 	defer ts.Close()
 
@@ -501,16 +501,101 @@ func TestSendAdaptiveResponse_ActiveMsgID_Cleanup(t *testing.T) {
 	requests := append([]string{}, *sentReqs...)
 	mu.Unlock()
 
+	editedWithRich := false
 	deletedActiveID := false
 	for _, reqBody := range requests {
 		vals, _ := url.ParseQuery(reqBody)
-		if vals.Get("message_id") == "777" {
+		if vals.Get("rich_message") != "" && vals.Get("message_id") == "777" {
+			editedWithRich = true
+		}
+		if vals.Get("rich_message") == "" && vals.Get("message_id") == "777" && vals.Get("text") == "" {
 			deletedActiveID = true
 		}
 	}
 
-	if !deletedActiveID {
-		t.Errorf("expected active placeholder message 777 to be deleted after rich message success")
+	if !editedWithRich {
+		t.Errorf("expected active placeholder message 777 to be morphed in-place via editMessageText with rich_message")
+	}
+	if deletedActiveID {
+		t.Errorf("expected active placeholder message 777 NOT to be deleted (In-Place Morphing Guardrail)")
+	}
+}
+
+func TestSendAdaptiveResponse_InPlaceMorphing_Fallback(t *testing.T) {
+	var mu sync.Mutex
+	var sentCalls []string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		sentCalls = append(sentCalls, r.URL.Path+"?"+string(bodyBytes))
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(r.URL.Path, "getMe") {
+			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"FallbackBot","username":"FallbackBot"}}`))
+			return
+		}
+
+		// Fail editMessageText when rich_message is present
+		if strings.Contains(r.URL.Path, "editMessageText") && strings.Contains(string(bodyBytes), "rich_message") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"ok":false,"error_code":500,"description":"Internal Server Error: rich message edit unavailable"}`))
+			return
+		}
+
+		// Succeed for classic editMessageText with text (HTML)
+		if strings.Contains(r.URL.Path, "editMessageText") {
+			w.Write([]byte(`{"ok":true,"result":{"message_id":777,"chat":{"id":12345},"text":"edited via html"}}`))
+			return
+		}
+
+		w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer ts.Close()
+
+	endpoint := ts.URL + "/bot%s/%s"
+	bot, err := tgbotapi.NewBotAPIWithClient("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", endpoint, ts.Client())
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	activeID := 777
+	tableText := "Here are the metrics:\n| Metric | Value |\n|---|---|\n| QPS | 5000 |"
+	chunks := sendAdaptiveResponse(bot, 12345, activeID, tableText)
+	if len(chunks) == 0 {
+		t.Fatalf("expected non-empty chunks after fallback")
+	}
+
+	mu.Lock()
+	calls := append([]string{}, sentCalls...)
+	mu.Unlock()
+
+	richEditAttempted := false
+	classicEditSucceeded := false
+	deletedCalled := false
+
+	for _, call := range calls {
+		if strings.Contains(call, "editMessageText") && strings.Contains(call, "rich_message") {
+			richEditAttempted = true
+		}
+		if strings.Contains(call, "editMessageText") && !strings.Contains(call, "rich_message") {
+			classicEditSucceeded = true
+		}
+		if strings.Contains(call, "deleteMessage") {
+			deletedCalled = true
+		}
+	}
+
+	if !richEditAttempted {
+		t.Errorf("expected editRichMessage to be attempted first")
+	}
+	if !classicEditSucceeded {
+		t.Errorf("expected fallback to classic HTML editMessageText to succeed")
+	}
+	if deletedCalled {
+		t.Errorf("expected deleteMessage NEVER to be called during Tier 2 In-Place Morphing fallback")
 	}
 }
 
@@ -671,23 +756,23 @@ func TestDelivery_Tier2_RichArticle(t *testing.T) {
 			reqs := append([]string{}, *sentReqs...)
 			mu.Unlock()
 
-			foundRich := false
+			foundRichEdit := false
 			deletedActiveID := false
 			for _, req := range reqs {
 				vals, _ := url.ParseQuery(req)
-				if vals.Get("rich_message") != "" {
-					foundRich = true
+				if vals.Get("rich_message") != "" && vals.Get("message_id") == "888" {
+					foundRichEdit = true
 				}
-				if vals.Get("message_id") == "888" {
+				if vals.Get("rich_message") == "" && vals.Get("message_id") == "888" && vals.Get("text") == "" {
 					deletedActiveID = true
 				}
 			}
 
-			if !foundRich {
-				t.Errorf("expected sendRichMessage to be called for Tier 2 payload")
+			if !foundRichEdit {
+				t.Errorf("expected editRichMessage to be called for Tier 2 payload with activeMsgID 888")
 			}
-			if !deletedActiveID {
-				t.Errorf("expected activeMsgID 888 to be deleted after Tier 2 rich message success")
+			if deletedActiveID {
+				t.Errorf("expected activeMsgID 888 NOT to be deleted after Tier 2 rich message success (In-Place Morphing Guardrail)")
 			}
 		})
 	}
@@ -872,9 +957,9 @@ func TestArtifactSaveDir_Isolation_NoHardcodedBotName(t *testing.T) {
 }
 
 func TestDetermineDeliveryTier_HTMLLengthExpansion(t *testing.T) {
-	// Construct markdown text with rune count < 3000 runes,
-	// but containing entity-rich links expanding to > 4000 runes in HTML.
-	text := strings.Repeat("Ref: <data> & [item](https://example.com/api?a=1&b=2&c=3&d=4&e=5&f=6) & <token> & results.\n", 30)
+	// Construct markdown text with rune count < 1500 runes,
+	// but containing entity-rich text expanding to > 4000 runes in HTML.
+	text := strings.Repeat("<&> ", 300)
 	markdownRunes := utf8.RuneCountInString(text)
 	if markdownRunes >= RichMessageThreshold {
 		t.Fatalf("test prerequisite failed: markdown length must be < %d, got %d", RichMessageThreshold, markdownRunes)
@@ -884,6 +969,9 @@ func TestDetermineDeliveryTier_HTMLLengthExpansion(t *testing.T) {
 	}
 	if HasThoughts(text) {
 		t.Fatalf("test prerequisite failed: text should not contain thoughts")
+	}
+	if HasMarkdownStructure(text) {
+		t.Fatalf("test prerequisite failed: text should not contain markdown structure")
 	}
 
 	html := MarkdownToTelegramHTML(text)
@@ -1000,5 +1088,145 @@ func TestRotateArtifactFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
 		t.Errorf("expected expired file to be deleted")
+	}
+}
+
+func TestHasMarkdownStructure(t *testing.T) {
+	positiveCases := []struct {
+		name string
+		text string
+	}{
+		{"H1 heading", "# Architecture"},
+		{"H2 heading", "## Overview"},
+		{"H3 heading", "### Component"},
+		{"H4 heading", "#### Details"},
+		{"H5 heading", "##### Notes"},
+		{"H6 heading", "###### Footnote"},
+		{"Indented heading", "   ## Indented Section"},
+		{"Fenced code block backticks", "```go\nfunc main() {}\n```"},
+		{"Fenced code block tildes", "~~~json\n{\"ok\":true}\n~~~"},
+		{"Blockquote single line", "> Important advice"},
+		{"Blockquote empty line", ">"},
+		{"Blockquote indented", "  > Note"},
+		{"Bullet list hyphen", "- item A"},
+		{"Bullet list asterisk", "* item B"},
+		{"Bullet list plus", "+ item C"},
+		{"Bullet list unicode bullet", "• item D"},
+		{"Numbered list dot", "1. First step"},
+		{"Numbered list parenthesis", "2) Second step"},
+		{"Numbered list multi-digit", "100. Century step"},
+		{"Horizontal rule dashes", "---"},
+		{"Horizontal rule asterisks", "***"},
+		{"Horizontal rule underscores", "___"},
+		{"Horizontal rule spaced", "- - -"},
+		{"Bold header plate asterisks", "**Executive Summary:** All systems normal"},
+		{"Bold header plate underscores", "__Notice:__ Maintenance scheduled"},
+		{"Markdown table", "| Col 1 | Col 2 |\n|---|---|\n| A | B |"},
+	}
+
+	for _, tc := range positiveCases {
+		t.Run("Positive_"+tc.name, func(t *testing.T) {
+			if !HasMarkdownStructure(tc.text) {
+				t.Errorf("expected HasMarkdownStructure to return true for %q", tc.text)
+			}
+		})
+	}
+
+	negativeCases := []struct {
+		name string
+		text string
+	}{
+		{"Empty string", ""},
+		{"Whitespace only", "   \n\t  \n"},
+		{"Plain conversational reply", "Принято, задача выполнена."},
+		{"Plain confirmation", "Файл сохранен в scratch."},
+		{"Hashtag in plain text", "Please check #team channel for updates."},
+		{"Math greater-than", "Value 5 > 3 is true."},
+		{"Math multiply", "Formula 2 * 3 = 6."},
+		{"Math minus", "Score is 10 - 2 = 8."},
+		{"Float number", "The version is 3.14 released today."},
+		{"Normal bold in middle", "This is normal text with a **bold** word inside."},
+		{"Normal italic", "This is *italic* text."},
+		{"Short dash", "--"},
+	}
+
+	for _, tc := range negativeCases {
+		t.Run("Negative_"+tc.name, func(t *testing.T) {
+			if HasMarkdownStructure(tc.text) {
+				t.Errorf("expected HasMarkdownStructure to return false for %q", tc.text)
+			}
+		})
+	}
+}
+
+func TestDetermineDeliveryTier_DoDMatrix(t *testing.T) {
+	cases := []struct {
+		name         string
+		text         string
+		expectedTier DeliveryTier
+	}{
+		{
+			name:         "Short flat text without markup -> Tier 1 (Classic Bubble)",
+			text:         "Принято, задача выполнена в полном объеме.",
+			expectedTier: Tier1ClassicBubble,
+		},
+		{
+			name:         "Flat text of 1600 runes without markdown structure -> Tier 1 (Classic Bubble)",
+			text:         strings.Repeat("Привет мир это обычный плоский текст без разметки. ", 32), // ~1630 runes
+			expectedTier: Tier1ClassicBubble,
+		},
+		{
+			name:         "Response with H2 heading of 1600 runes -> Tier 2 (Rich Article)",
+			text:         "## Архитектурный план реализации\n\n" + strings.Repeat("Подробное описание этапа инженерного плана. ", 36), // ~1620 runes
+			expectedTier: Tier2RichArticle,
+		},
+		{
+			name:         "Response with H3 heading of 1600 runes -> Tier 2 (Rich Article)",
+			text:         "### Детализация микросервиса\n\n" + strings.Repeat("Описание работы подсистемы и протокола обмена. ", 35), // ~1610 runes
+			expectedTier: Tier2RichArticle,
+		},
+		{
+			name:         "Response with task list of 1800 runes -> Tier 2 (Rich Article)",
+			text:         "- Задача 1: Первичная диагностика системы\n" + strings.Repeat("- Подзадача: выполнение проверки и сбор метрик.\n", 37), // ~1800 runes
+			expectedTier: Tier2RichArticle,
+		},
+		{
+			name:         "Response with numbered list of 1800 runes -> Tier 2 (Rich Article)",
+			text:         "1. Первый этап развертывания кластера в проде\n" + strings.Repeat("2. Следующий этап с проверкой репликации данных.\n", 37), // ~1800 runes
+			expectedTier: Tier2RichArticle,
+		},
+		{
+			name:         "Response with code block -> Tier 2 (Rich Article)",
+			text:         "```go\nfunc ProcessTelemetry() error {\n" + strings.Repeat("\t// trace telemetry packet and check headers\n", 40) + "\treturn nil\n}\n```", // ~1800 runes
+			expectedTier: Tier2RichArticle,
+		},
+		{
+			name:         "Response with tilde code block -> Tier 2 (Rich Article)",
+			text:         "~~~bash\n" + strings.Repeat("echo 'deploying isolated container to cluster'\n", 40) + "~~~", // ~1800 runes
+			expectedTier: Tier2RichArticle,
+		},
+		{
+			name:         "Message > 32KB -> Tier 3 (Markdown Artifact)",
+			text:         strings.Repeat("Строка отчета телеметрии для артефакта.\n", 900), // ~36,000 runes
+			expectedTier: Tier3MarkdownArtifact,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tier := DetermineDeliveryTier(tc.text)
+			if tier != tc.expectedTier {
+				t.Errorf("expected %v, got %v (runes: %d)", tc.expectedTier, tier, utf8.RuneCountInString(tc.text))
+			}
+		})
+	}
+}
+
+func BenchmarkHasMarkdownStructure(b *testing.B) {
+	text := "## Architecture Overview\n\nThis is a long analytical response.\n\n- Point 1\n- Point 2\n\n```go\nfunc Run() {}\n```\n"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = HasMarkdownStructure(text)
 	}
 }
