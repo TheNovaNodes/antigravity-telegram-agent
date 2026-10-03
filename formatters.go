@@ -23,9 +23,6 @@ var allowedTags = map[string]bool{
 }
 
 var (
-	reTGFenced = regexp.MustCompile("(?is)```([a-zA-Z0-9_\\-\\+]*)\\n?(.*?)```")
-	reTGInline = regexp.MustCompile("(?s)`([^`]+?)`")
-
 	reThink    = regexp.MustCompile(`(?is)<think>(.*?)</think>`)
 	reThinking = regexp.MustCompile(`(?is)<thinking>(.*?)</thinking>`)
 	reThought  = regexp.MustCompile(`(?is)<thought>(.*?)</thought>`)
@@ -164,170 +161,23 @@ func MarkdownToTelegramHTML(text string) string {
 		return token
 	}
 
-	// 0. Code Shielding First: Fenced Code Blocks & Inline Code
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	if strings.Count(text, "```")%2 != 0 {
-		text += "\n```"
-	}
+	// 0. Code Shielding First: Fenced Code Blocks (CommonMark 4.5) & Inline Code Spans (CommonMark 4.8)
+	text = shieldFencedCodeBlocks(text, createPlaceholder)
+	text = shieldInlineCodeSpans(text, createPlaceholder)
 
-	text = reTGFenced.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reTGFenced.FindStringSubmatch(m)
-		lang := strings.TrimSpace(subs[1])
-		body := escapeHTML(subs[2])
-		classAttr := ""
-		if lang != "" {
-			classAttr = fmt.Sprintf(` class="language-%s"`, escapeHTML(lang))
-		}
-		return createPlaceholder(fmt.Sprintf("<pre><code%s>%s</code></pre>", classAttr, body))
-	})
+	// 1. Extract strictly-paired thinking blocks (OpSec & Stream Protection)
+	text = shieldThinkingBlocks(text, createPlaceholder)
 
-	text = reTGInline.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reTGInline.FindStringSubmatch(m)
-		return createPlaceholder(fmt.Sprintf("<code>%s</code>", escapeHTML(subs[1])))
-	})
-
-	// 1. Extract think blocks (Strict closing tag)
-	text = reThink.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reThink.FindStringSubmatch(m)
-		body := strings.TrimSpace(subs[1])
-		escaped := escapeHTML(body)
-		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
-		return createPlaceholder(formatted)
-	})
-
-	text = reThinking.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reThinking.FindStringSubmatch(m)
-		body := strings.TrimSpace(subs[1])
-		escaped := escapeHTML(body)
-		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
-		return createPlaceholder(formatted)
-	})
-
-	text = reThought.ReplaceAllStringFunc(text, func(m string) string {
-		subs := reThought.FindStringSubmatch(m)
-		body := strings.TrimSpace(subs[1])
-		escaped := escapeHTML(body)
-		formatted := fmt.Sprintf("<blockquote expandable>💭 <b>Thinking Process:</b>\n%s</blockquote>", escaped)
-		return createPlaceholder(formatted)
-	})
-
-	// Escape remaining HTML
+	// 2. Escape any remaining raw HTML entities and tags
 	text = escapeHTML(text)
 
-	// Block-level parsing
-	lines := strings.Split(text, "\n")
-	var outLines []string
-	var quoteBuffer []string
-	isExpandableQuote := false
-	var tableBuffer []string
+	// 3. Block-Level Lexing & Parsing with Strict DOM Isolation
+	text = parseMarkdownBlocks(text, createPlaceholder)
 
-	flushQuote := func() {
-		if len(quoteBuffer) > 0 {
-			qContent := strings.Join(quoteBuffer, "\n")
-			attr := ""
-			if isExpandableQuote {
-				attr = " expandable"
-			}
-			outLines = append(outLines, fmt.Sprintf("<blockquote%s>%s</blockquote>", attr, qContent))
-			quoteBuffer = nil
-			isExpandableQuote = false
-		}
-	}
+	// 4. Inline formatting (links, spoilers, strikethrough, bold, italic)
+	text = applyInlineFormatting(text)
 
-	flushTable := func() {
-		if len(tableBuffer) > 0 {
-			tContent := strings.Join(tableBuffer, "\n")
-			ph := createPlaceholder(fmt.Sprintf("<pre><code>%s</code></pre>", tContent))
-			outLines = append(outLines, ph)
-			tableBuffer = nil
-		}
-	}
-
-	for _, line := range lines {
-		stripped := strings.TrimSpace(line)
-
-		// Table detection
-		if strings.HasPrefix(stripped, "|") && strings.HasSuffix(stripped, "|") {
-			flushQuote()
-			tableBuffer = append(tableBuffer, stripped)
-			continue
-		} else if len(tableBuffer) > 0 {
-			flushTable()
-		}
-
-		if stripped == "---" || stripped == "***" || stripped == "___" || stripped == "───────────────" {
-			flushQuote()
-			outLines = append(outLines, "───────────────")
-			continue
-		}
-
-		if strings.HasPrefix(stripped, "&gt; ") || strings.HasPrefix(stripped, "&gt;") {
-			qLine := ""
-			if strings.HasPrefix(stripped, "&gt; ") {
-				qLine = stripped[5:]
-			} else {
-				qLine = stripped[4:]
-			}
-
-			if strings.HasPrefix(qLine, "[!NOTE]") || strings.HasPrefix(qLine, "[!IMPORTANT]") || strings.HasPrefix(qLine, "[!TIP]") {
-				isExpandableQuote = true
-			}
-			quoteBuffer = append(quoteBuffer, qLine)
-			continue
-		} else if len(quoteBuffer) > 0 {
-			flushQuote()
-		}
-
-		if m := reTGHeader.FindStringSubmatch(stripped); m != nil {
-			outLines = append(outLines, fmt.Sprintf("\n<b><u>%s</u></b>", m[2]))
-			continue
-		}
-
-		if m := reTGList.FindStringSubmatch(line); m != nil {
-			outLines = append(outLines, fmt.Sprintf("%s• %s", m[1], m[2]))
-			continue
-		}
-
-		if m := reTGNumList.FindStringSubmatch(line); m != nil {
-			outLines = append(outLines, fmt.Sprintf("%s%s. %s", m[1], m[2], m[3]))
-			continue
-		}
-
-		outLines = append(outLines, line)
-	}
-
-	flushQuote()
-	flushTable()
-
-	text = strings.Join(outLines, "\n")
-
-	// Inline formatting
-	// Images
-	text = reTGImg.ReplaceAllString(text, `<a href="$2">🖼 $1</a>`)
-
-	// Links
-	text = reTGLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
-
-	// Spoilers
-	text = reTGSpoiler.ReplaceAllString(text, `<tg-spoiler>$1</tg-spoiler>`)
-
-	// Strikethrough
-	text = reTGStrike.ReplaceAllString(text, `<s>$1</s>`)
-
-	// Bold Italic
-	text = reTGBoldItalic.ReplaceAllString(text, `<b><i>$1</i></b>`)
-
-	// Bold
-	text = reTGBold.ReplaceAllString(text, `<b>$1</b>`)
-
-	// Italic (asterisk)
-	text = reTGItalicAst.ReplaceAllString(text, `<i>$1</i>`)
-
-	// Italic (underscore)
-	text = reTGItalicUnd.ReplaceAllString(text, `<i>$1</i>`)
-
-	// Restore placeholders
+	// 5. Restore placeholders in reverse or until none remain
 	for {
 		replacedAny := false
 		for token, original := range placeholders {
@@ -345,16 +195,36 @@ func MarkdownToTelegramHTML(text string) string {
 }
 
 // splitOversizedParagraph breaks a single oversized paragraph into chunks smaller than maxChunkSize,
-// prioritizing newlines, spaces, and ensuring it never cuts in the middle of an HTML tag or entity.
+// prioritizing newlines, spaces, and ensuring it never cuts in the middle of an HTML tag, entity,
+// or UTF-16 surrogate pair.
 func splitOversizedParagraph(p string, maxChunkSize int) []string {
-	runes := []rune(p)
-	if len(runes) <= maxChunkSize {
+	if utf16Len(p) <= maxChunkSize {
 		return []string{p}
 	}
 
+	runes := []rune(p)
 	var parts []string
-	for len(runes) > maxChunkSize {
-		cut := maxChunkSize
+
+	for len(runes) > 0 && utf16Len(string(runes)) > maxChunkSize {
+		// Find maximum rune cut such that utf16Len(runes[:cut]) <= maxChunkSize
+		cut := 0
+		currentUnits := 0
+		for i, r := range runes {
+			u := 1
+			if r > 0xFFFF {
+				u = 2
+			}
+			if currentUnits+u > maxChunkSize {
+				cut = i
+				break
+			}
+			currentUnits += u
+			cut = i + 1
+		}
+
+		if cut == 0 {
+			cut = 1
+		}
 
 		// Check if cutting inside an HTML tag <...>
 		inTag := false
@@ -413,7 +283,7 @@ func splitOversizedParagraph(p string, maxChunkSize int) []string {
 			if closingTag > 0 && closingTag <= len(runes) {
 				cut = closingTag
 			} else {
-				cut = maxChunkSize
+				cut = 1
 			}
 		}
 
@@ -430,8 +300,10 @@ func splitOversizedParagraph(p string, maxChunkSize int) []string {
 // SplitHTMLChunks breaks a long HTML string into an array of smaller chunks
 // that comply with Telegram's message length limits, ensuring HTML tags are balanced
 // and cross-chunk open formatting tags are preserved without breaking mid-tag or mid-entity.
+// Length is measured in UTF-16 code units (len(utf16.Encode([]rune(chunk)))) to guarantee
+// compliance with Telegram Bot API limits when strings contain 4-byte emojis or surrogate pairs.
 func SplitHTMLChunks(text string, maxChunkSize int) []string {
-	if len(text) <= maxChunkSize {
+	if utf16Len(text) <= maxChunkSize {
 		return []string{balanceAndSanitizeTelegramHTML(text)}
 	}
 
@@ -441,7 +313,8 @@ func SplitHTMLChunks(text string, maxChunkSize int) []string {
 	currentLength := 0
 
 	for _, p := range paragraphs {
-		if currentLength+len(p)+2 > maxChunkSize {
+		pLen := utf16Len(p)
+		if currentLength+pLen+2 > maxChunkSize {
 			if len(currentChunk) > 0 {
 				rawChunks = append(rawChunks, strings.Join(currentChunk, "\n\n"))
 				currentChunk = nil
@@ -456,13 +329,13 @@ func SplitHTMLChunks(text string, maxChunkSize int) []string {
 				} else {
 					if len(part) > 0 {
 						currentChunk = append(currentChunk, part)
-						currentLength = len(part)
+						currentLength = utf16Len(part)
 					}
 				}
 			}
 		} else {
 			currentChunk = append(currentChunk, p)
-			currentLength += len(p) + 2
+			currentLength += pLen + 2
 		}
 	}
 

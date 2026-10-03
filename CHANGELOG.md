@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Robust Markdown Telegram HTML Parser & CommonMark Compliance (Issue #353)
+- **Deterministic Two-Phase Parser (`BlockLexer` & `InlineScanner`)**:
+  - Implemented standalone `parser.go` with deterministic CommonMark 0.31.2 compliant block lexing and inline scanning, completely eliminating fragile regular expressions for code fences and inline code spans.
+  - **CommonMark 4.8 Code Spans & Paragraph Reset**:
+    - Delimiter run length enforcement: code spans open with $K$ backticks and close strictly with $K$ backticks, supporting nested backticks (`` `foo` ``) and space trimming rules.
+    - Paragraph boundary reset: unclosed backticks reset upon encountering empty lines (`\n\n`), preventing backtick parity inversion from swallowing subsequent paragraphs.
+  - **CommonMark 4.5 Fenced Code Blocks**:
+    - Supported variable fence lengths ($\ge 3$ backticks), allowing outer 4-backtick code fences to encapsulate inner 3-backtick code blocks without premature closure.
+    - Automatic EOF document closure for unclosed code fences.
+  - **Strict DOM Hierarchy & Block Isolation**:
+    - Block elements (`<blockquote>`, `<pre><code>`) are lexed, internally formatted, and shielded into UUID placeholders prior to inline paragraph formatting, guaranteeing that inline tags (`<b>`, `<i>`, `<s>`) never intersect or improperly wrap block elements.
+    - Excluded spoiler syntax (`||...||`) from false-positive Markdown table detection.
+  - **UTF-16 Metric for Telegram Bot API Limits**:
+    - Upgraded `SplitHTMLChunks` and `splitOversizedParagraph` to measure chunk sizes using UTF-16 code units (`len(utf16.Encode([]rune(s)))`), preventing Bot API length rejections caused by 4-byte astral runes and emoji surrogate pairs (🫥, 🚀).
+  - **Stream OpSec & Reasoning Tag Neutralization**:
+    - Preserved raw reasoning tags (`<thought>`, `<think>`) within code spans and code blocks without false extraction.
+    - Unclosed reasoning tags in text are safely escaped to `&lt;thought&gt;` and `&lt;think&gt;` without leaking or triggering blockquote conversion.
+  - **Test Suite**:
+    - Implemented comprehensive `TestMarkdownToTelegramHTML_RobustSuite` covering all 12 edge case scenarios under `go test -race ./...`.
+
 ### Thought Tags Code Shielding & Stream Truncation Prevention (Issue #351)
 - **Code Shielding First & Strict Tag Matching**:
   - Reordered Markdown parsing in `formatters.go::MarkdownToTelegramHTML`: fenced code blocks (` ``` `) and inline code (`` ` ``) are now shielded into UUID placeholders at Step 0, before evaluating reasoning tags (`<think>`, `<thinking>`, `<thought>`).

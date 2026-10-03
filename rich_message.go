@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/google/uuid"
 )
 
 const (
@@ -69,27 +68,7 @@ var (
 // shieldMarkdownCode replaces fenced and inline code blocks with unique tokens
 // so thinking tag parsers ignore any tags inside code blocks.
 func shieldMarkdownCode(text string) (string, map[string]string) {
-	placeholders := make(map[string]string)
-
-	normText := strings.ReplaceAll(text, "\r\n", "\n")
-	normText = strings.ReplaceAll(normText, "\r", "\n")
-	if strings.Count(normText, "```")%2 != 0 {
-		normText += "\n```"
-	}
-
-	shielded := reTGFenced.ReplaceAllStringFunc(normText, func(m string) string {
-		token := fmt.Sprintf("@@TGCODEPLACEHOLDER%s@@", strings.ReplaceAll(uuid.New().String(), "-", ""))
-		placeholders[token] = m
-		return token
-	})
-
-	shielded = reTGInline.ReplaceAllStringFunc(shielded, func(m string) string {
-		token := fmt.Sprintf("@@TGCODEPLACEHOLDER%s@@", strings.ReplaceAll(uuid.New().String(), "-", ""))
-		placeholders[token] = m
-		return token
-	})
-
-	return shielded, placeholders
+	return shieldMarkdownCodeBlocksRaw(text)
 }
 
 // restoreMarkdownCode restores previously shielded code blocks in markdown text.

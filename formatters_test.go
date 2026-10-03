@@ -686,3 +686,176 @@ func TestSendArtifacts_SecretRedaction(t *testing.T) {
 	// Call sendArtifacts with nil bot (does not send HTTP, tests file processing)
 	sendArtifacts(nil, 12345, "Link: (file://"+leakFile+")")
 }
+
+func TestMarkdownToTelegramHTML_RobustSuite(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, out string)
+	}{
+		{
+			name:  "Case 1: Unpaired backtick in normal text without swallowing paragraphs",
+			input: "Вот бэктик ` в тексте.\n\nА вот следующий абзац без бэктиков.",
+			validate: func(t *testing.T, out string) {
+				if strings.Contains(out, "<code>") || strings.Contains(out, "</code>") {
+					t.Errorf("unpaired backtick produced code tag: %q", out)
+				}
+				if !strings.Contains(out, "Вот бэктик ` в тексте.") {
+					t.Errorf("first paragraph corrupted: %q", out)
+				}
+				if !strings.Contains(out, "А вот следующий абзац без бэктиков.") {
+					t.Errorf("second paragraph corrupted: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 2: 4 backticks wrapping 3 backticks in fenced code block",
+			input: "````bash\necho \"```inside```\"\n````",
+			validate: func(t *testing.T, out string) {
+				expectedPrefix := "<pre><code class=\"language-bash\">echo \"```inside```\""
+				if !strings.Contains(out, expectedPrefix) {
+					t.Errorf("fenced code block failed to preserve inner 3 backticks: %q", out)
+				}
+				if !strings.HasSuffix(strings.TrimSpace(out), "</code></pre>") {
+					t.Errorf("fenced code block missing closing tags: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 3: CommonMark 4.8 double backticks code span with inner backtick",
+			input: "`` `foo` ``",
+			validate: func(t *testing.T, out string) {
+				expected := "<code>`foo`</code>"
+				if out != expected {
+					t.Errorf("expected %q, got %q", expected, out)
+				}
+			},
+		},
+		{
+			name:  "Case 4: Thought tag mention inside inline code",
+			input: "4. **Сворачиваемые цепочки рассуждений (`<thought>`)**",
+			validate: func(t *testing.T, out string) {
+				if strings.Contains(out, "blockquote") {
+					t.Errorf("thought tag inside code converted to blockquote: %q", out)
+				}
+				if !strings.Contains(out, "<code>&lt;thought&gt;</code>") {
+					t.Errorf("missing escaped code tag: %q", out)
+				}
+				if !strings.Contains(out, "<b>Сворачиваемые цепочки рассуждений") {
+					t.Errorf("missing bold wrapper: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 5: Unpaired thought tag in normal text (<think> without closing tag)",
+			input: "У меня есть тег <think> без закрытия",
+			validate: func(t *testing.T, out string) {
+				if strings.Contains(out, "blockquote") {
+					t.Errorf("unclosed <think> converted to blockquote: %q", out)
+				}
+				if !strings.Contains(out, "&lt;think&gt;") {
+					t.Errorf("unclosed <think> not properly escaped: %q", out)
+				}
+				if !strings.Contains(out, "без закрытия") {
+					t.Errorf("trailing content truncated: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 6: Blockquote inside bold text (strict DOM isolation)",
+			input: "**Жирный текст\n> Цитата внутри**",
+			validate: func(t *testing.T, out string) {
+				if strings.Contains(out, "<b><blockquote>") || strings.Contains(out, "<b>\n<blockquote>") {
+					t.Errorf("invalid DOM hierarchy: <b> wraps <blockquote>: %q", out)
+				}
+				if !strings.Contains(out, "<blockquote>") || !strings.Contains(out, "</blockquote>") {
+					t.Errorf("missing blockquote tags: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 7: Emoji surrogate pairs at chunk boundary (strictly <= 4000 UTF-16 units)",
+			input: strings.Repeat("🫥🚀 ", 1200),
+			validate: func(t *testing.T, out string) {
+				chunks := SplitHTMLChunks(out, 4000)
+				if len(chunks) < 2 {
+					t.Fatalf("expected multiple chunks for 1200 emoji pairs, got %d", len(chunks))
+				}
+				for i, chunk := range chunks {
+					u16 := utf16Len(chunk)
+					if u16 > 4000 {
+						t.Errorf("chunk %d exceeded 4000 UTF-16 units: got %d", i, u16)
+					}
+					sanitized := balanceAndSanitizeTelegramHTML(chunk)
+					if sanitized != chunk {
+						t.Errorf("chunk %d has unbalanced tags: %q vs %q", i, sanitized, chunk)
+					}
+				}
+			},
+		},
+		{
+			name:  "Case 8: Markdown table isolated in pre code",
+			input: "| Header 1 | Header 2 |\n| --- | --- |\n| Cell A | Cell B |",
+			validate: func(t *testing.T, out string) {
+				if !strings.Contains(out, "<pre><code>") || !strings.Contains(out, "</code></pre>") {
+					t.Errorf("table missing pre code tags: %q", out)
+				}
+				if !strings.Contains(out, "Header 1") || !strings.Contains(out, "Cell B") {
+					t.Errorf("table content missing: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 9: Unknown pseudo-HTML tags escaped to safe text",
+			input: "<custom-tag attr=\"val\">hello world</custom-tag>",
+			validate: func(t *testing.T, out string) {
+				expected := "&lt;custom-tag attr=\"val\"&gt;hello world&lt;/custom-tag&gt;"
+				if out != expected {
+					t.Errorf("expected %q, got %q", expected, out)
+				}
+			},
+		},
+		{
+			name:  "Case 10: Ampersands in link URLs (& -> &amp; in href without double escaping)",
+			input: "[API Search](https://example.com/api?query=test&limit=10&page=2)",
+			validate: func(t *testing.T, out string) {
+				expected := `<a href="https://example.com/api?query=test&amp;limit=10&amp;page=2">API Search</a>`
+				if out != expected {
+					t.Errorf("expected %q, got %q", expected, out)
+				}
+				if strings.Contains(out, "&amp;amp;") {
+					t.Errorf("double escaped ampersand detected: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 11: Multiple newlines inside code span (paragraph reset on empty line)",
+			input: "Первый абзац `незакрытый бэктик\n\nВторой абзац с `валидным кодом`.",
+			validate: func(t *testing.T, out string) {
+				if strings.Contains(out, "<code>незакрытый") {
+					t.Errorf("unclosed backtick from paragraph 1 bled into code tag: %q", out)
+				}
+				if !strings.Contains(out, "<code>валидным кодом</code>") {
+					t.Errorf("valid code span in paragraph 2 missing: %q", out)
+				}
+			},
+		},
+		{
+			name:  "Case 12: Combined styles (spoiler with nested bold italic)",
+			input: "||***секретный жирный курсив***||",
+			validate: func(t *testing.T, out string) {
+				expected := "<tg-spoiler><b><i>секретный жирный курсив</i></b></tg-spoiler>"
+				if out != expected {
+					t.Errorf("expected %q, got %q", expected, out)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MarkdownToTelegramHTML(tc.input)
+			tc.validate(t, got)
+		})
+	}
+}
