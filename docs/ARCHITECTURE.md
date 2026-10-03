@@ -116,6 +116,21 @@ The engine provides automated fault recovery across unreliable upstream networks
 * **Drop-to-Resume Workflow**:
   When a user forwards or uploads any `session_*.md` export file to the chat, `downloadTelegramMedia` detects the session export prefix and injects an automated prompt (`📋 Previous session context loaded from export file...`). The agent ingests the previous transcript and resumes execution seamlessly.
 
+### 2.5 Dual-Circuit Streaming Resilience: In-Stream Fusion & Transcript Fallback (#355)
+When the model outputs text containing thinking tag tokens (e.g. `<thought>` or `<think>` inside markdown code or explanations), the upstream `agy` CLI bridge in `stream-json` mode may erroneously switch streaming deltas from `su["text_delta"]` to `su["thinking_delta"]`. To guarantee uninterrupted streaming in real time and 100% response recovery upon turn finalization, the engine implements a dual-circuit resilience architecture:
+
+1. **Circuit 1: In-Stream Fusion (`session.go`)**:
+   - In `readStdoutLoop`, when `step_update` contains `su["thinking_delta"]`, the engine checks whether visible response text generation has already begun (`s.TextBuffer != ""`).
+   - If text has already started, incoming `thinking_delta` chunks are fused directly into `s.TextBuffer` as visible text continuation while respecting the 1MB buffer ceiling (`maxTextBufferBytes`), updating `s.LastActivity` and notifying `s.UpdateChan` to ensure real-time streaming edits in Telegram never freeze.
+   - If `s.TextBuffer` is empty (the agent is in initial pre-response Chain-of-Thought reasoning), `thinking_delta` chunks remain suppressed, preventing internal reasoning leakage into user chats.
+
+2. **Circuit 2: Transcript Fallback (`finalizeTurn` & `pkg/harvester`)**:
+   - Upon turn finalization (`event: "result"`), the engine executes a non-blocking disk audit outside `s.mu` lock.
+   - It resolves the session transcript path via a multi-account awareness cascade: `s.AccountHomeDir` $\to$ `harvester.DiscoverSession(s.Conversation)` $\to$ `getBrainDir()`, inspecting `transcript_full.jsonl` (and falling back to `transcript.jsonl`).
+   - The parser (`harvester.ExtractLastModelResponse`) parses JSONL steps, skipping tool calls with empty content and generic tool output steps, extracting the last model response step (`source == "MODEL"` and `type == "PLANNER_RESPONSE"`).
+   - If `len(transcriptText) > len(bufferedText)` and prefix match succeeds, the full 100% response from disk is restored.
+   - Restoring full length ensures that long responses ($> 3000$ runes) are accurately routed to Tier 2 (Rich Article) rather than truncated to Tier 1 classic bubbles.
+
 ---
 
 ## 3. Modular Handler Decomposition

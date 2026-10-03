@@ -1304,21 +1304,49 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 					}
 				}
 
-				if delta, ok := su["text_delta"].(string); ok && delta != "" {
+				var textDelta string
+				if td, ok := su["text_delta"].(string); ok && td != "" {
+					textDelta = td
+				}
+				var thinkingDelta string
+				if thd, ok := su["thinking_delta"].(string); ok && thd != "" {
+					thinkingDelta = thd
+				}
+
+				if textDelta != "" || thinkingDelta != "" {
 					s.mu.Lock()
-					s.LastActivity = time.Now()
-					if len(s.TextBuffer)+len(delta) <= maxTextBufferBytes {
-						s.TextBuffer += delta
-					} else {
-						s.TextTruncated = true
+					updated := false
+					if textDelta != "" {
+						s.LastActivity = time.Now()
+						if len(s.TextBuffer)+len(textDelta) <= maxTextBufferBytes {
+							s.TextBuffer += textDelta
+						} else {
+							s.TextTruncated = true
+						}
+						updated = true
+					}
+					// In-Stream Fusion: if text generation has already started (s.TextBuffer != ""),
+					// append thinking_delta as visible text continuation to prevent stream freezing (#355).
+					if thinkingDelta != "" && s.TextBuffer != "" {
+						s.LastActivity = time.Now()
+						if len(s.TextBuffer)+len(thinkingDelta) <= maxTextBufferBytes {
+							s.TextBuffer += thinkingDelta
+						} else {
+							s.TextTruncated = true
+						}
+						updated = true
 					}
 					s.mu.Unlock()
-					select {
-					case s.UpdateChan <- struct{}{}:
-					default:
+
+					if updated {
+						select {
+						case s.UpdateChan <- struct{}{}:
+						default:
+						}
 					}
 				}
 			}
+
 		} else if event == "result" {
 			res, ok := data["result"].(map[string]interface{})
 			if ok {
@@ -1783,21 +1811,108 @@ func (s *AgySession) startStreamingThrottler(ctx context.Context, interval time.
 	}()
 }
 
+// resolveSessionTranscriptPath resolves the transcript file path for a session
+// using the multi-account awareness cascade:
+// s.AccountHomeDir -> harvester.DiscoverSession(convID) -> getBrainDir().
+func resolveSessionTranscriptPath(accHome, convID string) string {
+	if !isValidSessionID(convID) {
+		return ""
+	}
+	var candidateDirs []string
+	seen := make(map[string]bool)
+	addDir := func(d string) {
+		if d == "" {
+			return
+		}
+		clean := filepath.Clean(d)
+		if !seen[clean] {
+			seen[clean] = true
+			candidateDirs = append(candidateDirs, clean)
+		}
+	}
+
+	// 1. AccountHomeDir from active session pool (/etc/antigravity-bot/accounts/*)
+	if accHome != "" {
+		addDir(filepath.Join(accHome, ".gemini", "antigravity-cli", "brain", convID))
+	}
+
+	// 2. Dynamic discovery across all account pools and host fallback
+	if loc, err := harvester.DiscoverSession(convID); err == nil && loc != nil && loc.BrainDir != "" {
+		addDir(loc.BrainDir)
+	}
+
+	// 3. Fallback to getBrainDir()
+	addDir(filepath.Join(getBrainDir(), convID))
+
+	for _, dir := range candidateDirs {
+		// Prefer transcript_full.jsonl (untruncated)
+		fullPath := filepath.Join(dir, ".system_generated", "logs", "transcript_full.jsonl")
+		if fi, err := os.Stat(fullPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return fullPath
+		}
+		// Fallback to transcript.jsonl
+		compactPath := filepath.Join(dir, ".system_generated", "logs", "transcript.jsonl")
+		if fi, err := os.Stat(compactPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return compactPath
+		}
+	}
+	return ""
+}
+
+// readLastModelResponseFromTranscript reads the last model response from disk using
+// fail-safe non-blocking I/O. Returns empty string on any error.
+func readLastModelResponseFromTranscript(accHome, convID string) string {
+	path := resolveSessionTranscriptPath(accHome, convID)
+	if path == "" {
+		return ""
+	}
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- path validated via resolveSessionTranscriptPath and isValidSessionID
+	f, err := os.Open(cleanPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	content, err := harvester.ExtractLastModelResponse(f)
+	if err != nil && content == "" {
+		return ""
+	}
+	return content
+}
+
 // finalizeTurn executes early disarm, sends adaptive response and artifacts,
 // and resets turn state while guaranteeing active turn immunity throughout the network calls.
 func (s *AgySession) finalizeTurn() {
 	s.mu.Lock()
-	response := s.TextBuffer
-	if s.TextTruncated {
-		response += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
-	}
+	bufferedText := s.TextBuffer
 	activeMsgID := s.ActiveMessageID
 	// Early Disarm: atomically clear s.ActiveMessageID before sendAdaptiveResponse
 	// so the background streaming throttler ticker will never attempt to edit/send this message concurrently during finalization.
 	s.ActiveMessageID = 0
 	convID := s.Conversation
 	hadStreamRecovery := s.StreamRetries > 0 || s.TurnFailovers > 0
+	accHome := s.AccountHomeDir
+	isTruncated := s.TextTruncated
 	s.mu.Unlock()
+
+	// Circuit 2: Transcript Fallback (Non-blocking I/O outside s.mu lock to restore 100% response on stream drop #355)
+	transcriptText := readLastModelResponseFromTranscript(accHome, convID)
+	if len(transcriptText) > len(bufferedText) {
+		isMatch := bufferedText == "" ||
+			strings.HasPrefix(transcriptText, bufferedText) ||
+			strings.HasPrefix(transcriptText, strings.TrimRight(bufferedText, " \t\r\n"))
+		if isMatch {
+			log.Printf("[Session] Recovered turn response from transcript for conv %s: len %d > %d", convID, len(transcriptText), len(bufferedText))
+			bufferedText = transcriptText
+			isTruncated = false
+		}
+	}
+
+	response := bufferedText
+	if isTruncated {
+		response += "\n\n⚠️ _[Response truncated: buffer exceeded 1MB limit]_"
+	}
 
 	if response == "" {
 		response = "No response from agent."
