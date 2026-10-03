@@ -3739,4 +3739,3 @@ func TestSendArtifacts_BlocksDotEnv(t *testing.T) {
 		t.Errorf("Expected valid report.md to be sent, but was not found in sentBodies")
 	}
 }
-

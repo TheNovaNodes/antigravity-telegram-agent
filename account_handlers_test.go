@@ -571,4 +571,3 @@ func TestAccountsDashboard_HtmlEscaping_MaliciousEntities(t *testing.T) {
 		t.Errorf("Expected HTML escaped HomeDir in card, got:\n%s", cardText)
 	}
 }
-
