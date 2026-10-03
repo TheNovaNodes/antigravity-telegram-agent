@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Rich Article First Routing, Zero-Allocation Markdown Structure Detector, & In-Place Morphing (Issue #357)
+- **Zero-Allocation Markdown Structure Scanner (`rich_message.go`)**:
+  - Implemented `HasMarkdownStructure(text string) bool` via standard library zero-allocation line slicing (`strings.IndexByte`, `strings.TrimSpace`, `strings.HasPrefix`, `unicode/utf8`):
+    - Headings: `^#{1,6}\s`
+    - Code fences: ```` ``` ```` or `~~~`
+    - Blockquotes: `^>\s` or `^>$`
+    - Bullet lists: `- `, `* `, `+ `, `• `
+    - Numbered lists: `^[0-9]{1,9}(\.|\))\s`
+    - Horizontal rules: `---`, `***`, `___` ($\ge 3$ characters, optional internal spacing)
+    - Bold header plates: `^(\*\*|__)[^\n]+(\*\*|__)`
+    - Markdown tables: cached pipe check + `HasMarkdownTable(text)`
+  - Benchmark performance: 50.9 ns/op, 0 B/op, 0 allocs/op.
+- **Rich Article First Routing Policy (`rich_message.go`)**:
+  - Calibrated `RichMessageThreshold` from 3000 down to 1500 runes.
+  - Updated `DetermineDeliveryTier` to route structured responses $\ge 1500$ runes to **Tier 2 (Rich Article)** when `HasMarkdownStructure(text)` is true.
+  - Preserved **Tier 1 (Classic Bubble)** strictly for short (< 1500 runes) flat conversational replies without Markdown structure, or as graceful fallback.
+- **In-Place Morphing Guardrail (`rich_message.go`)**:
+  - Added `editRichMessage`: edits existing streaming draft in-place via Telegram Bot API `editMessageText` with `rich_message` payload.
+  - Eliminated the destructive `deleteMessage + sendRichMessage` anti-pattern for Tier 2: when `activeMsgID != 0`, `sendAdaptiveResponseWithWorkspace` invokes `editRichMessage` directly on `activeMsgID`, completely removing UI flicker.
+  - Graceful Fallback: if `editRichMessage` returns an error, the engine seamlessly degrades to editing the existing draft using classic HTML (`sendChunk`) without deleting the draft.
+- **Strict Telegram Mock Server & Regression Suite**:
+  - Enhanced `createStrictTelegramMockServer` in `test_helpers_test.go` to parse, validate, and track `editMessageText` with `rich_message`.
+  - Added DoD test matrix `TestDetermineDeliveryTier_DoDMatrix` in `rich_message_test.go` covering flat short text, flat 1600 runes, H2/H3 headings 1600 runes, task lists 1800 runes, code blocks, and >32KB payloads.
+  - Added comprehensive positive and negative test cases in `TestHasMarkdownStructure` and zero-allocation benchmark `BenchmarkHasMarkdownStructure`.
+  - Added In-Place Morphing regression tests in `rich_message_test.go` (`TestSendAdaptiveResponse_ActiveMsgID_InPlaceMorphing`, `TestSendAdaptiveResponse_InPlaceMorphing_Fallback`, `TestDelivery_Tier2_RichArticleAndThoughtCollapsing`) and `session_test.go` (`TestSession_FinalizeTurn_EarlyDisarm_PreventsRaceAndDuplicates`, `TestSession_FinalizeTurn_TranscriptRecovery_DropRestoration`).
+
 ### Account Pool Leak Prevention, DB Session Guard, and Telegram Escaping (Issue #359)
 - **Account State & Turn Release in `/usage` (`handlers.go`)**:
   - Bound deferred `GlobalAccountPool.ReleaseAccount(acquiredAccID)` immediately after successful account acquisition in `handleUsageCommand`.

@@ -3138,7 +3138,11 @@ func TestSession_StreamingThrottler_RaceWithRichMessageFinalization(t *testing.T
 		if strings.Contains(r.URL.Path, "editMessageText") {
 			editID := vals.Get("message_id")
 			mu.Lock()
-			editMessageCalls++
+			if vals.Get("rich_message") != "" {
+				richMessageCalls++
+			} else {
+				editMessageCalls++
+			}
 			isDeleted := deletedMsgIDs[editID]
 			mu.Unlock()
 
@@ -3221,8 +3225,8 @@ func TestSession_StreamingThrottler_RaceWithRichMessageFinalization(t *testing.T
 	if rCount != 1 {
 		t.Errorf("Expected exactly 1 rich message call, got %d", rCount)
 	}
-	if dCount != 1 {
-		t.Errorf("Expected exactly 1 deleteMessage call for draft message, got %d", dCount)
+	if dCount != 0 {
+		t.Errorf("Expected 0 deleteMessage calls (In-Place Morphing preserves draft), got %d", dCount)
 	}
 	if fallbacks != 0 {
 		t.Errorf("Expected 0 fallback sendMessages (no duplicate messages!), got %d: %v", fallbacks, fallbackSendMessages)
@@ -3258,7 +3262,7 @@ func TestSession_FinalizeTurn_EarlyDisarmAndActiveTurnProtection(t *testing.T) {
 			return
 		}
 
-		if strings.Contains(r.URL.Path, "sendRichMessage") {
+		if strings.Contains(r.URL.Path, "sendRichMessage") || (strings.Contains(r.URL.Path, "editMessageText") && strings.Contains(string(bodyBytes), "rich_message")) {
 			// Verify invariants during adaptive network dispatch:
 			s.mu.Lock()
 			activeMsgIDDuringDispatch = s.ActiveMessageID
@@ -3499,7 +3503,7 @@ func TestSession_FinalizeTurn_TranscriptFallback_Recovery(t *testing.T) {
 			w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"StrictBot","username":"StrictBot"}}`))
 			return
 		}
-		if strings.Contains(r.URL.Path, "sendRichMessage") {
+		if strings.Contains(r.URL.Path, "sendRichMessage") || (strings.Contains(r.URL.Path, "editMessageText") && vals.Get("rich_message") != "") {
 			richMessageSent = true
 			if rm := vals.Get("rich_message"); rm != "" {
 				var rmData struct {
@@ -3569,10 +3573,10 @@ func TestSession_FinalizeTurn_TranscriptFallback_Recovery(t *testing.T) {
 	s.finalizeTurn()
 
 	if !richMessageSent {
-		t.Error("expected sendRichMessage to be called for recovered >3000 chars article (Tier 2 Rich Text)")
+		t.Error("expected rich message edit (In-Place Morphing) to be called for recovered >3000 chars article (Tier 2 Rich Text)")
 	}
-	if !draftDeleted {
-		t.Error("expected streaming draft activeMsgID 8888 to be deleted on Tier 2 delivery")
+	if draftDeleted {
+		t.Error("expected streaming draft activeMsgID 8888 NOT to be deleted on Tier 2 delivery (In-Place Morphing Guardrail)")
 	}
 	if !strings.Contains(sentRichText, "Extensive deep analysis") || len(sentRichText) < 3200 {
 		t.Errorf("expected full restored response from transcript, got length %d", len(sentRichText))
