@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Inbound Rich Message Ingestion & Contact Guard Sanitization (Issue #362)
+- **Inbound Rich Message Parser & Ingestion Pipeline (`rich_message.go`, `webhook_guard.go`)**:
+  - Intercepted raw update and message JSON in `webhook_guard.go` via `getUpdatesWithRichMessage` and `ParseUpdatesFromJSON`, overcoming `go-telegram-bot-api`'s lack of native `rich_message` field in `tgbotapi.Message`.
+  - Implemented `ExtractRichMessageText` supporting structured objects (`markdown`, `text`, `thinking`) and raw JSON string primitives.
+  - Implemented `EnrichMessageFromJSON` to extract rich content from direct messages, `forward_origin`, `forward_from`, and `reply_to_message`.
+  - Added thread-safe bounded registry (`AttachRichMessage` / `GetAttachedRichMessage`) with FIFO eviction (2048 entries ceiling), guaranteeing zero memory leaks over long daemon runtimes.
+- **Inbound Payload Extraction (`handlers.go`)**:
+  - Updated `extractInboundPayload` to automatically resolve attached rich message content when `msg.Text` is empty, covering direct messages, forwarded messages from sister agents, and replied quotes.
+  - Delivered forwarded rich messages directly into active agent session context as standard text prompts without loss or degradation.
+- **Contact Guard Sanitization & Unsupported Format Diagnostics (`handlers.go`)**:
+  - Fixed false-positive contact rejection: restricted `⚠️ Contacts are not supported...` warning strictly to actual shared contacts (`msg.Contact != nil`).
+  - Added informative warning `⚠️ Unsupported message format. Please send text, media, or supported files.` for unrecognized payloads or empty media, eliminating misleading contact errors.
+- **L1 Regression Suite**:
+  - Added `TestExtractRichMessageText`, `TestAttachAndGetAttachedRichMessage`, `TestParseMessageFromJSON_RichMessageVariants`, and `TestParseUpdatesFromJSON_WrappedAndRaw` in `rich_message_test.go`.
+  - Added `TestExtractInboundPayload_RichMessage_DirectAndForwarded`, `TestHandleUpdate_InboundRichMessage_DirectAndForwarded_SessionDelivery`, and `TestHandleUpdate_ContactVsUnsupported_StrictDoD` in `handlers_test.go`.
+  - Updated `TestHandleUpdate_UnsupportedMedia` and `TestHandleUpdate_InvalidLocation` in `handlers_test.go` to assert new sanitized warning semantics.
+
 ### Rich Article First Routing, Zero-Allocation Markdown Structure Detector, & In-Place Morphing (Issue #357)
 - **Zero-Allocation Markdown Structure Scanner (`rich_message.go`)**:
   - Implemented `HasMarkdownStructure(text string) bool` via standard library zero-allocation line slicing (`strings.IndexByte`, `strings.TrimSpace`, `strings.HasPrefix`, `unicode/utf8`):

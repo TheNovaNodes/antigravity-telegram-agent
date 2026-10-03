@@ -1230,3 +1230,277 @@ func BenchmarkHasMarkdownStructure(b *testing.B) {
 		_ = HasMarkdownStructure(text)
 	}
 }
+
+func TestExtractRichMessageText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Structured markdown only",
+			input:    `{"markdown": "## Executive Summary\nSystem active"}`,
+			expected: "## Executive Summary\nSystem active",
+		},
+		{
+			name:     "Structured text only",
+			input:    `{"text": "Simple plain text inside rich object"}`,
+			expected: "Simple plain text inside rich object",
+		},
+		{
+			name:     "Markdown preferred over text",
+			input:    `{"markdown": "### Formatted Heading", "text": "Unformatted fallback"}`,
+			expected: "### Formatted Heading",
+		},
+		{
+			name:     "Thinking only fallback",
+			input:    `{"thinking": {"text": "Reasoning trace without final markdown"}}`,
+			expected: "Reasoning trace without final markdown",
+		},
+		{
+			name:     "Thinking plus markdown returns markdown",
+			input:    `{"markdown": "Final Answer", "thinking": {"text": "Internal thoughts"}}`,
+			expected: "Final Answer",
+		},
+		{
+			name:     "Direct JSON string primitive",
+			input:    `"Direct rich message string literal"`,
+			expected: "Direct rich message string literal",
+		},
+		{
+			name:     "Empty raw JSON string",
+			input:    `""`,
+			expected: "",
+		},
+		{
+			name:     "Null literal",
+			input:    `null`,
+			expected: "",
+		},
+		{
+			name:     "Empty object",
+			input:    `{}`,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := ExtractRichMessageText(json.RawMessage(tt.input))
+			if actual != tt.expected {
+				t.Errorf("ExtractRichMessageText(%s) = %q; want %q", tt.input, actual, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAttachAndGetAttachedRichMessage(t *testing.T) {
+	// 1. Message with empty initial Text
+	msgEmpty := &tgbotapi.Message{
+		MessageID: 10,
+		Chat:      &tgbotapi.Chat{ID: 12345},
+	}
+	AttachRichMessage(msgEmpty, "Attached markdown content")
+	if msgEmpty.Text != "Attached markdown content" {
+		t.Errorf("expected msgEmpty.Text to be populated, got %q", msgEmpty.Text)
+	}
+	retrieved, ok := GetAttachedRichMessage(msgEmpty)
+	if !ok || retrieved != "Attached markdown content" {
+		t.Errorf("expected GetAttachedRichMessage to return %q, got %q (ok=%v)", "Attached markdown content", retrieved, ok)
+	}
+
+	// 2. Message with existing initial Text preserved
+	msgWithText := &tgbotapi.Message{
+		MessageID: 11,
+		Chat:      &tgbotapi.Chat{ID: 12345},
+		Text:      "Initial user command",
+	}
+	AttachRichMessage(msgWithText, "Alternative rich content")
+	if msgWithText.Text != "Initial user command" {
+		t.Errorf("expected existing text to be preserved, got %q", msgWithText.Text)
+	}
+	retrievedWithText, ok := GetAttachedRichMessage(msgWithText)
+	if !ok || retrievedWithText != "Alternative rich content" {
+		t.Errorf("expected GetAttachedRichMessage to return %q, got %q", "Alternative rich content", retrievedWithText)
+	}
+
+	// 3. Nil message safe handling
+	AttachRichMessage(nil, "noop")
+	nilRetrieved, nilOk := GetAttachedRichMessage(nil)
+	if nilOk || nilRetrieved != "" {
+		t.Errorf("expected nil message to return empty, got %q (ok=%v)", nilRetrieved, nilOk)
+	}
+
+	// 4. Bounded capacity eviction
+	origCap := maxAttachedRichCap
+	maxAttachedRichCap = 5
+	defer func() { maxAttachedRichCap = origCap }()
+
+	var msgs []*tgbotapi.Message
+	for i := 0; i < 10; i++ {
+		m := &tgbotapi.Message{MessageID: 100 + i}
+		AttachRichMessage(m, fmt.Sprintf("payload_%d", i))
+		msgs = append(msgs, m)
+	}
+
+	// Oldest entries (e.g. msg 0) should be evicted from the attachedRich map
+	_, okOld := GetAttachedRichMessage(msgs[0])
+	if okOld {
+		t.Errorf("expected oldest message to be evicted from bounded cache")
+	}
+	// Newest entry should still exist
+	valNew, okNew := GetAttachedRichMessage(msgs[9])
+	if !okNew || valNew != "payload_9" {
+		t.Errorf("expected newest message to exist in cache, got %q (ok=%v)", valNew, okNew)
+	}
+}
+
+func TestParseMessageFromJSON_RichMessageVariants(t *testing.T) {
+	// Direct message with rich_message
+	rawDirect := []byte(`{
+		"message_id": 201,
+		"chat": {"id": 555},
+		"from": {"id": 111, "first_name": "TestBot"},
+		"rich_message": {
+			"markdown": "# Architecture Blueprint\nPhase 1 complete."
+		}
+	}`)
+	msg, err := ParseMessageFromJSON(rawDirect)
+	if err != nil {
+		t.Fatalf("ParseMessageFromJSON failed: %v", err)
+	}
+	if msg.MessageID != 201 {
+		t.Errorf("expected message_id 201, got %d", msg.MessageID)
+	}
+	if msg.Text != "# Architecture Blueprint\nPhase 1 complete." {
+		t.Errorf("expected enriched text, got %q", msg.Text)
+	}
+
+	// Forwarded message with forward_origin containing rich_message
+	rawForwarded := []byte(`{
+		"message_id": 202,
+		"chat": {"id": 555},
+		"from": {"id": 222},
+		"forward_origin": {
+			"type": "user",
+			"rich_message": {
+				"markdown": "Forwarded agent task report"
+			}
+		}
+	}`)
+	msgFwd, err := ParseMessageFromJSON(rawForwarded)
+	if err != nil {
+		t.Fatalf("ParseMessageFromJSON forward_origin failed: %v", err)
+	}
+	if msgFwd.Text != "Forwarded agent task report" {
+		t.Errorf("expected forwarded rich text, got %q", msgFwd.Text)
+	}
+
+	// Forwarded message with forward_from containing rich_message
+	rawFwdFrom := []byte(`{
+		"message_id": 203,
+		"chat": {"id": 555},
+		"from": {"id": 222},
+		"forward_from": {
+			"id": 999,
+			"rich_message": {
+				"markdown": "Forwarded from subagent"
+			}
+		}
+	}`)
+	msgFwdFrom, err := ParseMessageFromJSON(rawFwdFrom)
+	if err != nil {
+		t.Fatalf("ParseMessageFromJSON forward_from failed: %v", err)
+	}
+	if msgFwdFrom.Text != "Forwarded from subagent" {
+		t.Errorf("expected forward_from rich text, got %q", msgFwdFrom.Text)
+	}
+
+	// Message with reply_to_message containing rich_message
+	rawReply := []byte(`{
+		"message_id": 204,
+		"chat": {"id": 555},
+		"from": {"id": 222},
+		"text": "Please summarize this",
+		"reply_to_message": {
+			"message_id": 200,
+			"chat": {"id": 555},
+			"rich_message": {
+				"markdown": "Original long rich response to summarize"
+			}
+		}
+	}`)
+	msgReply, err := ParseMessageFromJSON(rawReply)
+	if err != nil {
+		t.Fatalf("ParseMessageFromJSON reply failed: %v", err)
+	}
+	if msgReply.Text != "Please summarize this" {
+		t.Errorf("expected prompt text preserved, got %q", msgReply.Text)
+	}
+	if msgReply.ReplyToMessage == nil || msgReply.ReplyToMessage.Text != "Original long rich response to summarize" {
+		t.Errorf("expected reply_to_message.Text to be enriched, got %+v", msgReply.ReplyToMessage)
+	}
+}
+
+func TestParseUpdatesFromJSON_WrappedAndRaw(t *testing.T) {
+	// Raw JSON array of updates
+	rawUpdates := []byte(`[
+		{
+			"update_id": 7001,
+			"message": {
+				"message_id": 1,
+				"chat": {"id": 999},
+				"from": {"id": 888},
+				"rich_message": {
+					"markdown": "Update 1 rich text"
+				}
+			}
+		},
+		{
+			"update_id": 7002,
+			"message": {
+				"message_id": 2,
+				"chat": {"id": 999},
+				"from": {"id": 888},
+				"text": "Standard text update"
+			}
+		}
+	]`)
+
+	updates, err := ParseUpdatesFromJSON(rawUpdates)
+	if err != nil {
+		t.Fatalf("ParseUpdatesFromJSON failed: %v", err)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("expected 2 updates, got %d", len(updates))
+	}
+	if updates[0].Message.Text != "Update 1 rich text" {
+		t.Errorf("expected update 0 rich text, got %q", updates[0].Message.Text)
+	}
+	if updates[1].Message.Text != "Standard text update" {
+		t.Errorf("expected update 1 standard text, got %q", updates[1].Message.Text)
+	}
+
+	// Wrapped in Telegram APIResponse {"ok": true, "result": [...]}
+	wrappedUpdates := []byte(`{
+		"ok": true,
+		"result": [
+			{
+				"update_id": 7003,
+				"message": {
+					"message_id": 3,
+					"chat": {"id": 999},
+					"from": {"id": 888},
+					"rich_message": "String literal rich message"
+				}
+			}
+		]
+	}`)
+	wrappedRes, err := ParseUpdatesFromJSON(wrappedUpdates)
+	if err != nil {
+		t.Fatalf("ParseUpdatesFromJSON wrapped failed: %v", err)
+	}
+	if len(wrappedRes) != 1 || wrappedRes[0].Message.Text != "String literal rich message" {
+		t.Errorf("unexpected wrapped update result: %+v", wrappedRes)
+	}
+}
