@@ -156,7 +156,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleStopCommand` | Gracefully interrupts active turn without clearing conversation context. | Mutex-decoupled state extraction, `s.Kill()` process group termination, output buffer salvaging, and artifact delivery. |
 | `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`), which are registered as bot commands in `main.go` and normalized in `handlers.go`. Routes `/stop` and `/cancel`. |
 | `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*` including `cmd:stop` [Turn Interruption] and `cmd:retry` [Stream Recovery]). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
-| `extractInboundPayload` | Polymorphic adapter extracting text, command aliases, media attachments, multimodal stickers (.webp/.tgs/.webm), and validated geolocation coordinates. | Eliminates cyclomatic bloat in `handleUpdate`. Video notes are extracted as `.mp4`, stickers are downloaded (`.webp`, `.tgs`, or `.webm`) into `scratch/downloads/` for multimodal vision as clean attachments (`[Attached File: file://...]`) without semantic hijacking from emoji text strings, and GPS locations are validated (`-90 <= Lat <= 90`, `-180 <= Lon <= 180`) and formatted into structured markers with privacy protection. |
+| `extractInboundPayload` | Polymorphic adapter extracting text, command aliases, media attachments, multimodal stickers (.webp/.tgs/.webm), validated geolocation coordinates, and inbound/forwarded `rich_message` content. | Eliminates cyclomatic bloat in `handleUpdate`. Resolves rich messages from raw JSON updates or message attachments, forwards them as first-class prompt text, sanitizes contact rejection (strictly checking `msg.Contact != nil`), and returns informative diagnostics (`⚠️ Unsupported message format`) for unknown formats. Video notes are extracted as `.mp4`, stickers are downloaded (`.webp`, `.tgs`, or `.webm`) into `scratch/downloads/` for multimodal vision as clean attachments (`[Attached File: file://...]`) without semantic hijacking from emoji text strings, and GPS locations are validated (`-90 <= Lat <= 90`, `-180 <= Lon <= 180`) and formatted into structured markers with privacy protection. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, voices, and video notes. Detects session export files (`session_*.md`) and auto-injects context reload prompts for drop-to-resume. | URL scheme & host validation (HTTP/HTTPS only), HTTP status check, 100 MB hard limit, and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding, per-turn voice reply mode without latching, and clean prompt retry on Stdin error. |
 | `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
@@ -511,5 +511,39 @@ Upon receiving the CLI `init` JSONL event, `readStdoutLoop` compares `requestedI
    - If an active turn is currently streaming (`ActiveMessageID != 0`), a non-destructive warning banner (`⚠️ _[Previous conversation context could not be loaded from storage. Started fresh session (%s)]_\n\n`) is prepended to `s.TextBuffer`.
    - If idle or during session resumption, an immediate high-priority HTML notice is dispatched to the Telegram chat.
 5. **Session Re-alignment**: The database `users.session_id` is updated with `newID` so subsequent prompts correctly target the newly initialized conversation.
+
+---
+
+## 14. Inbound Rich Message Ingestion & Contact Guard Sanitization (Issue #362)
+
+To eliminate architectural blindness to Telegram `rich_message` format responses sent between ecosystem agents and resolve misleading contact rejection:
+
+```mermaid
+flowchart TD
+    UpdateRaw[Raw Telegram Update JSON] --> ParseJSON[ParseUpdatesFromJSON / getUpdatesWithRichMessage]
+    ParseJSON --> HasRich{Contains rich_message?}
+    HasRich -->|Yes: root / forward / reply| ExtractText[ExtractRichMessageText: markdown / text / thinking]
+    ExtractText --> Attach[AttachRichMessage: msg.Text & Bounded Cache]
+    HasRich -->|No: standard update| DirectMsg[Standard tgbotapi.Message]
+    Attach --> Router[handleUpdate Router]
+    DirectMsg --> Router
+    Router --> ExtractPayload[extractInboundPayload]
+    ExtractPayload --> CheckEmpty{Empty Text & Media?}
+    CheckEmpty -->|No: Valid Prompt| Session[Active Session Prompt Dispatch]
+    CheckEmpty -->|Yes| CheckContact{msg.Contact != nil?}
+    CheckContact -->|Yes| ContactWarn["⚠️ Contacts are not supported..."]
+    CheckContact -->|No| UnsuppWarn["⚠️ Unsupported message format..."]
+```
+
+### 1. Inbound Rich Message Interception (`webhook_guard.go`, `rich_message.go`):
+- **Raw JSON Interception**: The `tgbotapi.Message` Go struct from `github.com/go-telegram-bot-api/telegram-bot-api/v5` lacks a `RichMessage` field, dropping `rich_message` payloads during default unmarshaling. In `webhook_guard.go`, `getUpdatesWithRichMessage` intercepts the raw Telegram API response buffer.
+- **Polymorphic Extraction (`ExtractRichMessageText`)**: Extracts content from structured JSON objects (`markdown`, `text`, or fallback `thinking.text`) as well as direct JSON string literals.
+- **Origin & Forward Traversal (`EnrichMessageFromJSON`)**: Resolves rich content across all Telegram update topologies: direct messages, `forward_origin`, `forward_from`, `forward_from_chat`, and `reply_to_message`.
+- **Bounded Registry (`AttachRichMessage` / `GetAttachedRichMessage`)**: Maintains an in-memory thread-safe bounded FIFO cache (ceiling: 2048 pointers) to prevent memory leaks during long-running server uptime while ensuring `msg.Text` is immediately populated.
+
+### 2. Contact Guard Sanitization (`handlers.go`):
+- **False-Positive Elimination**: The `⚠️ Contacts are not supported...` warning is strictly restricted to actual shared contact objects (`msg.Contact != nil`).
+- **Informative Diagnostics**: All other unrecognized or empty payload variants receive `⚠️ Unsupported message format. Please send text, media, or supported files.`, preventing user confusion when interacting with unsupported or partial media updates.
+
 
 

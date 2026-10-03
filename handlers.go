@@ -1590,6 +1590,24 @@ func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
 	}
 
 	text := msg.Text
+	if text == "" {
+		if rich, ok := GetAttachedRichMessage(msg); ok && rich != "" {
+			text = rich
+		}
+	}
+	if text == "" && msg.ForwardFrom != nil {
+		if rich, ok := GetAttachedRichMessage(msg); ok && rich != "" {
+			text = rich
+		}
+	}
+	if text == "" && msg.ReplyToMessage != nil {
+		if rich, ok := GetAttachedRichMessage(msg.ReplyToMessage); ok && rich != "" {
+			text = rich
+		} else if msg.ReplyToMessage.Text != "" {
+			text = msg.ReplyToMessage.Text
+		}
+	}
+
 	if strings.HasPrefix(text, "/grill_me") {
 		text = strings.Replace(text, "/grill_me", "/grill-me", 1)
 	} else if strings.HasPrefix(text, "/teamwork_preview") {
@@ -1690,7 +1708,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	payload := extractInboundPayload(msg)
 
 	if payload.Text == "" && payload.Caption == "" && payload.FileID == "" {
-		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Contacts are not supported. Please send text, photo, document, voice message, video note, sticker, or location."))
+		if msg.Contact != nil {
+			bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Contacts are not supported. Please send text, photo, document, voice message, video note, sticker, or location."))
+			return
+		}
+		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Unsupported message format. Please send text, media, or supported files."))
 		return
 	}
 

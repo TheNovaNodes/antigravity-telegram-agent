@@ -188,7 +188,7 @@ func TestHandleUpdate_UnsupportedMedia(t *testing.T) {
 	chatID := int64(12345)
 	userID := int64(777)
 
-	// Message with no text, caption, or supported media
+	// Message with no text, caption, or supported media (unsupported format)
 	update := tgbotapi.Update{
 		UpdateID: 100,
 		Message: &tgbotapi.Message{
@@ -201,17 +201,44 @@ func TestHandleUpdate_UnsupportedMedia(t *testing.T) {
 	handleUpdate(bot, update, db)
 
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	foundWarning := false
+	foundUnsupported := false
 	for _, body := range ms.sentBodies {
 		unescaped, _ := url.QueryUnescape(body)
-		if strings.Contains(unescaped, "Contacts are not supported") {
-			foundWarning = true
+		if strings.Contains(unescaped, "Unsupported message format") {
+			foundUnsupported = true
 			break
 		}
 	}
-	if !foundWarning {
-		t.Errorf("Expected unsupported media warning message sent to chat")
+	ms.mu.Unlock()
+	if !foundUnsupported {
+		t.Errorf("Expected unsupported message format warning sent to chat")
+	}
+
+	// Message with a real contact (msg.Contact != nil)
+	contactUpdate := tgbotapi.Update{
+		UpdateID: 101,
+		Message: &tgbotapi.Message{
+			MessageID: 31,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Contact:   &tgbotapi.Contact{PhoneNumber: "+123456789", FirstName: "Alice"},
+		},
+	}
+
+	handleUpdate(bot, contactUpdate, db)
+
+	ms.mu.Lock()
+	foundContactWarning := false
+	for _, body := range ms.sentBodies {
+		unescaped, _ := url.QueryUnescape(body)
+		if strings.Contains(unescaped, "Contacts are not supported") {
+			foundContactWarning = true
+			break
+		}
+	}
+	ms.mu.Unlock()
+	if !foundContactWarning {
+		t.Errorf("Expected contacts are not supported warning sent to chat for real contact")
 	}
 }
 
@@ -996,13 +1023,13 @@ func TestHandleUpdate_InvalidLocation(t *testing.T) {
 	foundWarning := false
 	for _, body := range ms.sentBodies {
 		unescaped, _ := url.QueryUnescape(body)
-		if strings.Contains(unescaped, "Contacts are not supported") {
+		if strings.Contains(unescaped, "Unsupported message format") {
 			foundWarning = true
 			break
 		}
 	}
 	if !foundWarning {
-		t.Errorf("Expected unsupported media warning for out-of-bounds location")
+		t.Errorf("Expected unsupported message format warning for out-of-bounds location")
 	}
 }
 
@@ -3353,5 +3380,175 @@ func TestHandleExportCommand_MarkdownEscapedTitle(t *testing.T) {
 
 	if !foundCaption {
 		t.Errorf("Expected escaped title %q in telegram request bodies, but not found", expectedEscaped)
+	}
+}
+
+func TestExtractInboundPayload_RichMessage_DirectAndForwarded(t *testing.T) {
+	// 1. Direct rich message
+	msgDirect := &tgbotapi.Message{
+		MessageID: 101,
+		Chat:      &tgbotapi.Chat{ID: 123},
+		From:      &tgbotapi.User{ID: 456},
+	}
+	AttachRichMessage(msgDirect, "## Direct Rich Message Content")
+	pDirect := extractInboundPayload(msgDirect)
+	if pDirect.Text != "## Direct Rich Message Content" {
+		t.Errorf("expected direct rich message text in payload, got %q", pDirect.Text)
+	}
+
+	// 2. Forwarded rich message from another bot
+	msgFwd := &tgbotapi.Message{
+		MessageID:   102,
+		Chat:        &tgbotapi.Chat{ID: 123},
+		From:        &tgbotapi.User{ID: 456},
+		ForwardFrom: &tgbotapi.User{ID: 999, IsBot: true, UserName: "OtherBot"},
+		ForwardDate: 1700000000,
+	}
+	AttachRichMessage(msgFwd, "### Forwarded Task Specification\nDoD items listed here.")
+	pFwd := extractInboundPayload(msgFwd)
+	if pFwd.Text != "### Forwarded Task Specification\nDoD items listed here." {
+		t.Errorf("expected forwarded rich message text in payload, got %q", pFwd.Text)
+	}
+
+	// 3. Reply quoting another message with rich content
+	msgQuoted := &tgbotapi.Message{
+		MessageID: 100,
+		Chat:      &tgbotapi.Chat{ID: 123},
+	}
+	AttachRichMessage(msgQuoted, "Quoted original analysis report")
+
+	msgReply := &tgbotapi.Message{
+		MessageID:      103,
+		Chat:           &tgbotapi.Chat{ID: 123},
+		From:           &tgbotapi.User{ID: 456},
+		ReplyToMessage: msgQuoted,
+	}
+	pReply := extractInboundPayload(msgReply)
+	if pReply.Text != "Quoted original analysis report" {
+		t.Errorf("expected quoted rich message text in payload, got %q", pReply.Text)
+	}
+}
+
+func TestHandleUpdate_InboundRichMessage_DirectAndForwarded_SessionDelivery(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(98765)
+	userID := int64(12345)
+
+	// Emulate incoming raw JSON update received from Telegram API with rich_message (Issue #362)
+	rawJSON := []byte(fmt.Sprintf(`{
+		"update_id": 9001,
+		"message": {
+			"message_id": 55,
+			"chat": {"id": %d},
+			"from": {"id": %d, "first_name": "Tester"},
+			"rich_message": {
+				"markdown": "## Transferred from Sister Agent\nTask: Verify swarm health."
+			}
+		}
+	}`, chatID, userID))
+
+	update, err := ParseUpdateFromJSON(rawJSON)
+	if err != nil {
+		t.Fatalf("ParseUpdateFromJSON failed: %v", err)
+	}
+
+	handleUpdate(bot, update, db)
+
+	// Allow streaming / execution to process
+	time.Sleep(100 * time.Millisecond)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	// Verify no false-positive warnings were dispatched
+	for _, body := range ms.sentBodies {
+		decoded, _ := url.QueryUnescape(body)
+		if strings.Contains(decoded, "Contacts are not supported") {
+			t.Errorf("Unexpected false-positive contact warning sent for inbound rich message: %s", decoded)
+		}
+		if strings.Contains(decoded, "Unsupported message format") {
+			t.Errorf("Unexpected false-positive unsupported warning sent for inbound rich message: %s", decoded)
+		}
+	}
+}
+
+func TestHandleUpdate_ContactVsUnsupported_StrictDoD(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(54321)
+	userID := int64(11111)
+
+	// 1. Real contact (msg.Contact != nil) -> MUST trigger "Contacts are not supported"
+	contactUpd := tgbotapi.Update{
+		UpdateID: 1001,
+		Message: &tgbotapi.Message{
+			MessageID: 1,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+			Contact: &tgbotapi.Contact{
+				PhoneNumber: "+1555019999",
+				FirstName:   "TestContact",
+			},
+		},
+	}
+	handleUpdate(bot, contactUpd, db)
+
+	ms.mu.Lock()
+	contactWarningFound := false
+	for _, body := range ms.sentBodies {
+		decoded, _ := url.QueryUnescape(body)
+		if strings.Contains(decoded, "⚠️ Contacts are not supported. Please send text, photo, document, voice message, video note, sticker, or location.") {
+			contactWarningFound = true
+			break
+		}
+	}
+	ms.mu.Unlock()
+
+	if !contactWarningFound {
+		t.Errorf("Expected strict contact warning message for real contact")
+	}
+
+	// 2. Unsupported format (msg.Contact == nil, empty payload) -> MUST trigger "Unsupported message format"
+	ms.mu.Lock()
+	ms.sentBodies = nil // reset
+	ms.mu.Unlock()
+
+	unsupportedUpd := tgbotapi.Update{
+		UpdateID: 1002,
+		Message: &tgbotapi.Message{
+			MessageID: 2,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			From:      &tgbotapi.User{ID: userID},
+		},
+	}
+	handleUpdate(bot, unsupportedUpd, db)
+
+	ms.mu.Lock()
+	unsupportedWarningFound := false
+	for _, body := range ms.sentBodies {
+		decoded, _ := url.QueryUnescape(body)
+		if strings.Contains(decoded, "⚠️ Unsupported message format. Please send text, media, or supported files.") {
+			unsupportedWarningFound = true
+			break
+		}
+	}
+	ms.mu.Unlock()
+
+	if !unsupportedWarningFound {
+		t.Errorf("Expected strict unsupported message format warning for empty message")
 	}
 }

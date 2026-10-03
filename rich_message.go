@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -794,4 +795,271 @@ func sendAdaptiveResponseWithWorkspace(bot *tgbotapi.BotAPI, chatID int64, activ
 		}
 	}
 	return chunks
+}
+
+// ---------------------------------------------------------------------------
+// Inbound Rich Message Interception & Ingestion Pipeline (Issue #362)
+// ---------------------------------------------------------------------------
+
+var (
+	attachedRichMu     sync.RWMutex
+	attachedRich       = make(map[*tgbotapi.Message]string)
+	attachedRichKeys   []*tgbotapi.Message
+	maxAttachedRichCap = 2048
+)
+
+// AttachRichMessage registers an inbound or forwarded rich message text with a Message pointer,
+// and ensures msg.Text is populated if currently empty.
+func AttachRichMessage(msg *tgbotapi.Message, text string) {
+	if msg == nil || text == "" {
+		return
+	}
+	if msg.Text == "" {
+		msg.Text = text
+	}
+	attachedRichMu.Lock()
+	defer attachedRichMu.Unlock()
+
+	if _, exists := attachedRich[msg]; !exists {
+		if len(attachedRichKeys) >= maxAttachedRichCap {
+			oldest := attachedRichKeys[0]
+			attachedRichKeys = attachedRichKeys[1:]
+			delete(attachedRich, oldest)
+		}
+		attachedRichKeys = append(attachedRichKeys, msg)
+	}
+	attachedRich[msg] = text
+}
+
+// GetAttachedRichMessage retrieves the attached rich message text for a Message pointer.
+func GetAttachedRichMessage(msg *tgbotapi.Message) (string, bool) {
+	if msg == nil {
+		return "", false
+	}
+	attachedRichMu.RLock()
+	defer attachedRichMu.RUnlock()
+	val, ok := attachedRich[msg]
+	if ok && val != "" {
+		return val, true
+	}
+	return "", false
+}
+
+// ExtractRichMessageText extracts markdown or text content from a raw JSON rich_message payload.
+// Supports both structured JSON objects ({"markdown": "...", "text": "...", "thinking": {...}})
+// and raw JSON string primitives.
+func ExtractRichMessageText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	// 1. Check if raw payload is a JSON string literal
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && strings.TrimSpace(str) != "" {
+		return strings.TrimSpace(str)
+	}
+
+	// 2. Structured rich message payload
+	var obj struct {
+		Markdown string `json:"markdown"`
+		Text     string `json:"text"`
+		Thinking *struct {
+			Text string `json:"text"`
+		} `json:"thinking"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		if strings.TrimSpace(obj.Markdown) != "" {
+			return strings.TrimSpace(obj.Markdown)
+		}
+		if strings.TrimSpace(obj.Text) != "" {
+			return strings.TrimSpace(obj.Text)
+		}
+		if obj.Thinking != nil && strings.TrimSpace(obj.Thinking.Text) != "" {
+			return strings.TrimSpace(obj.Thinking.Text)
+		}
+	}
+	return ""
+}
+
+// extractContainerRichText searches a container (like forward_origin or forward_from) for rich_message.
+func extractContainerRichText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var container struct {
+		RichMessage json.RawMessage `json:"rich_message"`
+	}
+	if err := json.Unmarshal(raw, &container); err == nil && len(container.RichMessage) > 0 {
+		return ExtractRichMessageText(container.RichMessage)
+	}
+	return ""
+}
+
+// EnrichMessageFromJSON inspects raw message JSON for rich_message fields
+// (at the message root, forward_origin, forward_from, or reply_to_message)
+// and attaches the extracted content to the message and its children.
+func EnrichMessageFromJSON(msg *tgbotapi.Message, rawMsg json.RawMessage) {
+	if msg == nil || len(rawMsg) == 0 || string(rawMsg) == "null" {
+		return
+	}
+
+	var fields struct {
+		RichMessage     json.RawMessage `json:"rich_message"`
+		ForwardOrigin   json.RawMessage `json:"forward_origin"`
+		ForwardFrom     json.RawMessage `json:"forward_from"`
+		ForwardFromChat json.RawMessage `json:"forward_from_chat"`
+		ReplyToMessage  json.RawMessage `json:"reply_to_message"`
+	}
+	if err := json.Unmarshal(rawMsg, &fields); err != nil {
+		return
+	}
+
+	// 1. Direct rich_message on message
+	if richText := ExtractRichMessageText(fields.RichMessage); richText != "" {
+		AttachRichMessage(msg, richText)
+	}
+
+	// 2. Forwarded rich_message
+	if msg.Text == "" {
+		if originText := extractContainerRichText(fields.ForwardOrigin); originText != "" {
+			AttachRichMessage(msg, originText)
+		} else if fwFromText := extractContainerRichText(fields.ForwardFrom); fwFromText != "" {
+			AttachRichMessage(msg, fwFromText)
+		} else if fwChatText := extractContainerRichText(fields.ForwardFromChat); fwChatText != "" {
+			AttachRichMessage(msg, fwChatText)
+		}
+	}
+
+	// 3. ReplyToMessage rich_message
+	if msg.ReplyToMessage != nil && len(fields.ReplyToMessage) > 0 {
+		EnrichMessageFromJSON(msg.ReplyToMessage, fields.ReplyToMessage)
+	}
+}
+
+// ParseMessageFromJSON deserializes a Telegram Message from raw JSON and extracts rich_message content.
+func ParseMessageFromJSON(data []byte) (*tgbotapi.Message, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return nil, fmt.Errorf("empty message json")
+	}
+
+	var wrapper struct {
+		Ok     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
+	}
+	targetData := data
+	if err := json.Unmarshal(data, &wrapper); err == nil && wrapper.Ok && len(wrapper.Result) > 0 {
+		targetData = wrapper.Result
+	}
+
+	var msg tgbotapi.Message
+	if err := json.Unmarshal(targetData, &msg); err != nil {
+		return nil, err
+	}
+	EnrichMessageFromJSON(&msg, targetData)
+	return &msg, nil
+}
+
+// ParseUpdateFromJSON deserializes a single Telegram Update from raw JSON and extracts rich_message content.
+func ParseUpdateFromJSON(data []byte) (tgbotapi.Update, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return tgbotapi.Update{}, fmt.Errorf("empty update json")
+	}
+
+	var wrapper struct {
+		Ok     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
+	}
+	targetData := data
+	if err := json.Unmarshal(data, &wrapper); err == nil && wrapper.Ok && len(wrapper.Result) > 0 {
+		targetData = wrapper.Result
+	}
+
+	var update tgbotapi.Update
+	if err := json.Unmarshal(targetData, &update); err != nil {
+		return tgbotapi.Update{}, err
+	}
+
+	var rawFields struct {
+		Message           json.RawMessage `json:"message"`
+		EditedMessage     json.RawMessage `json:"edited_message"`
+		ChannelPost       json.RawMessage `json:"channel_post"`
+		EditedChannelPost json.RawMessage `json:"edited_channel_post"`
+	}
+	if err := json.Unmarshal(targetData, &rawFields); err == nil {
+		if update.Message != nil && len(rawFields.Message) > 0 {
+			EnrichMessageFromJSON(update.Message, rawFields.Message)
+		}
+		if update.EditedMessage != nil && len(rawFields.EditedMessage) > 0 {
+			EnrichMessageFromJSON(update.EditedMessage, rawFields.EditedMessage)
+		}
+		if update.ChannelPost != nil && len(rawFields.ChannelPost) > 0 {
+			EnrichMessageFromJSON(update.ChannelPost, rawFields.ChannelPost)
+		}
+		if update.EditedChannelPost != nil && len(rawFields.EditedChannelPost) > 0 {
+			EnrichMessageFromJSON(update.EditedChannelPost, rawFields.EditedChannelPost)
+		}
+	}
+
+	return update, nil
+}
+
+// ParseUpdatesFromJSON deserializes a slice of Telegram Updates from raw JSON and extracts rich_message content.
+func ParseUpdatesFromJSON(data []byte) ([]tgbotapi.Update, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return []tgbotapi.Update{}, nil
+	}
+
+	var wrapper struct {
+		Ok     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
+	}
+	targetData := data
+	if err := json.Unmarshal(data, &wrapper); err == nil && wrapper.Ok && len(wrapper.Result) > 0 {
+		targetData = wrapper.Result
+	}
+
+	var updates []tgbotapi.Update
+	if err := json.Unmarshal(targetData, &updates); err != nil {
+		return nil, err
+	}
+
+	var rawUpdates []json.RawMessage
+	if err := json.Unmarshal(targetData, &rawUpdates); err == nil && len(rawUpdates) == len(updates) {
+		for i, raw := range rawUpdates {
+			var rawFields struct {
+				Message           json.RawMessage `json:"message"`
+				EditedMessage     json.RawMessage `json:"edited_message"`
+				ChannelPost       json.RawMessage `json:"channel_post"`
+				EditedChannelPost json.RawMessage `json:"edited_channel_post"`
+			}
+			if err := json.Unmarshal(raw, &rawFields); err == nil {
+				if updates[i].Message != nil && len(rawFields.Message) > 0 {
+					EnrichMessageFromJSON(updates[i].Message, rawFields.Message)
+				}
+				if updates[i].EditedMessage != nil && len(rawFields.EditedMessage) > 0 {
+					EnrichMessageFromJSON(updates[i].EditedMessage, rawFields.EditedMessage)
+				}
+				if updates[i].ChannelPost != nil && len(rawFields.ChannelPost) > 0 {
+					EnrichMessageFromJSON(updates[i].ChannelPost, rawFields.ChannelPost)
+				}
+				if updates[i].EditedChannelPost != nil && len(rawFields.EditedChannelPost) > 0 {
+					EnrichMessageFromJSON(updates[i].EditedChannelPost, rawFields.EditedChannelPost)
+				}
+			}
+		}
+	}
+
+	return updates, nil
+}
+
+// getUpdatesWithRichMessage requests Telegram updates and enriches incoming updates with rich_message payloads.
+func getUpdatesWithRichMessage(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) ([]tgbotapi.Update, error) {
+	if bot == nil {
+		return nil, fmt.Errorf("bot instance is nil")
+	}
+	resp, err := bot.Request(config)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdatesFromJSON(resp.Result)
 }

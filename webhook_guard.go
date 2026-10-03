@@ -143,7 +143,7 @@ func getUpdatesWithRecovery(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig, 
 			default:
 			}
 
-			updates, err := bot.GetUpdates(config)
+			updates, err := getUpdatesWithRichMessage(bot, config)
 			if err != nil {
 				if isWebhookConflictError(err) {
 					_, recErr := recoverFromWebhookConflict(bot, allowedAdmins)
