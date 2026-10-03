@@ -55,6 +55,53 @@ func TestStartMetricsServer_DisabledWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestStartMetricsServer_LoopbackNormalization(t *testing.T) {
+	// Case 1: Port only with colon ":PORT"
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to bind ephemeral port: %v", err)
+	}
+	port := strings.Split(listener.Addr().String(), ":")[1]
+	_ = listener.Close()
+
+	srv, err := StartMetricsServer(":" + port)
+	if err != nil {
+		t.Fatalf("StartMetricsServer failed: %v", err)
+	}
+	if srv == nil {
+		t.Fatalf("Expected non-nil server")
+	}
+	defer func() { _ = StopMetricsServer(srv) }()
+
+	if !strings.HasPrefix(srv.Addr, "127.0.0.1:") {
+		t.Errorf("Expected server Addr normalized to 127.0.0.1:%s, got %s", port, srv.Addr)
+	}
+
+	// Case 2: Port only without colon via METRICS_PORT
+	listener2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to bind ephemeral port 2: %v", err)
+	}
+	port2 := strings.Split(listener2.Addr().String(), ":")[1]
+	_ = listener2.Close()
+
+	t.Setenv("METRICS_ADDR", "")
+	t.Setenv("METRICS_PORT", port2)
+
+	srv2, err := StartMetricsServer("")
+	if err != nil {
+		t.Fatalf("StartMetricsServer with METRICS_PORT failed: %v", err)
+	}
+	if srv2 == nil {
+		t.Fatalf("Expected non-nil server for METRICS_PORT")
+	}
+	defer func() { _ = StopMetricsServer(srv2) }()
+
+	if !strings.HasPrefix(srv2.Addr, "127.0.0.1:") {
+		t.Errorf("Expected server Addr normalized to 127.0.0.1:%s, got %s", port2, srv2.Addr)
+	}
+}
+
 func TestStartMetricsServer_HealthzAndPrometheus(t *testing.T) {
 	// Allocate free ephemeral port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

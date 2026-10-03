@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"html"
 	"log"
 	"strings"
 	"time"
@@ -24,9 +25,7 @@ func resetChatSessionCache(db *sql.DB, botName string, userID int64, chatID int6
 				log.Printf("[AccountPool] Warning: failed to reset session_id for user %d in db: %v", userID, err)
 			}
 		} else {
-			if _, err := db.Exec("UPDATE users SET session_id = NULL"); err != nil {
-				log.Printf("[AccountPool] Warning: failed to reset session_id in db: %v", err)
-			}
+			log.Printf("[AccountPool] Notice: userID is 0, skipping database wipe to protect all users; wiping in-memory session cache only for chat %d", chatID)
 		}
 	}
 
@@ -180,7 +179,7 @@ func formatAccountsDashboard(pool *AccountPool, chatID int64, botNames ...string
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("%s <b>[%s]</b> <code>%s</code>%s\n", statusBadge, acc.ID, acc.Email, currentTag))
+		sb.WriteString(fmt.Sprintf("%s <b>[%s]</b> <code>%s</code>%s\n", statusBadge, html.EscapeString(acc.ID), html.EscapeString(acc.Email), currentTag))
 		sb.WriteString(fmt.Sprintf("   ├─ Status: %s\n", statusText))
 
 		if !acc.Quota.LastFetchedAt.IsZero() {
@@ -311,10 +310,10 @@ func formatAccountCard(pool *AccountPool, acc *Account, chatID int64, botNames .
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("⚙️ <b>Manage Account:</b> <code>%s</code>%s\n", acc.ID, currentTag))
-	sb.WriteString(fmt.Sprintf("📧 <b>Email:</b> <code>%s</code>\n", acc.Email))
+	sb.WriteString(fmt.Sprintf("⚙️ <b>Manage Account:</b> <code>%s</code>%s\n", html.EscapeString(acc.ID), currentTag))
+	sb.WriteString(fmt.Sprintf("📧 <b>Email:</b> <code>%s</code>\n", html.EscapeString(acc.Email)))
 	if acc.HomeDir != "" {
-		sb.WriteString(fmt.Sprintf("📁 <b>Profile:</b> <code>%s</code>\n", acc.HomeDir))
+		sb.WriteString(fmt.Sprintf("📁 <b>Profile:</b> <code>%s</code>\n", html.EscapeString(acc.HomeDir)))
 	}
 	sb.WriteString(fmt.Sprintf("🚥 <b>Status:</b> %s %s\n", statusBadge, statusText))
 
@@ -434,7 +433,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			"• <b>Status:</b> Active\n"+
 			"• <b>Profile:</b> <code>%s</code>\n\n"+
 			"Account is now registered in the multi-account rotation pool.",
-			acc.ID, acc.Email, acc.HomeDir)
+			html.EscapeString(acc.ID), html.EscapeString(acc.Email), html.EscapeString(acc.HomeDir))
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -460,7 +459,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			emailStr = acc.Email
 		}
 		resp := fmt.Sprintf("✅ <b>Switched to Account:</b> <code>%s</code> (%s)\n\n"+
-			"🧹 <i>In-memory session evicted and safely exported. Session context preserved for next prompt.</i>", targetID, emailStr)
+			"🧹 <i>In-memory session evicted and safely exported. Session context preserved for next prompt.</i>", html.EscapeString(targetID), html.EscapeString(emailStr))
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -481,7 +480,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 		}
 		resetChatSessionCache(db, botName, userID, chatID, true)
 		resp := fmt.Sprintf("🔒 <b>Sticky Mode Enabled:</b> Pinned to <code>%s</code>.\n\n"+
-			"<i>Automatic failover to other accounts is disabled for this chat. Session context preserved.</i>", targetID)
+			"<i>Automatic failover to other accounts is disabled for this chat. Session context preserved.</i>", html.EscapeString(targetID))
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -506,7 +505,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to freeze account: %v", err)))
 			return
 		}
-		resp := fmt.Sprintf("🧊 <b>Account Frozen:</b> <code>%s</code> has been administratively suspended and removed from rotation.", targetID)
+		resp := fmt.Sprintf("🧊 <b>Account Frozen:</b> <code>%s</code> has been administratively suspended and removed from rotation.", html.EscapeString(targetID))
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -526,7 +525,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 		if acc != nil {
 			st = acc.State.String()
 		}
-		resp := fmt.Sprintf("✅ <b>Account Unfrozen:</b> <code>%s</code> restored to <b>%s</b>.", targetID, st)
+		resp := fmt.Sprintf("✅ <b>Account Unfrozen:</b> <code>%s</code> restored to <b>%s</b>.", html.EscapeString(targetID), html.EscapeString(st))
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -546,7 +545,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 		if purge {
 			purgeNote = "profile storage permanently purged from disk"
 		}
-		resp := fmt.Sprintf("🗑️ <b>Account Deleted:</b> <code>%s</code> removed from pool (%s).", targetID, purgeNote)
+		resp := fmt.Sprintf("🗑️ <b>Account Deleted:</b> <code>%s</code> removed from pool (%s).", html.EscapeString(targetID), purgeNote)
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -561,7 +560,7 @@ func handleAccountsCommand(bot *tgbotapi.BotAPI, chatID int64, userID int64, tex
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Failed to clear cooldown: %v", err)))
 			return
 		}
-		resp := fmt.Sprintf("🔄 <b>Cooldown Cleared:</b> Account <code>%s</code> is back in the active rotation pool.", targetID)
+		resp := fmt.Sprintf("🔄 <b>Cooldown Cleared:</b> Account <code>%s</code> is back in the active rotation pool.", html.EscapeString(targetID))
 		msg := tgbotapi.NewMessage(chatID, resp)
 		msg.ParseMode = "HTML"
 		bot.Send(msg)
@@ -731,7 +730,7 @@ func handleAccountCallbackQuery(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery
 				"Are you sure you want to remove this account from the pool?\n"+
 				"• Pinned bindings will be removed.\n"+
 				"• Any active sessions bound to this account will be terminated.\n\n"+
-				"Choose deletion mode below:", targetID)
+				"Choose deletion mode below:", html.EscapeString(targetID))
 			confirmKeyboard := tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(
 					tgbotapi.NewInlineKeyboardButtonData("❌ Confirm Delete (Keep Storage)", fmt.Sprintf("acc:del_exec:%s:keep", targetID)),

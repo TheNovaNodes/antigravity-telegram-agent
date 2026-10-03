@@ -48,6 +48,18 @@ func escapeHTML(text string) string {
 	return text
 }
 
+// escapeMarkdown escapes special formatting characters for Telegram legacy Markdown parse mode.
+func escapeMarkdown(text string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"_", "\\_",
+		"*", "\\*",
+		"`", "\\`",
+		"[", "\\[",
+	)
+	return replacer.Replace(text)
+}
+
 type openTagInfo struct {
 	Tag        string
 	Attributes string

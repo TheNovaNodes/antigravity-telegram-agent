@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -56,6 +57,13 @@ func StartMetricsServer(addr string) (*http.Server, error) {
 	}
 	if addr == "" {
 		return nil, nil
+	}
+
+	// Loopback normalization: prevent binding to 0.0.0.0 when only port is provided (#359)
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	} else if !strings.Contains(addr, ":") {
+		addr = "127.0.0.1:" + addr
 	}
 
 	mux := http.NewServeMux()
