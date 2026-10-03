@@ -545,5 +545,13 @@ flowchart TD
 - **False-Positive Elimination**: The `⚠️ Contacts are not supported...` warning is strictly restricted to actual shared contact objects (`msg.Contact != nil`).
 - **Informative Diagnostics**: All other unrecognized or empty payload variants receive `⚠️ Unsupported message format. Please send text, media, or supported files.`, preventing user confusion when interacting with unsupported or partial media updates.
 
+### 3. Telegram Bot API Blocks AST Reconstitution (`rich_message.go`, Issue #366):
+- **Live Wire Protocol Discovery**: Telegram Bot API sends rich messages in incoming updates as a structured AST tree under `rich_message.blocks` rather than flat Markdown text.
+- **Recursive AST Engine (`parseASTBlocks`, `parseInlineText`)**: Reconstructs complete Markdown fidelity from native AST nodes:
+  - Block level: `heading` (H1–H6 via `size`), `paragraph`, `list` (ordered/unordered with indentations and multiline blocks), `pre` (fenced code with `language`), `quote` (`> ` blockquotes), and `table` (Markdown tables with headers, separators, and rows).
+  - Inline formatting: recursively evaluates nested tokens for `bold` (`**`), `italic` (`*`), `code` (`` ` ``), `link` (`[text](url)`), `strike` / `strikethrough` (`~~`), `underline` (`<u>`), and `spoiler` (`||`).
+- **Fail-Safe Integrity**: Built purely on `encoding/json` and `strings.Builder` with zero regex, ensuring high performance, zero allocations for empty passes, and graceful skipping of unrecognized block types without panics.
+
+
 
 

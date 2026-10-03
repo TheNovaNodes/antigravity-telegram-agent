@@ -3552,3 +3552,98 @@ func TestHandleUpdate_ContactVsUnsupported_StrictDoD(t *testing.T) {
 		t.Errorf("Expected strict unsupported message format warning for empty message")
 	}
 }
+
+func TestHandleUpdate_InboundRichMessage_BlocksAST_MataHariForwarded(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	chatID := int64(777001)
+	userID := int64(999001)
+
+	// Emulate exact incident from Issue #366:
+	// Message forwarded from sister agent @MataHari_gobot with rich_message.blocks
+	rawJSON := []byte(fmt.Sprintf(`{
+		"update_id": 9901,
+		"message": {
+			"message_id": 77,
+			"chat": {"id": %d},
+			"from": {"id": %d, "first_name": "Auditor"},
+			"forward_from": {
+				"id": 888888,
+				"is_bot": true,
+				"first_name": "MataHari",
+				"username": "MataHari_gobot"
+			},
+			"forward_date": 1700000000,
+			"rich_message": {
+				"blocks": [
+					{
+						"type": "heading",
+						"size": 1,
+						"text": "Header 1"
+					},
+					{
+						"type": "paragraph",
+						"text": [
+							"This is a paragraph with ",
+							{"type": "bold", "text": "bold"},
+							" and ",
+							{"type": "italic", "text": "italic"},
+							"."
+						]
+					},
+					{
+						"type": "list",
+						"items": [
+							{
+								"label": "•",
+								"blocks": [{"type": "paragraph", "text": "List item 1"}]
+							}
+						]
+					},
+					{
+						"type": "pre",
+						"language": "go",
+						"text": "func main() {}"
+					}
+				]
+			}
+		}
+	}`, chatID, userID))
+
+	update, err := ParseUpdateFromJSON(rawJSON)
+	if err != nil {
+		t.Fatalf("ParseUpdateFromJSON failed: %v", err)
+	}
+
+	expectedPrompt := "# Header 1\n\nThis is a paragraph with **bold** and *italic*.\n\n- List item 1\n\n```go\nfunc main() {}\n```"
+	if update.Message.Text != expectedPrompt {
+		t.Fatalf("update.Message.Text mismatch!\nGot:\n%s\n\nWant:\n%s", update.Message.Text, expectedPrompt)
+	}
+
+	handleUpdate(bot, update, db)
+
+	// Allow streaming / execution to process
+	time.Sleep(100 * time.Millisecond)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	// Verify neither false-positive contact nor unsupported format warnings were sent
+	for _, body := range ms.sentBodies {
+		decoded, _ := url.QueryUnescape(body)
+		if strings.Contains(decoded, "Contacts are not supported") {
+			t.Errorf("Unexpected false-positive contact warning for MataHari rich message: %s", decoded)
+		}
+		if strings.Contains(decoded, "Unsupported message format") {
+			t.Errorf("Unexpected false-positive unsupported format warning for MataHari rich message: %s", decoded)
+		}
+	}
+}
