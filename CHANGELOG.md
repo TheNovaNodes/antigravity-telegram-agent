@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Telegram Bot API Blocks AST Parser for Inbound Rich Messages (Issue #366)
+- **Recursive Blocks AST Parser (`rich_message.go`)**:
+  - Implemented `parseASTBlocks` and `parseInlineText` to compile Telegram Bot API's native `rich_message.blocks` AST tree back into clean, canonical Markdown.
+  - Node support: `heading` (H1-H6 with `size`), `paragraph` (plain strings and nested inlines), `list` (ordered/unordered with indentations and multiline blocks), `pre`/`code` (fenced code blocks with language), `quote`/`blockquote` (`> ` lines), and `table` (header, rows, and cell structures).
+  - Inline tokens: nested recursive support for `bold` (`**`), `italic` (`*`), `code` (`` ` ``), `link` (`[text](url)`), `strike`/`strikethrough` (`~~`), `underline` (`<u>`), and `spoiler` (`||`).
+  - Zero Dirty Hacks & Fail-Safe: implemented exclusively using standard library `encoding/json` and `strings.Builder` without fragile regex, safely bypassing unknown blocks without panics.
+- **L1 Regression & Integration Tests**:
+  - Added `TestExtractRichMessageText_TelegramBotAPI_BlocksAST` verifying the exact JSON AST payload from the `@MataHari_gobot` incident.
+  - Added `TestExtractRichMessageText_BlocksAST_AdvancedNodes` and `TestParseMessageFromJSON_BlocksAST` in `rich_message_test.go`.
+  - Added `TestHandleUpdate_InboundRichMessage_BlocksAST_MataHariForwarded` in `handlers_test.go` verifying end-to-end prompt delivery into the session without false-positive contact or unsupported format warnings.
+
 ### Inbound Rich Message Ingestion & Contact Guard Sanitization (Issue #362)
 - **Inbound Rich Message Parser & Ingestion Pipeline (`rich_message.go`, `webhook_guard.go`)**:
   - Intercepted raw update and message JSON in `webhook_guard.go` via `getUpdatesWithRichMessage` and `ParseUpdatesFromJSON`, overcoming `go-telegram-bot-api`'s lack of native `rich_message` field in `tgbotapi.Message`.

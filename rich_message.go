@@ -845,9 +845,289 @@ func GetAttachedRichMessage(msg *tgbotapi.Message) (string, bool) {
 	return "", false
 }
 
+// rawASTBlock defines the Telegram Bot API rich message block structure.
+type rawASTBlock struct {
+	Type     string            `json:"type"`
+	Size     int               `json:"size"`
+	Language string            `json:"language"`
+	Text     json.RawMessage   `json:"text"`
+	Blocks   []json.RawMessage `json:"blocks"`
+	Items    []json.RawMessage `json:"items"`
+	Rows     []json.RawMessage `json:"rows"`
+	Header   []json.RawMessage `json:"header"`
+}
+
+// parseInlineText renders Telegram rich inline elements into Markdown.
+// Handles string literals, arrays of strings/objects, and nested inline formatting.
+func parseInlineText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	// 1. Raw string literal
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str
+	}
+
+	// 2. Array of inline tokens
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		var sb strings.Builder
+		for _, item := range arr {
+			sb.WriteString(parseInlineText(item))
+		}
+		return sb.String()
+	}
+
+	// 3. Formatted inline object
+	var obj struct {
+		Type string          `json:"type"`
+		Text json.RawMessage `json:"text"`
+		URL  string          `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		inner := parseInlineText(obj.Text)
+		switch obj.Type {
+		case "bold":
+			if inner != "" {
+				return "**" + inner + "**"
+			}
+		case "italic":
+			if inner != "" {
+				return "*" + inner + "*"
+			}
+		case "code":
+			if inner != "" {
+				return "`" + inner + "`"
+			}
+		case "strike", "strikethrough":
+			if inner != "" {
+				return "~~" + inner + "~~"
+			}
+		case "underline":
+			if inner != "" {
+				return "<u>" + inner + "</u>"
+			}
+		case "spoiler":
+			if inner != "" {
+				return "||" + inner + "||"
+			}
+		case "link":
+			if obj.URL != "" {
+				if inner == "" {
+					inner = obj.URL
+				}
+				return "[" + inner + "](" + obj.URL + ")"
+			}
+			return inner
+		default:
+			return inner
+		}
+	}
+
+	return ""
+}
+
+// parseASTBlocks recursively renders Telegram Bot API rich_message blocks AST into Markdown.
+func parseASTBlocks(blocks []json.RawMessage) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+
+	var renderedBlocks []string
+	for _, raw := range blocks {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+
+		var block rawASTBlock
+		if err := json.Unmarshal(raw, &block); err != nil {
+			continue
+		}
+
+		switch block.Type {
+		case "heading":
+			level := block.Size
+			if level <= 0 {
+				level = 1
+			} else if level > 6 {
+				level = 6
+			}
+			headingText := strings.TrimSpace(parseInlineText(block.Text))
+			if headingText != "" {
+				renderedBlocks = append(renderedBlocks, strings.Repeat("#", level)+" "+headingText)
+			}
+
+		case "paragraph":
+			paraText := strings.TrimSpace(parseInlineText(block.Text))
+			if paraText != "" {
+				renderedBlocks = append(renderedBlocks, paraText)
+			}
+
+		case "pre", "code":
+			var codeText string
+			var str string
+			if err := json.Unmarshal(block.Text, &str); err == nil {
+				codeText = str
+			} else {
+				codeText = parseInlineText(block.Text)
+			}
+			lang := strings.TrimSpace(block.Language)
+			renderedBlocks = append(renderedBlocks, "```"+lang+"\n"+codeText+"\n```")
+
+		case "quote", "blockquote":
+			var quoteContent string
+			if len(block.Blocks) > 0 {
+				quoteContent = strings.TrimSpace(parseASTBlocks(block.Blocks))
+			} else if len(block.Text) > 0 {
+				quoteContent = strings.TrimSpace(parseInlineText(block.Text))
+			}
+			if quoteContent != "" {
+				lines := strings.Split(quoteContent, "\n")
+				var quoteSB strings.Builder
+				for l, line := range lines {
+					if l > 0 {
+						quoteSB.WriteString("\n")
+					}
+					quoteSB.WriteString("> ")
+					quoteSB.WriteString(line)
+				}
+				renderedBlocks = append(renderedBlocks, quoteSB.String())
+			}
+
+		case "list":
+			var listSB strings.Builder
+			for _, itemRaw := range block.Items {
+				// 1. Try flat string item
+				var itemStr string
+				if err := json.Unmarshal(itemRaw, &itemStr); err == nil && strings.TrimSpace(itemStr) != "" {
+					if listSB.Len() > 0 {
+						listSB.WriteString("\n")
+					}
+					listSB.WriteString("- ")
+					listSB.WriteString(strings.TrimSpace(itemStr))
+					continue
+				}
+
+				// 2. Try structured item object
+				var itemObj struct {
+					Label  string            `json:"label"`
+					Text   json.RawMessage   `json:"text"`
+					Blocks []json.RawMessage `json:"blocks"`
+				}
+				if err := json.Unmarshal(itemRaw, &itemObj); err == nil {
+					label := strings.TrimSpace(itemObj.Label)
+					if label == "•" || label == "*" || label == "" {
+						label = "-"
+					}
+					prefix := label + " "
+					var itemContent string
+					if len(itemObj.Blocks) > 0 {
+						itemContent = strings.TrimSpace(parseASTBlocks(itemObj.Blocks))
+					} else if len(itemObj.Text) > 0 {
+						itemContent = strings.TrimSpace(parseInlineText(itemObj.Text))
+					}
+					if itemContent != "" {
+						lines := strings.Split(itemContent, "\n")
+						if len(lines) > 0 {
+							if listSB.Len() > 0 {
+								listSB.WriteString("\n")
+							}
+							listSB.WriteString(prefix)
+							listSB.WriteString(lines[0])
+							indent := strings.Repeat(" ", len(prefix))
+							for l := 1; l < len(lines); l++ {
+								listSB.WriteString("\n")
+								listSB.WriteString(indent)
+								listSB.WriteString(lines[l])
+							}
+						}
+					}
+				}
+			}
+			if listSB.Len() > 0 {
+				renderedBlocks = append(renderedBlocks, listSB.String())
+			}
+
+		case "table":
+			extractCells := func(rowRaw json.RawMessage) []string {
+				var rawCells []json.RawMessage
+				if err := json.Unmarshal(rowRaw, &rawCells); err != nil {
+					var rowObj struct {
+						Cells []json.RawMessage `json:"cells"`
+					}
+					if err := json.Unmarshal(rowRaw, &rowObj); err == nil {
+						rawCells = rowObj.Cells
+					}
+				}
+				var cells []string
+				for _, c := range rawCells {
+					var cellObj struct {
+						Text json.RawMessage `json:"text"`
+					}
+					if err := json.Unmarshal(c, &cellObj); err == nil && len(cellObj.Text) > 0 {
+						cells = append(cells, strings.TrimSpace(parseInlineText(cellObj.Text)))
+					} else {
+						cells = append(cells, strings.TrimSpace(parseInlineText(c)))
+					}
+				}
+				return cells
+			}
+
+			var headerCells []string
+			if len(block.Header) > 0 {
+				for _, h := range block.Header {
+					headerCells = append(headerCells, strings.TrimSpace(parseInlineText(h)))
+				}
+			}
+
+			var allRows [][]string
+			for _, r := range block.Rows {
+				allRows = append(allRows, extractCells(r))
+			}
+
+			if len(headerCells) == 0 && len(allRows) > 0 {
+				headerCells = allRows[0]
+				allRows = allRows[1:]
+			}
+
+			if len(headerCells) > 0 {
+				var tableSB strings.Builder
+				tableSB.WriteString("| " + strings.Join(headerCells, " | ") + " |\n")
+				var sep []string
+				for range headerCells {
+					sep = append(sep, "---")
+				}
+				tableSB.WriteString("| " + strings.Join(sep, " | ") + " |")
+				for _, row := range allRows {
+					for len(row) < len(headerCells) {
+						row = append(row, "")
+					}
+					tableSB.WriteString("\n| " + strings.Join(row[:len(headerCells)], " | ") + " |")
+				}
+				renderedBlocks = append(renderedBlocks, tableSB.String())
+			}
+
+		default:
+			if len(block.Blocks) > 0 {
+				if nested := strings.TrimSpace(parseASTBlocks(block.Blocks)); nested != "" {
+					renderedBlocks = append(renderedBlocks, nested)
+				}
+			} else if len(block.Text) > 0 {
+				if txt := strings.TrimSpace(parseInlineText(block.Text)); txt != "" {
+					renderedBlocks = append(renderedBlocks, txt)
+				}
+			}
+		}
+	}
+
+	return strings.Join(renderedBlocks, "\n\n")
+}
+
 // ExtractRichMessageText extracts markdown or text content from a raw JSON rich_message payload.
-// Supports both structured JSON objects ({"markdown": "...", "text": "...", "thinking": {...}})
-// and raw JSON string primitives.
+// Supports native Telegram Bot API blocks AST (rich_message.blocks), structured JSON objects
+// ({"markdown": "...", "text": "...", "thinking": {...}}), and raw JSON string primitives.
 func ExtractRichMessageText(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
@@ -859,20 +1139,36 @@ func ExtractRichMessageText(raw json.RawMessage) string {
 		return strings.TrimSpace(str)
 	}
 
-	// 2. Structured rich message payload
+	// 2. Check if raw payload is directly an array of AST blocks
+	var blocksArr []json.RawMessage
+	if err := json.Unmarshal(raw, &blocksArr); err == nil && len(blocksArr) > 0 {
+		if parsed := strings.TrimSpace(parseASTBlocks(blocksArr)); parsed != "" {
+			return parsed
+		}
+	}
+
+	// 3. Structured rich message payload
 	var obj struct {
-		Markdown string `json:"markdown"`
-		Text     string `json:"text"`
+		Markdown string          `json:"markdown"`
+		Text     json.RawMessage `json:"text"`
 		Thinking *struct {
 			Text string `json:"text"`
 		} `json:"thinking"`
+		Blocks []json.RawMessage `json:"blocks"`
 	}
 	if err := json.Unmarshal(raw, &obj); err == nil {
 		if strings.TrimSpace(obj.Markdown) != "" {
 			return strings.TrimSpace(obj.Markdown)
 		}
-		if strings.TrimSpace(obj.Text) != "" {
-			return strings.TrimSpace(obj.Text)
+		if len(obj.Blocks) > 0 {
+			if parsedBlocks := strings.TrimSpace(parseASTBlocks(obj.Blocks)); parsedBlocks != "" {
+				return parsedBlocks
+			}
+		}
+		if len(obj.Text) > 0 {
+			if parsedText := strings.TrimSpace(parseInlineText(obj.Text)); parsedText != "" {
+				return parsedText
+			}
 		}
 		if obj.Thinking != nil && strings.TrimSpace(obj.Thinking.Text) != "" {
 			return strings.TrimSpace(obj.Thinking.Text)
@@ -881,16 +1177,26 @@ func ExtractRichMessageText(raw json.RawMessage) string {
 	return ""
 }
 
-// extractContainerRichText searches a container (like forward_origin or forward_from) for rich_message.
+// extractContainerRichText searches a container (like forward_origin or forward_from) for rich_message or blocks.
 func extractContainerRichText(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
 	var container struct {
-		RichMessage json.RawMessage `json:"rich_message"`
+		RichMessage json.RawMessage   `json:"rich_message"`
+		Blocks      []json.RawMessage `json:"blocks"`
 	}
-	if err := json.Unmarshal(raw, &container); err == nil && len(container.RichMessage) > 0 {
-		return ExtractRichMessageText(container.RichMessage)
+	if err := json.Unmarshal(raw, &container); err == nil {
+		if len(container.RichMessage) > 0 {
+			if t := ExtractRichMessageText(container.RichMessage); t != "" {
+				return t
+			}
+		}
+		if len(container.Blocks) > 0 {
+			if t := strings.TrimSpace(parseASTBlocks(container.Blocks)); t != "" {
+				return t
+			}
+		}
 	}
 	return ""
 }
@@ -904,19 +1210,24 @@ func EnrichMessageFromJSON(msg *tgbotapi.Message, rawMsg json.RawMessage) {
 	}
 
 	var fields struct {
-		RichMessage     json.RawMessage `json:"rich_message"`
-		ForwardOrigin   json.RawMessage `json:"forward_origin"`
-		ForwardFrom     json.RawMessage `json:"forward_from"`
-		ForwardFromChat json.RawMessage `json:"forward_from_chat"`
-		ReplyToMessage  json.RawMessage `json:"reply_to_message"`
+		RichMessage     json.RawMessage   `json:"rich_message"`
+		Blocks          []json.RawMessage `json:"blocks"`
+		ForwardOrigin   json.RawMessage   `json:"forward_origin"`
+		ForwardFrom     json.RawMessage   `json:"forward_from"`
+		ForwardFromChat json.RawMessage   `json:"forward_from_chat"`
+		ReplyToMessage  json.RawMessage   `json:"reply_to_message"`
 	}
 	if err := json.Unmarshal(rawMsg, &fields); err != nil {
 		return
 	}
 
-	// 1. Direct rich_message on message
+	// 1. Direct rich_message or blocks on message
 	if richText := ExtractRichMessageText(fields.RichMessage); richText != "" {
 		AttachRichMessage(msg, richText)
+	} else if len(fields.Blocks) > 0 {
+		if blocksText := strings.TrimSpace(parseASTBlocks(fields.Blocks)); blocksText != "" {
+			AttachRichMessage(msg, blocksText)
+		}
 	}
 
 	// 2. Forwarded rich_message

@@ -1504,3 +1504,162 @@ func TestParseUpdatesFromJSON_WrappedAndRaw(t *testing.T) {
 		t.Errorf("unexpected wrapped update result: %+v", wrappedRes)
 	}
 }
+
+func TestExtractRichMessageText_TelegramBotAPI_BlocksAST(t *testing.T) {
+	// Exact payload from Issue #366 incident report
+	rawIssuePayload := []byte(`{
+		"blocks": [
+			{
+				"type": "heading",
+				"size": 1,
+				"text": "Header 1"
+			},
+			{
+				"type": "paragraph",
+				"text": [
+					"This is a paragraph with ",
+					{"type": "bold", "text": "bold"},
+					" and ",
+					{"type": "italic", "text": "italic"},
+					"."
+				]
+			},
+			{
+				"type": "list",
+				"items": [
+					{
+						"label": "•",
+						"blocks": [{"type": "paragraph", "text": "List item 1"}]
+					}
+				]
+			},
+			{
+				"type": "pre",
+				"language": "go",
+				"text": "func main() {}"
+			}
+		]
+	}`)
+
+	actual := ExtractRichMessageText(rawIssuePayload)
+	expected := "# Header 1\n\nThis is a paragraph with **bold** and *italic*.\n\n- List item 1\n\n```go\nfunc main() {}\n```"
+
+	if actual != expected {
+		t.Errorf("ExtractRichMessageText(rawIssuePayload) mismatched!\nGot:\n%s\n\nWant:\n%s", actual, expected)
+	}
+}
+
+func TestExtractRichMessageText_BlocksAST_AdvancedNodes(t *testing.T) {
+	// Tests covering heading sizes, quotes, tables, inline links, code, strikethrough, spoilers
+	rawComplex := []byte(`{
+		"blocks": [
+			{
+				"type": "heading",
+				"size": 3,
+				"text": [
+					"Sub-section with ",
+					{"type": "code", "text": "telemetry()"}
+				]
+			},
+			{
+				"type": "quote",
+				"text": "Multi-line quote block\nLine 2 of quote"
+			},
+			{
+				"type": "paragraph",
+				"text": [
+					"Check ",
+					{"type": "link", "url": "https://thenovanodes.com", "text": "NovaNodes"},
+					" or ",
+					{"type": "strike", "text": "deprecated"},
+					" or ",
+					{"type": "spoiler", "text": "secret-token"},
+					"."
+				]
+			},
+			{
+				"type": "table",
+				"header": ["Key", "Status"],
+				"rows": [
+					["Daemon", "Active"],
+					["Cluster", "Healthy"]
+				]
+			},
+			{
+				"type": "list",
+				"items": [
+					{
+						"label": "1.",
+						"text": "Step one"
+					},
+					{
+						"label": "2.",
+						"text": "Step two"
+					}
+				]
+			},
+			{
+				"type": "unknown_future_block",
+				"text": "Graceful fallback text"
+			}
+		]
+	}`)
+
+	actual := ExtractRichMessageText(rawComplex)
+
+	// Assertions on reconstructed elements
+	if !strings.Contains(actual, "### Sub-section with `telemetry()`") {
+		t.Errorf("expected level 3 heading with inline code, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "> Multi-line quote block\n> Line 2 of quote") {
+		t.Errorf("expected blockquote with > prefix, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "[NovaNodes](https://thenovanodes.com)") {
+		t.Errorf("expected markdown link, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "~~deprecated~~") {
+		t.Errorf("expected strikethrough, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "||secret-token||") {
+		t.Errorf("expected spoiler, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "| Key | Status |\n| --- | --- |\n| Daemon | Active |\n| Cluster | Healthy |") {
+		t.Errorf("expected markdown table, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "1. Step one\n2. Step two") {
+		t.Errorf("expected ordered list items, got:\n%s", actual)
+	}
+	if !strings.Contains(actual, "Graceful fallback text") {
+		t.Errorf("expected fallback for unknown block type, got:\n%s", actual)
+	}
+}
+
+func TestParseMessageFromJSON_BlocksAST(t *testing.T) {
+	rawMsg := []byte(`{
+		"message_id": 888,
+		"chat": {"id": 12345},
+		"from": {"id": 777},
+		"rich_message": {
+			"blocks": [
+				{
+					"type": "heading",
+					"size": 2,
+					"text": "Cluster Status"
+				},
+				{
+					"type": "paragraph",
+					"text": "All 9 Pure Go bots operational."
+				}
+			]
+		}
+	}`)
+
+	msg, err := ParseMessageFromJSON(rawMsg)
+	if err != nil {
+		t.Fatalf("ParseMessageFromJSON failed: %v", err)
+	}
+	expected := "## Cluster Status\n\nAll 9 Pure Go bots operational."
+	if msg.Text != expected {
+		t.Errorf("expected msg.Text %q, got %q", expected, msg.Text)
+	}
+}
