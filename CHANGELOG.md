@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Account Pool Leak Prevention, DB Session Guard, and Telegram Escaping (Issue #359)
+- **Account State & Turn Release in `/usage` (`handlers.go`)**:
+  - Bound deferred `GlobalAccountPool.ReleaseAccount(acquiredAccID)` immediately after successful account acquisition in `handleUsageCommand`.
+  - Guaranteed active accounts return to `StateActive` and decremented `ActiveTurns`, preventing permanent leaks into `StateInUse`.
+- **Database Wipe Guardrail in `resetChatSessionCache` (`account_handlers.go`)**:
+  - Implemented fail-safe guardrail when `userID == 0`: bypassed unconditional SQLite `UPDATE users SET session_id = NULL`, protecting other users from session destruction.
+  - Scoped session cache eviction exclusively to in-memory `globalSessions` for the relevant chat.
+- **Telegram Entity Escaping & Markdown Hardening (`handlers.go`, `formatters.go`, `account_handlers.go`)**:
+  - Added `escapeMarkdown` helper in `formatters.go` for Telegram legacy Markdown parse mode (`\`, `_`, `*`, `` ` ``, `[`).
+  - Escaped `sessionTitle` in `handleExportCommand` before injecting into document captions.
+  - Wrapped `acc.ID`, `acc.Email`, `acc.HomeDir`, and command target identifiers with `html.EscapeString` in all `/accounts` master-detail templates.
+- **Loopback-Only Prometheus Metrics Binding (`metrics.go`)**:
+  - Normalized addresses with port only (`:PORT` or `PORT`) to `127.0.0.1:PORT`, preventing unintentional binding to `0.0.0.0`.
+- **Artifact Security Hardening (`session.go`)**:
+  - Excluded `.env` from text artifact extension whitelist and added explicit guardrail blocking `.env*` files from automatic Telegram dispatch.
+- **L1 Regression Test Suite**:
+  - Added `TestHandleUsageCommand_ReleasesAccount` and `TestHandleExportCommand_MarkdownEscapedTitle` in `handlers_test.go`.
+  - Added `TestResetChatSessionCache_ZeroUserID_PreservesOtherUsers` and `TestAccountsDashboard_HtmlEscaping_MaliciousEntities` in `account_handlers_test.go`.
+  - Added `TestStartMetricsServer_LoopbackNormalization` in `main_test.go`.
+  - Added `TestSendArtifacts_BlocksDotEnv` in `session_test.go`.
+
 ### Dual-Circuit Streaming Resilience & Transcript Fallback (Issue #355)
 - **In-Stream Fusion (`session.go`)**:
   - Enhanced `readStdoutLoop` to handle `step_update` events with `su["thinking_delta"]`: when response text generation has already begun (`s.TextBuffer != ""`), incoming thinking deltas are fused directly into `s.TextBuffer` as visible text continuation.

@@ -1066,10 +1066,18 @@ func sendArtifacts(bot *tgbotapi.BotAPI, chatID int64, text string, extraRoots .
 			continue
 		}
 
+		baseName := strings.ToLower(filepath.Base(realPath))
 		ext := strings.ToLower(filepath.Ext(realPath))
+
+		// Guardrail: Never automatically dispatch .env or environment secret files to Telegram (#359)
+		if baseName == ".env" || strings.HasPrefix(baseName, ".env.") || ext == ".env" {
+			log.Printf("[Artifacts] Blocked sensitive environment artifact from Telegram dispatch: %s", realPath)
+			continue
+		}
+
 		isText := false
 		switch ext {
-		case ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sh", ".py", ".go", ".env",
+		case ".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sh", ".py", ".go",
 			".toml", ".sql", ".ini", ".conf", ".xml", ".js", ".ts", ".jsx", ".tsx", ".rs",
 			".rb", ".cfg", ".properties", ".proto", ".graphql":
 			isText = true

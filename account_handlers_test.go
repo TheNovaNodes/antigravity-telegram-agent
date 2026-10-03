@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -480,3 +481,94 @@ func TestAccountCallback_ManageNonExistentAccountSafety(t *testing.T) {
 		t.Fatalf("Expected dashboard refreshed on cancel without target, got:\n%s", sentCancel)
 	}
 }
+
+func TestResetChatSessionCache_ZeroUserID_PreservesOtherUsers(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// Insert two users with existing sessions
+	_, err := db.Exec(`INSERT INTO users (user_id, session_id) VALUES (101, 'session-101'), (102, 'session-102')`)
+	if err != nil {
+		t.Fatalf("Failed to insert test users: %v", err)
+	}
+
+	// Calling resetChatSessionCache with userID == 0 must NOT wipe any rows in users table (#359)
+	resetChatSessionCache(db, "TestBot", 0, 9999)
+
+	var sess101, sess102 string
+	if err := db.QueryRow("SELECT session_id FROM users WHERE user_id = 101").Scan(&sess101); err != nil {
+		t.Fatalf("Failed to query user 101: %v", err)
+	}
+	if err := db.QueryRow("SELECT session_id FROM users WHERE user_id = 102").Scan(&sess102); err != nil {
+		t.Fatalf("Failed to query user 102: %v", err)
+	}
+
+	if sess101 != "session-101" || sess102 != "session-102" {
+		t.Fatalf("resetChatSessionCache(userID=0) wiped database sessions! sess101=%s, sess102=%s", sess101, sess102)
+	}
+
+	// Calling with specific userID must only reset that user's session
+	resetChatSessionCache(db, "TestBot", 101, 9999)
+
+	var sess101After sql.NullString
+	if err := db.QueryRow("SELECT session_id FROM users WHERE user_id = 101").Scan(&sess101After); err != nil {
+		t.Fatalf("Failed to query user 101 after reset: %v", err)
+	}
+	if sess101After.Valid && sess101After.String != "" {
+		t.Errorf("Expected user 101 session to be NULL, got: %s", sess101After.String)
+	}
+
+	// User 102 must remain untouched
+	if err := db.QueryRow("SELECT session_id FROM users WHERE user_id = 102").Scan(&sess102); err != nil {
+		t.Fatalf("Failed to query user 102: %v", err)
+	}
+	if sess102 != "session-102" {
+		t.Errorf("User 102 session was corrupted when user 101 was reset: got %s", sess102)
+	}
+}
+
+func TestAccountsDashboard_HtmlEscaping_MaliciousEntities(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	chatID := int64(12345)
+	maliciousID := "acc<tag>&1"
+	maliciousEmail := "attacker<xss>&alert@example.com"
+	maliciousHome := "/home/user<dir>&test"
+
+	pool.accounts[maliciousID] = &Account{
+		ID:      maliciousID,
+		Email:   maliciousEmail,
+		HomeDir: maliciousHome,
+		State:   StateActive,
+	}
+
+	// 1. Check Master Dashboard escaping
+	dashText, _ := formatAccountsDashboard(pool, chatID, "TestBot")
+	if strings.Contains(dashText, "<tag>") || strings.Contains(dashText, "<xss>") {
+		t.Fatalf("Unescaped HTML tag found in dashboard:\n%s", dashText)
+	}
+	if !strings.Contains(dashText, "acc&lt;tag&gt;&amp;1") {
+		t.Errorf("Expected HTML escaped ID in dashboard, got:\n%s", dashText)
+	}
+	if !strings.Contains(dashText, "attacker&lt;xss&gt;&amp;alert@example.com") {
+		t.Errorf("Expected HTML escaped email in dashboard, got:\n%s", dashText)
+	}
+
+	// 2. Check Detail Card escaping
+	acc := pool.accounts[maliciousID]
+	cardText, _ := formatAccountCard(pool, acc, chatID, "TestBot")
+	if strings.Contains(cardText, "<tag>") || strings.Contains(cardText, "<xss>") || strings.Contains(cardText, "<dir>") {
+		t.Fatalf("Unescaped HTML tag found in account card:\n%s", cardText)
+	}
+	if !strings.Contains(cardText, "acc&lt;tag&gt;&amp;1") {
+		t.Errorf("Expected HTML escaped ID in card, got:\n%s", cardText)
+	}
+	if !strings.Contains(cardText, "attacker&lt;xss&gt;&amp;alert@example.com") {
+		t.Errorf("Expected HTML escaped email in card, got:\n%s", cardText)
+	}
+	if !strings.Contains(cardText, "/home/user&lt;dir&gt;&amp;test") {
+		t.Errorf("Expected HTML escaped HomeDir in card, got:\n%s", cardText)
+	}
+}
+

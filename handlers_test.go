@@ -3266,3 +3266,93 @@ func TestStoreQuestionOption_DeterministicFIFORotation(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleUsageCommand_ReleasesAccount(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	os.Setenv("AGY_BINARY", "echo")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	chatID := int64(888123)
+	accID := "acc-usage-test"
+	pool.accounts[accID] = &Account{
+		ID:          accID,
+		Email:       "usage@novanodes.com",
+		HomeDir:     filepath.Join(tmpDir, accID),
+		State:       StateActive,
+		ActiveTurns: 0,
+	}
+
+	handleUsageCommand(bot, chatID, "TestBot")
+
+	acc := pool.accounts[accID]
+	if acc.State != StateActive {
+		t.Errorf("Expected account state StateActive after /usage, got %s", acc.State)
+	}
+	if acc.ActiveTurns != 0 {
+		t.Errorf("Expected ActiveTurns == 0 after /usage release, got %d", acc.ActiveTurns)
+	}
+}
+
+func TestHandleExportCommand_MarkdownEscapedTitle(t *testing.T) {
+	tempDir := t.TempDir()
+	os.Setenv("BRAIN_DIR", tempDir)
+	defer os.Unsetenv("BRAIN_DIR")
+	os.Setenv("AGENTS_DIR", tempDir)
+	defer os.Unsetenv("AGENTS_DIR")
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	chatID := int64(12345)
+	userID := int64(777)
+
+	user := User{
+		ID:        userID,
+		Workspace: tempDir,
+		Model:     "gemini-3.8-flash-high",
+		SessionID: "export-markdown-escape-uuid",
+	}
+
+	sessionDir := filepath.Join(tempDir, user.SessionID)
+	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
+	os.MkdirAll(logsDir, 0755)
+
+	// Session title with underscores and asterisks
+	specialTitle := "My_Special*Session_Title"
+	os.WriteFile(filepath.Join(sessionDir, ".title"), []byte(specialTitle), 0644)
+	fullJSONL := `{"step":1,"created_at":"2026-09-03T17:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nTest Markdown Escaping\n</USER_REQUEST>"}
+{"step":2,"created_at":"2026-09-03T17:00:05Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"OK"}
+`
+	os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(fullJSONL), 0644)
+
+	handleExportCommand(bot, chatID, userID, "TestBot", user)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	foundCaption := false
+	expectedEscaped := escapeMarkdown(specialTitle)
+	for _, body := range ms.sentBodies {
+		decoded, _ := url.QueryUnescape(body)
+		if strings.Contains(decoded, expectedEscaped) {
+			foundCaption = true
+			break
+		}
+	}
+
+	if !foundCaption {
+		t.Errorf("Expected escaped title %q in telegram request bodies, but not found", expectedEscaped)
+	}
+}
+

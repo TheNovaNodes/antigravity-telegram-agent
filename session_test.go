@@ -3700,3 +3700,43 @@ func TestSession_FinalizeTurn_TranscriptFallback_FailSafe(t *testing.T) {
 		}
 	})
 }
+
+func TestSendArtifacts_BlocksDotEnv(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("PROJECTS_DIR", tempDir)
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	envFile := filepath.Join(tempDir, ".env")
+	envLocalFile := filepath.Join(tempDir, ".env.production")
+	validDoc := filepath.Join(tempDir, "report.md")
+
+	os.WriteFile(envFile, []byte("TELEGRAM_TOKEN=12345\nAPI_KEY=secret\n"), 0644)
+	os.WriteFile(envLocalFile, []byte("DB_PASSWORD=secret\n"), 0644)
+	os.WriteFile(validDoc, []byte("# Report\nAll systems nominal.\n"), 0644)
+
+	text := fmt.Sprintf("Results:\n- [SecretEnv](file://%s)\n- [LocalEnv](file://%s)\n- [Report](file://%s)\n",
+		envFile, envLocalFile, validDoc)
+
+	sendArtifacts(bot, 12345, text)
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	foundReport := false
+	for _, body := range ms.sentBodies {
+		if strings.Contains(body, ".env") {
+			t.Fatalf("Security violation: .env artifact was dispatched to Telegram: %s", body)
+		}
+		if strings.Contains(body, "report.md") {
+			foundReport = true
+		}
+	}
+
+	if !foundReport {
+		t.Errorf("Expected valid report.md to be sent, but was not found in sentBodies")
+	}
+}
+

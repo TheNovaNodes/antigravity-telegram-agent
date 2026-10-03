@@ -446,9 +446,14 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 		if len(botNames) > 0 {
 			bName = botNames[0]
 		}
+		var acquiredAccID string
 		acc := GlobalAccountPool.GetActiveAccountForChat(chatID, bName)
 		if acc == nil {
-			acc, _ = GlobalAccountPool.AcquireAccount(chatID, bName)
+			var acqErr error
+			acc, acqErr = GlobalAccountPool.AcquireAccount(chatID, bName)
+			if acqErr == nil && acc != nil {
+				acquiredAccID = acc.ID
+			}
 		}
 		if acc == nil {
 			respText := "⚠️ <b>[Account Pool]</b> All accounts in the pool are currently resting in cooldown or unavailable. Live quota usage cannot be queried."
@@ -458,6 +463,9 @@ func handleUsageCommand(bot *tgbotapi.BotAPI, chatID int64, botNames ...string) 
 				bot.Send(msg)
 			}
 			return
+		}
+		if acquiredAccID != "" {
+			defer GlobalAccountPool.ReleaseAccount(acquiredAccID)
 		}
 		cmd.Env = buildChildEnv(acc.HomeDir)
 		accountHeader = fmt.Sprintf(" [%s (%s)]", acc.ID, acc.Email)
@@ -652,18 +660,19 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 	}
 
 	if bot != nil && chatID != 0 {
+		escapedTitle := escapeMarkdown(sessionTitle)
 		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(exportPath))
 		if artifactCount > 0 {
-			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d\n📦 *Extracted Artifacts:* %d (%s)", sessionTitle, stepNum, artifactCount, artifactBreakdown)
+			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d\n📦 *Extracted Artifacts:* %d (%s)", escapedTitle, stepNum, artifactCount, artifactBreakdown)
 		} else {
-			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d", sessionTitle, stepNum)
+			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d", escapedTitle, stepNum)
 		}
 		doc.ParseMode = "Markdown"
 		bot.Send(doc)
 
 		if artifactZipPath != "" {
 			zipDoc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(artifactZipPath))
-			zipDoc.Caption = fmt.Sprintf("📦 *Session Engineering Artifacts Bundle*\n🏷 *Title:* %s\n📁 *Files:* %d (%s)", sessionTitle, artifactCount, artifactBreakdown)
+			zipDoc.Caption = fmt.Sprintf("📦 *Session Engineering Artifacts Bundle*\n🏷 *Title:* %s\n📁 *Files:* %d (%s)", escapedTitle, artifactCount, artifactBreakdown)
 			zipDoc.ParseMode = "Markdown"
 			bot.Send(zipDoc)
 		}
