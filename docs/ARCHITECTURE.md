@@ -157,6 +157,9 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`), which are registered as bot commands in `main.go` and normalized in `handlers.go`. Routes `/stop` and `/cancel`. |
 | `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*` including `cmd:stop` [Turn Interruption] and `cmd:retry` [Stream Recovery]). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
 | `extractInboundPayload` | Polymorphic adapter extracting text, command aliases, media attachments, multimodal stickers (.webp/.tgs/.webm), validated geolocation coordinates, and inbound/forwarded `rich_message` content. | Eliminates cyclomatic bloat in `handleUpdate`. Resolves rich messages from raw JSON updates or message attachments, forwards them as first-class prompt text, sanitizes contact rejection (strictly checking `msg.Contact != nil`), and returns informative diagnostics (`⚠️ Unsupported message format`) for unknown formats. Video notes are extracted as `.mp4`, stickers are downloaded (`.webp`, `.tgs`, or `.webm`) into `scratch/downloads/` for multimodal vision as clean attachments (`[Attached File: file://...]`) without semantic hijacking from emoji text strings, and GPS locations are validated (`-90 <= Lat <= 90`, `-180 <= Lon <= 180`) and formatted into structured markers with privacy protection. |
+| `isServiceMessage` | Pure Go validator identifying Telegram system and service events (chat created, user joins/leaves, pins, migrations, title/photo updates). | Executed at the start of `handleUpdate`; drops service events silently without sending diagnostic warnings to chat. |
+| `isGroupMessageAddressed` | Mention & Reply Guard evaluating whether group messages are targeted to this bot via command, direct reply, or `@botName` mention. | Scoped to groups/supergroups; filters out cross-bot chatter and prevents multi-agent ping-pong loops in Triads. |
+| `stripBotMention` | Prompt sanitizer extracting and excising `@botName` mention prefixes and trailing punctuation from user prompts. | Provides clean prompts to the LLM agent while preserving mentions of other bots and email addresses. |
 | `downloadTelegramMedia` | Downloads incoming documents, photos, audio, voices, and video notes. Detects session export files (`session_*.md`) and auto-injects context reload prompts for drop-to-resume. | URL scheme & host validation (HTTP/HTTPS only), HTTP status check, 100 MB hard limit, and sandbox download dir. |
 | `handleMessagePayload` | Streams user prompt into agent `Stdin` and triggers instant `sendChatAction`. | Enforces JSONL protocol encoding, per-turn voice reply mode without latching, and clean prompt retry on Stdin error. |
 | `sendTypingAction` | Background 4-second ticker sending `ChatTyping` / `ChatRecordVoice` while agent thinks. | Non-blocking mutex check. |
@@ -551,6 +554,51 @@ flowchart TD
   - Block level: `heading` (H1–H6 via `size`), `paragraph`, `list` (ordered/unordered with indentations and multiline blocks), `pre` (fenced code with `language`), `quote` (`> ` blockquotes), and `table` (Markdown tables with headers, separators, and rows).
   - Inline formatting: recursively evaluates nested tokens for `bold` (`**`), `italic` (`*`), `code` (`` ` ``), `link` (`[text](url)`), `strike` / `strikethrough` (`~~`), `underline` (`<u>`), and `spoiler` (`||`).
 - **Fail-Safe Integrity**: Built purely on `encoding/json` and `strings.Builder` with zero regex, ensuring high performance, zero allocations for empty passes, and graceful skipping of unrecognized block types without panics.
+
+---
+
+## 15. Group Service Event Silencer & Mention & Reply Guard for Multi-Agent Triads (Issue #368)
+
+In collaborative group chat environments hosting multiple autonomous agents (e.g. the Triad multi-agent cell: `@kairos_brobot`, `@MataHari_gobot`, `@trickster_gobot`), standard Telegram group updates present two critical architectural challenges without strict inbound filtering:
+1. **Service Notification Spam**: Telegram emits service events (group creation, member joins/departures, pinned messages, chat migrations, title/photo modifications) without payload text or media attachments. Unfiltered routers misinterpret these system events as invalid user messages and broadcast misleading warnings (`⚠️ Unsupported message format`).
+2. **Ping-Pong Loops (Chatter Storm)**: When bots have privacy mode disabled or administrative permissions, every message is received by all agents. Without selective addressing guards, agents react to each other's responses in an infinite ping-pong loop, exhausting model quota and cluttering the chat.
+
+```mermaid
+flowchart TD
+    Update[Telegram Update] --> MsgCheck{msg == nil?}
+    MsgCheck -->|Yes| Drop1[Drop silently]
+    MsgCheck -->|No| SvcCheck{isServiceMessage?}
+    SvcCheck -->|Yes: Created, Member, Pin, Migrate, Title, Photo| DropSvc[Silent Return: Zero Diagnostics]
+    SvcCheck -->|No| GroupCheck{IsGroup || IsSuperGroup?}
+    
+    GroupCheck -->|No: Private Chat| PrivateFlow[Normal Processing: All User Messages]
+    
+    GroupCheck -->|Yes: Group Chat| AddressedCheck{isGroupMessageAddressed?}
+    AddressedCheck -->|Command: /cmd or /cmd@thisBot| Allow[Process Message]
+    AddressedCheck -->|Reply: replyTo.From == thisBot| Allow
+    AddressedCheck -->|Mention: text/caption has @thisBot| Strip[stripBotMention: Clean @thisBot prefix]
+    AddressedCheck -->|No match: other bot / general chat| DropGrp[Silent Return: Zero Noise]
+    
+    Strip --> Allow
+    Allow --> Payload[extractInboundPayload & Stdin Stream]
+```
+
+### 1. Service Message Silencer (`isServiceMessage`):
+- Pure Go validator inspecting Telegram service fields: `GroupChatCreated`, `SuperGroupChatCreated`, `ChannelChatCreated`, `NewChatMembers`, `LeftChatMember`, `PinnedMessage`, `MigrateToChatID`, `MigrateFromChatID`, `NewChatTitle`, `NewChatPhoto`, `DeleteChatPhoto`, `MessageAutoDeleteTimerChanged`, `ProximityAlertTriggered`, `VoiceChatScheduled`, `VoiceChatStarted`, `VoiceChatEnded`, `VoiceChatParticipantsInvited`, and `SuccessfulPayment`.
+- Executed at the very top of `handleUpdate`: service updates return immediately (`return`) with zero DB access and zero Telegram API calls, maintaining complete silence.
+
+### 2. Group Mention & Reply Guard (`isGroupMessageAddressed`):
+- Scoped strictly to group and supergroup chats (`msg.Chat.IsGroup() || msg.Chat.IsSuperGroup()`), leaving private direct messages (`msg.Chat.IsPrivate()`) 100% unaffected.
+- Allows execution if and only if one of the following criteria is met:
+  1. **Slash Command for this Bot (`isCommandForBot`)**: Matches untargeted commands (`/help`) or commands specifically targeted to this bot (`/help@thisBot`). Ignores commands explicitly addressed to another bot (`/help@otherBot`).
+  2. **Direct Reply to this Bot (`isReplyToBot`)**: Checks `msg.ReplyToMessage.From.UserName == botName` (case-insensitive).
+  3. **Explicit Bot Mention (`isBotMentioned`)**: Checks `msg.Entities`, `msg.CaptionEntities`, or regex matching `@botName` on text and caption with word boundary constraints (`(?i)(^|[^a-zA-Z0-9_])@botName([^a-zA-Z0-9_]|$)`). Prevents false matches on prefix/substring bots (e.g. `@botName_v2`).
+- All other messages are dropped silently (`return`), preventing multi-agent chatter storms.
+
+### 3. Prompt Sanitization (`stripBotMention`):
+- In group chats, any `@botName` token (including trailing commas, colons, or punctuation: `@botName, привет` -> `привет`) is cleanly excised from `payload.Text` and `payload.Caption`.
+- Other bots' mentions (e.g. `@kairos_brobot and @MataHari_gobot`) and email addresses (`user@botName.com`) remain intact.
+- If a user sends only `@botName` without any prompt or attachments in a group, the engine drops the message silently instead of triggering an unsupported format error.
 
 
 

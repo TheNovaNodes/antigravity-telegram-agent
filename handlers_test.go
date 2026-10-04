@@ -3647,3 +3647,326 @@ func TestHandleUpdate_InboundRichMessage_BlocksAST_MataHariForwarded(t *testing.
 		}
 	}
 }
+
+func TestIsServiceMessage(t *testing.T) {
+	if isServiceMessage(nil) {
+		t.Errorf("Expected false for nil message")
+	}
+
+	regularMsg := &tgbotapi.Message{
+		Text: "Hello world",
+	}
+	if isServiceMessage(regularMsg) {
+		t.Errorf("Expected false for regular text message")
+	}
+
+	testCases := []struct {
+		name string
+		msg  *tgbotapi.Message
+	}{
+		{"GroupChatCreated", &tgbotapi.Message{GroupChatCreated: true}},
+		{"SuperGroupChatCreated", &tgbotapi.Message{SuperGroupChatCreated: true}},
+		{"ChannelChatCreated", &tgbotapi.Message{ChannelChatCreated: true}},
+		{"NewChatMembers", &tgbotapi.Message{NewChatMembers: []tgbotapi.User{{ID: 123, UserName: "newbie"}}}},
+		{"LeftChatMember", &tgbotapi.Message{LeftChatMember: &tgbotapi.User{ID: 123, UserName: "leaver"}}},
+		{"PinnedMessage", &tgbotapi.Message{PinnedMessage: &tgbotapi.Message{MessageID: 1}}},
+		{"MigrateToChatID", &tgbotapi.Message{MigrateToChatID: 99999}},
+		{"MigrateFromChatID", &tgbotapi.Message{MigrateFromChatID: 88888}},
+		{"NewChatTitle", &tgbotapi.Message{NewChatTitle: "New Chat Name"}},
+		{"NewChatPhoto", &tgbotapi.Message{NewChatPhoto: []tgbotapi.PhotoSize{{FileID: "photo1"}}}},
+		{"DeleteChatPhoto", &tgbotapi.Message{DeleteChatPhoto: true}},
+		{"MessageAutoDeleteTimerChanged", &tgbotapi.Message{MessageAutoDeleteTimerChanged: &tgbotapi.MessageAutoDeleteTimerChanged{MessageAutoDeleteTime: 60}}},
+		{"ProximityAlertTriggered", &tgbotapi.Message{ProximityAlertTriggered: &tgbotapi.ProximityAlertTriggered{Distance: 100}}},
+		{"VoiceChatScheduled", &tgbotapi.Message{VoiceChatScheduled: &tgbotapi.VoiceChatScheduled{StartDate: 12345}}},
+		{"VoiceChatStarted", &tgbotapi.Message{VoiceChatStarted: &tgbotapi.VoiceChatStarted{}}},
+		{"VoiceChatEnded", &tgbotapi.Message{VoiceChatEnded: &tgbotapi.VoiceChatEnded{Duration: 60}}},
+		{"VoiceChatParticipantsInvited", &tgbotapi.Message{VoiceChatParticipantsInvited: &tgbotapi.VoiceChatParticipantsInvited{Users: []tgbotapi.User{{ID: 1}}}}},
+		{"SuccessfulPayment", &tgbotapi.Message{SuccessfulPayment: &tgbotapi.SuccessfulPayment{TotalAmount: 100}}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !isServiceMessage(tc.msg) {
+				t.Errorf("Expected isServiceMessage to return true for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestStripBotMention(t *testing.T) {
+	botName := "MataHari_gobot"
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"@MataHari_gobot привет", "привет"},
+		{"@MataHari_gobot, привет", "привет"},
+		{"@MataHari_gobot: привет", "привет"},
+		{"@MataHari_gobot : привет", "привет"},
+		{"@MataHari_gobot! привет", "привет"},
+		{"привет, @MataHari_gobot, как дела?", "привет, как дела?"},
+		{"привет @MataHari_gobot как дела", "привет как дела"},
+		{"привет @MataHari_gobot", "привет"},
+		{"@MataHari_gobot", ""},
+		{"@matahari_gobot Привет", "Привет"},
+		{"@kairos_brobot привет", "@kairos_brobot привет"},
+		{"@MataHari_gobot_2 привет", "@MataHari_gobot_2 привет"},
+		{"user@MataHari_gobot.com", "user@MataHari_gobot.com"},
+		{"@MataHari_gobot\nПривет", "Привет"},
+	}
+
+	for _, tc := range tests {
+		actual := stripBotMention(tc.input, botName)
+		if actual != tc.expected {
+			t.Errorf("stripBotMention(%q, %q) = %q; expected %q", tc.input, botName, actual, tc.expected)
+		}
+	}
+}
+
+func TestGroupMentionAndReplyGuard(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	os.Setenv("AGY_BINARY", "cat")
+	defer os.Unsetenv("AGY_BINARY")
+
+	ms := newMockServer()
+	defer ms.Close()
+
+	bot := createMockBot(ms)
+	botName := bot.Self.UserName // "TestMockBot"
+	groupID := int64(-100123456789)
+	userID := int64(777)
+
+	// 1. Service Messages in Group -> Silently ignored (0 requests)
+	serviceUpdates := []struct {
+		name string
+		msg  *tgbotapi.Message
+	}{
+		{"GroupChatCreated", &tgbotapi.Message{MessageID: 1, Chat: &tgbotapi.Chat{ID: groupID, Type: "supergroup"}, GroupChatCreated: true}},
+		{"NewChatMembers", &tgbotapi.Message{MessageID: 2, Chat: &tgbotapi.Chat{ID: groupID, Type: "supergroup"}, NewChatMembers: []tgbotapi.User{{ID: 888, UserName: "new_bot"}}}},
+		{"LeftChatMember", &tgbotapi.Message{MessageID: 3, Chat: &tgbotapi.Chat{ID: groupID, Type: "supergroup"}, LeftChatMember: &tgbotapi.User{ID: 888, UserName: "left_bot"}}},
+		{"PinnedMessage", &tgbotapi.Message{MessageID: 4, Chat: &tgbotapi.Chat{ID: groupID, Type: "supergroup"}, PinnedMessage: &tgbotapi.Message{MessageID: 10}}},
+	}
+
+	for _, su := range serviceUpdates {
+		t.Run("ServiceEvent_"+su.name, func(t *testing.T) {
+			ms.mu.Lock()
+			startCount := len(ms.sentRequests)
+			ms.mu.Unlock()
+
+			handleUpdate(bot, tgbotapi.Update{UpdateID: 1, Message: su.msg}, db)
+
+			ms.mu.Lock()
+			newCount := len(ms.sentRequests) - startCount
+			ms.mu.Unlock()
+
+			if newCount > 0 {
+				t.Errorf("Expected 0 Telegram requests for service message %s, got %d", su.name, newCount)
+			}
+		})
+	}
+
+	// 2. Unaddressed messages in Group -> Ignored (0 requests)
+	unaddressed := []string{
+		"Hello everyone in the group",
+		"@kairos_brobot please answer",
+		"/help@kairos_brobot",
+		"/status@other_bot arg1 arg2",
+	}
+
+	for _, text := range unaddressed {
+		t.Run("Unaddressed_"+text, func(t *testing.T) {
+			ms.mu.Lock()
+			startCount := len(ms.sentRequests)
+			ms.mu.Unlock()
+
+			upd := tgbotapi.Update{
+				UpdateID: 10,
+				Message: &tgbotapi.Message{
+					MessageID: 100,
+					Chat:      &tgbotapi.Chat{ID: groupID, Type: "supergroup"},
+					From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+					Text:      text,
+				},
+			}
+			handleUpdate(bot, upd, db)
+
+			ms.mu.Lock()
+			newCount := len(ms.sentRequests) - startCount
+			ms.mu.Unlock()
+
+			if newCount > 0 {
+				t.Errorf("Expected 0 Telegram requests for unaddressed message %q in group, got %d", text, newCount)
+			}
+		})
+	}
+
+	// 3. Addressed messages to THIS bot in Group
+	// 3a. Slash command for this bot (/help or /help@TestMockBot)
+	t.Run("Addressed_SlashCommand", func(t *testing.T) {
+		ms.mu.Lock()
+		startCount := len(ms.sentRequests)
+		ms.mu.Unlock()
+
+		upd := tgbotapi.Update{
+			UpdateID: 20,
+			Message: &tgbotapi.Message{
+				MessageID: 101,
+				Chat:      &tgbotapi.Chat{ID: groupID, Type: "supergroup"},
+				From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+				Text:      "/help@" + botName,
+			},
+		}
+		handleUpdate(bot, upd, db)
+
+		ms.mu.Lock()
+		newCount := len(ms.sentRequests) - startCount
+		ms.mu.Unlock()
+
+		if newCount == 0 {
+			t.Errorf("Expected response for targeted command in group")
+		}
+	})
+
+	// 3b. Mention in group: @TestMockBot hello
+	t.Run("Addressed_Mention", func(t *testing.T) {
+		ms.mu.Lock()
+		startCount := len(ms.sentRequests)
+		ms.mu.Unlock()
+
+		upd := tgbotapi.Update{
+			UpdateID: 21,
+			Message: &tgbotapi.Message{
+				MessageID: 102,
+				Chat:      &tgbotapi.Chat{ID: groupID, Type: "supergroup"},
+				From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+				Text:      "@" + botName + " hello world",
+			},
+		}
+		handleUpdate(bot, upd, db)
+
+		ms.mu.Lock()
+		newCount := len(ms.sentRequests) - startCount
+		ms.mu.Unlock()
+
+		if newCount == 0 {
+			t.Errorf("Expected response for mentioned prompt in group")
+		}
+	})
+
+	// 3c. Direct Reply to this bot in group
+	t.Run("Addressed_ReplyToBot", func(t *testing.T) {
+		ms.mu.Lock()
+		startCount := len(ms.sentRequests)
+		ms.mu.Unlock()
+
+		upd := tgbotapi.Update{
+			UpdateID: 22,
+			Message: &tgbotapi.Message{
+				MessageID: 103,
+				Chat:      &tgbotapi.Chat{ID: groupID, Type: "supergroup"},
+				From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+				Text:      "yes, continue explaining",
+				ReplyToMessage: &tgbotapi.Message{
+					MessageID: 99,
+					From:      &tgbotapi.User{ID: 999, UserName: botName, IsBot: true},
+					Text:      "I previously explained concept X.",
+				},
+			},
+		}
+		handleUpdate(bot, upd, db)
+
+		ms.mu.Lock()
+		newCount := len(ms.sentRequests) - startCount
+		ms.mu.Unlock()
+
+		if newCount == 0 {
+			t.Errorf("Expected response for reply to bot in group")
+		}
+	})
+
+	// 3d. Reply to ANOTHER bot in group -> Ignored
+	t.Run("ReplyToAnotherBot_Ignored", func(t *testing.T) {
+		ms.mu.Lock()
+		startCount := len(ms.sentRequests)
+		ms.mu.Unlock()
+
+		upd := tgbotapi.Update{
+			UpdateID: 23,
+			Message: &tgbotapi.Message{
+				MessageID: 104,
+				Chat:      &tgbotapi.Chat{ID: groupID, Type: "supergroup"},
+				From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+				Text:      "re reply to other bot",
+				ReplyToMessage: &tgbotapi.Message{
+					MessageID: 98,
+					From:      &tgbotapi.User{ID: 888, UserName: "other_bot", IsBot: true},
+					Text:      "Response from other bot.",
+				},
+			},
+		}
+		handleUpdate(bot, upd, db)
+
+		ms.mu.Lock()
+		newCount := len(ms.sentRequests) - startCount
+		ms.mu.Unlock()
+
+		if newCount > 0 {
+			t.Errorf("Expected 0 Telegram requests for reply to another bot, got %d", newCount)
+		}
+	})
+
+	// 3e. Only @botName without prompt in group -> No-op (0 requests, no unsupported format warning)
+	t.Run("OnlyMentionInGroup_Noop", func(t *testing.T) {
+		ms.mu.Lock()
+		startCount := len(ms.sentRequests)
+		ms.mu.Unlock()
+
+		upd := tgbotapi.Update{
+			UpdateID: 24,
+			Message: &tgbotapi.Message{
+				MessageID: 105,
+				Chat:      &tgbotapi.Chat{ID: groupID, Type: "supergroup"},
+				From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+				Text:      "@" + botName,
+			},
+		}
+		handleUpdate(bot, upd, db)
+
+		ms.mu.Lock()
+		newCount := len(ms.sentRequests) - startCount
+		ms.mu.Unlock()
+
+		if newCount > 0 {
+			t.Errorf("Expected 0 Telegram requests for bare mention in group, got %d", newCount)
+		}
+	})
+
+	// 4. Zero regression: Private chat works without mentions
+	t.Run("PrivateChat_NoRegression", func(t *testing.T) {
+		ms.mu.Lock()
+		startCount := len(ms.sentRequests)
+		ms.mu.Unlock()
+
+		upd := tgbotapi.Update{
+			UpdateID: 25,
+			Message: &tgbotapi.Message{
+				MessageID: 106,
+				Chat:      &tgbotapi.Chat{ID: userID, Type: "private"},
+				From:      &tgbotapi.User{ID: userID, UserName: "regularuser"},
+				Text:      "Plain private chat message without mention",
+			},
+		}
+		handleUpdate(bot, upd, db)
+
+		ms.mu.Lock()
+		newCount := len(ms.sentRequests) - startCount
+		ms.mu.Unlock()
+
+		if newCount == 0 {
+			t.Errorf("Expected response for normal private chat message")
+		}
+	})
+}

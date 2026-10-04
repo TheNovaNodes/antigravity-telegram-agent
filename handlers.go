@@ -1679,6 +1679,157 @@ func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
 	return payload
 }
 
+var (
+	botMentionRegexCache sync.Map // map[string]*regexp.Regexp
+	botStripRegexCache   sync.Map // map[string]*regexp.Regexp
+	spacesRegex          = regexp.MustCompile(`[ \t]+`)
+)
+
+func getBotMentionRegex(botName string) *regexp.Regexp {
+	lower := strings.ToLower(botName)
+	if val, ok := botMentionRegexCache.Load(lower); ok {
+		return val.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_])@` + regexp.QuoteMeta(botName) + `(\b|[^a-zA-Z0-9_]|$)`)
+	botMentionRegexCache.Store(lower, re)
+	return re
+}
+
+func getBotStripRegex(botName string) *regexp.Regexp {
+	lower := strings.ToLower(botName)
+	if val, ok := botStripRegexCache.Load(lower); ok {
+		return val.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(`(?i)(?:^|[\s])@` + regexp.QuoteMeta(botName) + `\b[\s,:!]*`)
+	botStripRegexCache.Store(lower, re)
+	return re
+}
+
+// isServiceMessage returns true if the Telegram message represents a service/system event
+// (chat created, members joined/left, pinned message, migration, title/photo change, etc.).
+func isServiceMessage(msg *tgbotapi.Message) bool {
+	if msg == nil {
+		return false
+	}
+	return msg.GroupChatCreated ||
+		msg.SuperGroupChatCreated ||
+		msg.ChannelChatCreated ||
+		len(msg.NewChatMembers) > 0 ||
+		msg.LeftChatMember != nil ||
+		msg.PinnedMessage != nil ||
+		msg.MigrateToChatID != 0 ||
+		msg.MigrateFromChatID != 0 ||
+		msg.NewChatTitle != "" ||
+		len(msg.NewChatPhoto) > 0 ||
+		msg.DeleteChatPhoto ||
+		msg.MessageAutoDeleteTimerChanged != nil ||
+		msg.ProximityAlertTriggered != nil ||
+		msg.VoiceChatScheduled != nil ||
+		msg.VoiceChatStarted != nil ||
+		msg.VoiceChatEnded != nil ||
+		msg.VoiceChatParticipantsInvited != nil ||
+		msg.SuccessfulPayment != nil
+}
+
+// isCommandForBot checks if the message is a slash command intended for this bot.
+// If the command specifies a target bot (@targetBot), it only matches if targetBot equals botName.
+// If no bot is specified (/command), it matches any bot in the chat.
+func isCommandForBot(msg *tgbotapi.Message, botName string) bool {
+	if msg == nil {
+		return false
+	}
+	isCmd := msg.IsCommand()
+	cmdWithAt := msg.CommandWithAt()
+
+	// Fallback if entities were not populated (e.g. in test updates or alternative clients)
+	if !isCmd && strings.HasPrefix(msg.Text, "/") {
+		fields := strings.Fields(msg.Text)
+		if len(fields) > 0 {
+			rawCmd := strings.TrimPrefix(fields[0], "/")
+			if rawCmd != "" {
+				isCmd = true
+				cmdWithAt = rawCmd
+			}
+		}
+	}
+
+	if !isCmd {
+		return false
+	}
+
+	idx := strings.Index(cmdWithAt, "@")
+	if idx != -1 {
+		target := cmdWithAt[idx+1:]
+		return strings.EqualFold(target, botName)
+	}
+	return true
+}
+
+// isReplyToBot checks if the message is a direct reply to a message sent by this bot.
+func isReplyToBot(msg *tgbotapi.Message, botName string) bool {
+	if msg == nil || msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+		return false
+	}
+	if botName == "" {
+		return false
+	}
+	return strings.EqualFold(msg.ReplyToMessage.From.UserName, botName)
+}
+
+// isBotMentioned checks if this bot is explicitly mentioned in the message text, caption, or entities.
+func isBotMentioned(msg *tgbotapi.Message, botName string) bool {
+	if msg == nil || botName == "" {
+		return false
+	}
+
+	for _, entity := range msg.Entities {
+		if entity.Type == "text_mention" && entity.User != nil && strings.EqualFold(entity.User.UserName, botName) {
+			return true
+		}
+	}
+	for _, entity := range msg.CaptionEntities {
+		if entity.Type == "text_mention" && entity.User != nil && strings.EqualFold(entity.User.UserName, botName) {
+			return true
+		}
+	}
+
+	re := getBotMentionRegex(botName)
+	if msg.Text != "" && re.MatchString(msg.Text) {
+		return true
+	}
+	if msg.Caption != "" && re.MatchString(msg.Caption) {
+		return true
+	}
+	return false
+}
+
+// isGroupMessageAddressed checks if an incoming message in a group chat is addressed to this bot
+// via command, direct reply to the bot, or @botName mention.
+func isGroupMessageAddressed(msg *tgbotapi.Message, botName string) bool {
+	if isCommandForBot(msg, botName) {
+		return true
+	}
+	if isReplyToBot(msg, botName) {
+		return true
+	}
+	if isBotMentioned(msg, botName) {
+		return true
+	}
+	return false
+}
+
+// stripBotMention strips any occurrence of @botName (and optional trailing punctuation)
+// from the text while preserving other bots' mentions and normalizing whitespace.
+func stripBotMention(text, botName string) string {
+	if text == "" || botName == "" {
+		return text
+	}
+	re := getBotStripRegex(botName)
+	res := re.ReplaceAllString(text, " ")
+	res = spacesRegex.ReplaceAllString(res, " ")
+	return strings.TrimSpace(res)
+}
+
 // handleUpdate is the primary router for incoming Telegram messages and inline callbacks.
 func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 	defer func() {
@@ -1702,14 +1853,49 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 
 	// 2. Process Messages
 	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	// Service Message Silencer: silently drop group/supergroup/channel service events
+	if isServiceMessage(msg) {
+		return
+	}
+
+	if msg.Chat == nil {
+		return
+	}
+
+	isGroup := msg.Chat.IsGroup() || msg.Chat.IsSuperGroup()
+	if isGroup {
+		// Group Mention & Reply Guard: only process commands, @botName mentions, or direct replies
+		if !isGroupMessageAddressed(msg, botName) {
+			return
+		}
+	}
+
 	chatID := msg.Chat.ID
-	userID := msg.From.ID
+	var userID int64
+	if msg.From != nil {
+		userID = msg.From.ID
+	} else if msg.SenderChat != nil {
+		userID = msg.SenderChat.ID
+	}
 
 	payload := extractInboundPayload(msg)
+
+	// Clean bot mention token from payload text and caption in group chats
+	if isGroup {
+		payload.Text = stripBotMention(payload.Text, botName)
+		payload.Caption = stripBotMention(payload.Caption, botName)
+	}
 
 	if payload.Text == "" && payload.Caption == "" && payload.FileID == "" {
 		if msg.Contact != nil {
 			bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Contacts are not supported. Please send text, photo, document, voice message, video note, sticker, or location."))
+			return
+		}
+		if isGroup {
 			return
 		}
 		bot.Request(tgbotapi.NewMessage(chatID, "⚠️ Unsupported message format. Please send text, media, or supported files."))
