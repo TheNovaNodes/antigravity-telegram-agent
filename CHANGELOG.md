@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Group Service Event Silencer & Triad Mention & Reply Guard (Issue #368)
+- **Telegram Service Message Silencer (`handlers.go`)**:
+  - Implemented `isServiceMessage(msg *tgbotapi.Message) bool` detecting all Telegram system and service events (`GroupChatCreated`, `SuperGroupChatCreated`, `ChannelChatCreated`, `NewChatMembers`, `LeftChatMember`, `PinnedMessage`, `MigrateToChatID`, `MigrateFromChatID`, `NewChatTitle`, `NewChatPhoto`, `DeleteChatPhoto`, `MessageAutoDeleteTimerChanged`, `ProximityAlertTriggered`, `VoiceChatScheduled`, `VoiceChatStarted`, `VoiceChatEnded`, `VoiceChatParticipantsInvited`, `SuccessfulPayment`).
+  - Silently dropped service events (`return`) at the entry point of `handleUpdate` before database lookup or payload extraction, completely eliminating bogus `⚠️ Unsupported message format` warning spam when creating group chats or adding bots.
+- **Group Mention & Reply Guard for Triads (`handlers.go`)**:
+  - In group chats (`msg.Chat.IsGroup() || msg.Chat.IsSuperGroup()`), restricted message processing strictly to messages explicitly addressed to the bot:
+    1. Direct commands (`msg.IsCommand()`) that are untargeted or specifically targeted to `@botName` (`isCommandForBot`), silently ignoring commands addressed to other bots (`/command@other_bot`).
+    2. Direct replies to messages originating from this bot (`isReplyToBot`).
+    3. Explicit mentions (`@botName`) across message entities, caption entities, and text/captions (`isBotMentioned`).
+  - Silently dropped unaddressed group messages and cross-agent chatter, preventing infinite ping-pong loops and quota exhaustion in multi-agent group chats.
+  - Handled messages without explicit `From` user safely (`msg.SenderChat` fallback and nil pointer guard).
+- **Prompt Sanitization (`handlers.go`)**:
+  - Implemented `stripBotMention(text, botName string) string` excising `@botName` prefix, middle, or suffix tokens along with punctuation (`@botName, `, `@botName: `) before dispatching to `handleMessagePayload`.
+  - Preserved mentions of sister bots (e.g. `@kairos_brobot`) and email addresses (`user@botName.com`).
+  - Silently dropped empty prompt submissions containing only the bot mention in groups without triggering unsupported format diagnostics.
+- **Zero Regression Invariant**:
+  - Guaranteed that private 1-on-1 chats (`msg.Chat.IsPrivate()`) remain 100% unaffected, processing all user prompts, media, and slash commands normally.
+- **L1 Unit Test Suite (`handlers_test.go`)**:
+  - Added `TestIsServiceMessage` validating service event identification across 18 distinct event variants.
+  - Added `TestStripBotMention` verifying prompt prefix stripping, punctuation removal, case-insensitivity, and other-bot preservation.
+  - Added `TestGroupMentionAndReplyGuard` verifying zero Telegram API calls on service events, unaddressed chatter, other-bot commands, and other-bot replies, while verifying normal delivery on direct commands, mentions, bot replies, and private chats.
+
 ### Telegram Bot API Blocks AST Parser for Inbound Rich Messages (Issue #366)
 - **Recursive Blocks AST Parser (`rich_message.go`)**:
   - Implemented `parseASTBlocks` and `parseInlineText` to compile Telegram Bot API's native `rich_message.blocks` AST tree back into clean, canonical Markdown.
