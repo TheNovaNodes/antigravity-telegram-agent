@@ -164,6 +164,7 @@ func main() {
 			wg.Add(1)
 			go startBotPolling(t, allowedAdmins, &wg, stopPollingChan)
 			// Startup Staggering: introduce randomized jitter delay between bot startups to desynchronize polling phases (#370)
+			// #nosec G404 -- non-cryptographic startup jitter delay
 			time.Sleep(time.Duration(rand.IntN(200)+100) * time.Millisecond)
 		}
 	}

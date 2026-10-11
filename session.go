@@ -1641,6 +1641,7 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 									sessionMu.Unlock()
 
 									// Decorrelated Jitter before restarting session (#371)
+									// #nosec G404 -- non-cryptographic jitter delay
 									jitterDelay := time.Duration(rand.IntN(301)+100) * time.Millisecond
 									time.Sleep(jitterDelay)
 

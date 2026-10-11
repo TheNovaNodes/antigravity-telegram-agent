@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fix govulncheck CI Blocker & Upgrade golang.org/x/net (Issue #380)
+- **Dependency & Toolchain Upgrade (`go.mod`, `go.sum`)**:
+  - Upgraded `golang.org/x/net` from `v0.58.0` to `v0.60.0`, eliminating critical vulnerability `GO-2026-6617` (HPACK encoder data race in HTTP/2 server) along with `GO-2026-6612`, `GO-2026-6611`, `GO-2026-6610`, and `GO-2026-6603`.
+  - Bumped Go runtime directive from `1.25.14` to `1.26.9` in `go.mod`, remediating 9 Go standard library vulnerabilities (`net/http`, `net/textproto`, `crypto/tls`).
+  - Upgraded transitive dependency `golang.org/x/sys` to `v0.48.0`.
+- **CI Pipeline Stabilization & SAST Hardening**:
+  - Unblocked GitHub Actions CI job `Run Vulnerability Check (govulncheck)`: clean scan (`No vulnerabilities found`, exit code 0).
+  - Remediated `gosec` SAST rule `G404` (CWE-338) on non-cryptographic sleep and backoff jitter delays (`webhook_guard.go`, `session.go`, `main.go`) via `#nosec G404` annotations and `.gosec.json` exclude-rules.
+  - Restored execution of downstream pipeline stage `Run Tests with Race Detector`.
+
 ### Session Handoff Briefing Transformation in /export (Issue #373)
 - **Session Handoff Transformation (`handlers.go`)**:
   - Re-architected `/export` from a raw linear dump of `transcript.jsonl` into a structured, compact **Session Handoff Briefing** Markdown document.

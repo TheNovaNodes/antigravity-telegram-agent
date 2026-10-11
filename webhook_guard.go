@@ -161,6 +161,7 @@ func calculateJitterBackoff(consecutiveFailures int, base, maxCap time.Duration)
 	if maxSleep <= 0 {
 		return base
 	}
+	// #nosec G404 -- non-cryptographic jitter for backoff calculation (#370)
 	return time.Duration(rand.Int64N(int64(maxSleep)))
 }
 
