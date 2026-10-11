@@ -11,11 +11,13 @@ import (
 	"io"
 	_ "modernc.org/sqlite"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1030,6 +1032,96 @@ func TestAccountPool_FetchAllQuotas_Execution(t *testing.T) {
 	defer pool.mu.RUnlock()
 	if pool.accounts["acc-alpha"].Quota.LastFetchedAt.IsZero() {
 		t.Errorf("expected quota to be populated for acc-alpha")
+	}
+}
+
+func TestFetchAllQuotas_ConcurrencyLimit(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	var active int64
+	var maxConcurrent int64
+	var totalRequests int64
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&totalRequests, 1)
+		curr := atomic.AddInt64(&active, 1)
+		defer atomic.AddInt64(&active, -1)
+
+		for {
+			max := atomic.LoadInt64(&maxConcurrent)
+			if curr <= max {
+				break
+			}
+			if atomic.CompareAndSwapInt64(&maxConcurrent, max, curr) {
+				break
+			}
+		}
+
+		time.Sleep(60 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"command":{"data":{"groups":[{"name":"gemini","buckets":[{"id":"5h","window":"5h","remaining_fraction":0.9,"reset_time":"2026-09-12T15:00:00Z"}]}]}}}`))
+	}))
+	defer ts.Close()
+
+	mockAgy := filepath.Join(tmpDir, "mock_agy.sh")
+	script := fmt.Sprintf("#!/bin/sh\ncurl -s %s\n", ts.URL)
+	if err := os.WriteFile(mockAgy, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write mock script: %v", err)
+	}
+	t.Setenv("AGY_BINARY", mockAgy)
+
+	// Register 6 accounts to trigger concurrency throttling
+	for i := 1; i <= 6; i++ {
+		accID := fmt.Sprintf("acc-worker-%d", i)
+		pool.accounts[accID] = &Account{
+			ID:      accID,
+			Email:   fmt.Sprintf("worker%d@example.com", i),
+			HomeDir: filepath.Join(tmpDir, accID),
+			State:   StateActive,
+		}
+	}
+
+	pool.FetchAllQuotas()
+
+	observedMax := atomic.LoadInt64(&maxConcurrent)
+	if observedMax > int64(defaultQuotaFetchConcurrency) {
+		t.Fatalf("concurrency limit breached: observed %d concurrent requests, max allowed is %d", observedMax, defaultQuotaFetchConcurrency)
+	}
+	if observedMax == 0 {
+		t.Fatalf("expected concurrent executions, got 0")
+	}
+
+	total := atomic.LoadInt64(&totalRequests)
+	if total != 6 {
+		t.Fatalf("expected 6 total requests, got %d", total)
+	}
+
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+	for i := 1; i <= 6; i++ {
+		accID := fmt.Sprintf("acc-worker-%d", i)
+		acc, ok := pool.accounts[accID]
+		if !ok || acc.Quota.LastFetchedAt.IsZero() {
+			t.Errorf("expected quota to be populated for %s", accID)
+		}
+	}
+}
+
+func TestFetchAllQuotas_EmptyPool(t *testing.T) {
+	pool, tmpDir := setupTestAccountPool(t)
+	defer os.RemoveAll(tmpDir)
+
+	// Should return cleanly without panic or blocking on an empty pool (#372)
+	pool.FetchAllQuotas()
+}
+
+func TestFetchAccountQuotas_TimeoutAndConcurrencyDefaults(t *testing.T) {
+	if defaultQuotaFetchConcurrency != 2 {
+		t.Errorf("expected defaultQuotaFetchConcurrency to be 2, got %d", defaultQuotaFetchConcurrency)
+	}
+	if defaultAccountQuotaTimeout != 30*time.Second {
+		t.Errorf("expected defaultAccountQuotaTimeout to be 30s, got %v", defaultAccountQuotaTimeout)
 	}
 }
 
