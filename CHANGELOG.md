@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Causal Context Envelope for Replies & Persistent Composite Key (Issue #374)
+- **Causal Context Envelope (`handlers.go`)**:
+  - Implemented structured reply context enveloper when `msg.ReplyToMessage != nil` and user provides a command or follow-up prompt:
+    ```markdown
+    [Context: In reply to @<author> (MessageID: <id>)]:
+    > <quoted_snippet_up_to_1000_runes>
+
+    <user_text_without_bot_mention>
+    ```
+  - Preserved backward compatibility: if user submits an empty message on reply, directly returns quoted text as prompt.
+  - Safe author resolution: handles channel posts and anonymous admins (`msg.ReplyToMessage.From == nil`) gracefully by resolving `UserName`, `FirstName + LastName`, `SenderChat.Title`, or falling back to `"unknown"`.
+  - UTF-8 rune-safe truncation: safely slices quotes exceeding 1000 Unicode runes via `[]rune` slicing with `" ... [truncated]"` to prevent context explosion and UTF-8 byte boundary corruption.
+  - Bot mention sanitization guard: pre-strips `@botName` from user text before formatting the envelope, and skips envelope re-stripping in group chats to preserve author headers referencing the bot.
+- **Persistent Composite Key (`rich_message.go`)**:
+  - Replaced pointer-based `map[*tgbotapi.Message]string` key with persistent composite key `type chatMsgKey struct { ChatID int64; MessageID int }`.
+  - Enables incoming updates referencing earlier messages (e.g. `msg.ReplyToMessage`) to resolve rich messages across separate memory allocations.
+  - Nil chat guard: gracefully defaults `ChatID = 0` when `msg.Chat == nil` in synthetic unit test environments, completely eliminating nil pointer panics.
+- **L1 Regression & Unit Tests (`handlers_test.go`, `rich_message_test.go`)**:
+  - Added `TestExtractInboundPayload_ReplyEnvelope_WithNilFrom` verifying channel author titles and anonymous admin `"unknown"` fallbacks.
+  - Added `TestExtractInboundPayload_ReplyEnvelope_RuneTruncationAndMentions` verifying 1000-rune truncation and preservation of `@botName` in context header while stripping it from user prompt.
+  - Added `TestRichMessage_CompositeKeyAcrossUpdates` verifying composite key resolution across distinct message pointers and chat isolation.
+
 ### Concurrency Contention Mitigation & Dynamic Turn Failovers (Issue #371)
 - **Dynamic Failover Limit (`session.go`)**:
   - Replaced rigid static constant `maxTurnFailovers = 1` with dynamic pool-aware calculation `min(3, healthyCount)`, allowing multi-step failover across alternative healthy profiles before initiating Tier 2 Emergency Safe Parking.

@@ -801,10 +801,15 @@ func sendAdaptiveResponseWithWorkspace(bot *tgbotapi.BotAPI, chatID int64, activ
 // Inbound Rich Message Interception & Ingestion Pipeline (Issue #362)
 // ---------------------------------------------------------------------------
 
+type chatMsgKey struct {
+	ChatID    int64
+	MessageID int
+}
+
 var (
 	attachedRichMu     sync.RWMutex
-	attachedRich       = make(map[*tgbotapi.Message]string)
-	attachedRichKeys   []*tgbotapi.Message
+	attachedRich       = make(map[chatMsgKey]string)
+	attachedRichKeys   []chatMsgKey
 	maxAttachedRichCap = 2048
 )
 
@@ -817,18 +822,24 @@ func AttachRichMessage(msg *tgbotapi.Message, text string) {
 	if msg.Text == "" {
 		msg.Text = text
 	}
+	var chatID int64
+	if msg.Chat != nil {
+		chatID = msg.Chat.ID
+	}
+	key := chatMsgKey{ChatID: chatID, MessageID: msg.MessageID}
+
 	attachedRichMu.Lock()
 	defer attachedRichMu.Unlock()
 
-	if _, exists := attachedRich[msg]; !exists {
+	if _, exists := attachedRich[key]; !exists {
 		if len(attachedRichKeys) >= maxAttachedRichCap {
 			oldest := attachedRichKeys[0]
 			attachedRichKeys = attachedRichKeys[1:]
 			delete(attachedRich, oldest)
 		}
-		attachedRichKeys = append(attachedRichKeys, msg)
+		attachedRichKeys = append(attachedRichKeys, key)
 	}
-	attachedRich[msg] = text
+	attachedRich[key] = text
 }
 
 // GetAttachedRichMessage retrieves the attached rich message text for a Message pointer.
@@ -836,9 +847,15 @@ func GetAttachedRichMessage(msg *tgbotapi.Message) (string, bool) {
 	if msg == nil {
 		return "", false
 	}
+	var chatID int64
+	if msg.Chat != nil {
+		chatID = msg.Chat.ID
+	}
+	key := chatMsgKey{ChatID: chatID, MessageID: msg.MessageID}
+
 	attachedRichMu.RLock()
 	defer attachedRichMu.RUnlock()
-	val, ok := attachedRich[msg]
+	val, ok := attachedRich[key]
 	if ok && val != "" {
 		return val, true
 	}
