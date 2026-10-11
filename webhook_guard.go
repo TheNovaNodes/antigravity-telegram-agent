@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -129,13 +130,48 @@ func sendWebhookConflictAlert(bot *tgbotapi.BotAPI, botName, parasiteURL string,
 	}
 }
 
+// Default backoff parameters for getUpdates recovery (#370)
+const (
+	defaultGetUpdatesBackoffBase = 1 * time.Second
+	defaultGetUpdatesBackoffCap  = 30 * time.Second
+)
+
+// calculateJitterBackoff computes exponential backoff with full jitter (AWS decorrelated jitter algorithm):
+// sleep = rand(0, min(cap, base * 2^consecutiveFailures))
+// It is thread-safe via math/rand/v2 and prevents integer overflow on high consecutiveFailures counts (#370).
+func calculateJitterBackoff(consecutiveFailures int, base, maxCap time.Duration) time.Duration {
+	if base <= 0 {
+		base = defaultGetUpdatesBackoffBase
+	}
+	if maxCap <= 0 {
+		maxCap = defaultGetUpdatesBackoffCap
+	}
+	shift := consecutiveFailures
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 10 {
+		shift = 10
+	}
+	multiplier := int64(1) << shift
+	maxSleep := time.Duration(multiplier) * base
+	if maxSleep > maxCap || maxSleep < 0 {
+		maxSleep = maxCap
+	}
+	if maxSleep <= 0 {
+		return base
+	}
+	return time.Duration(rand.Int64N(int64(maxSleep)))
+}
+
 // getUpdatesWithRecovery creates an UpdatesChannel that wraps getUpdates with defensive
-// 409 Conflict auto-recovery, automatic deleteWebhook self-healing, and admin alerts (#295).
+// 409 Conflict auto-recovery, automatic deleteWebhook self-healing, and admin alerts (#295, #370).
 func getUpdatesWithRecovery(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig, allowedAdmins map[int64]bool, stopChan <-chan struct{}) tgbotapi.UpdatesChannel {
 	ch := make(chan tgbotapi.Update, bot.Buffer)
 
 	go func() {
 		defer close(ch)
+		consecutiveFailures := 0
 		for {
 			select {
 			case <-stopChan:
@@ -146,6 +182,7 @@ func getUpdatesWithRecovery(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig, 
 			updates, err := getUpdatesWithRichMessage(bot, config)
 			if err != nil {
 				if isWebhookConflictError(err) {
+					consecutiveFailures = 0
 					_, recErr := recoverFromWebhookConflict(bot, allowedAdmins)
 					if recErr != nil {
 						log.Printf("[Bot %s] Auto-recovery failed: %v, retrying in 2 seconds...", bot.Self.UserName, recErr)
@@ -165,14 +202,18 @@ func getUpdatesWithRecovery(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig, 
 					continue
 				}
 
-				log.Printf("[Bot %s] Failed to get updates: %v, retrying in 3 seconds...", bot.Self.UserName, err)
+				sleepDuration := calculateJitterBackoff(consecutiveFailures, defaultGetUpdatesBackoffBase, defaultGetUpdatesBackoffCap)
+				consecutiveFailures++
+				log.Printf("[Bot %s] Failed to get updates (failure #%d): %v, retrying in %v (exponential backoff with full jitter)...", bot.Self.UserName, consecutiveFailures, err, sleepDuration)
 				select {
 				case <-stopChan:
 					return
-				case <-time.After(3 * time.Second):
+				case <-time.After(sleepDuration):
 				}
 				continue
 			}
+
+			consecutiveFailures = 0
 
 			for _, update := range updates {
 				if update.UpdateID >= config.Offset {

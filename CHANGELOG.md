@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Webhook Guard Exponential Backoff with Full Jitter & Polling Headroom Calibration (Issue #370)
+- **Thundering Herd Elimination & Exponential Backoff (`webhook_guard.go`)**:
+  - Replaced static 3-second retry timer in `getUpdatesWithRecovery` with AWS Full Jitter exponential backoff (`calculateJitterBackoff`).
+  - Base delay: `base = 1s`, ceiling: `cap = 30s`, algorithm: `sleep = rand(0, min(cap, base * 2^consecutiveFailures))`.
+  - Implemented thread-safe random number generation using Go 1.25 `math/rand/v2` with bit-shift overflow protection.
+  - Reset `consecutiveFailures` counter to 0 immediately upon successful `getUpdates` batch receipt or conflict auto-recovery.
+- **Polling Headroom Calibration & Startup Staggering (`main.go`)**:
+  - Calibrated long-polling parameters: set `UpdateConfig.Timeout = 50` and `bot.Client.Timeout = 75s`, guaranteeing a resilient 25-second margin against upstream timeouts and TLS negotiation latency.
+  - Introduced startup staggering with randomized jitter (100–300ms) between bot initialization loops, desynchronizing long-polling cycles across multi-bot clusters.
+- **Resilient Test Baseline & Canonical Environment Template**:
+  - Sanitized `TestSynthesizeVoice_HybridExecution` in `tts_test.go` to skip on upstream network/edge-tts degradation (`t.Skipf`).
+  - Created canonical `.env.example` in repo root documenting all configuration variables, path locations, TTS engines, and worker thresholds.
+- **L1 Unit & Race Test Suite (`webhook_guard_test.go`)**:
+  - Added `TestCalculateJitterBackoff_ExponentialGrowthAndCap` validating exponential bounds, cap enforcement, and overflow resistance.
+  - Added `TestCalculateJitterBackoff_Entropy` verifying distinct values and pseudo-random entropy across iterations.
+  - Added `TestCalculateJitterBackoff_CustomParameters` testing boundary behaviors with custom base/cap.
+  - Added `TestGetUpdatesRecovery_JitterBackoff` verifying recovery under simulated network failure.
+  - Added `TestGetUpdatesRecovery_InterruptionDuringBackoff` verifying immediate termination on `stopChan` close.
+
 ### Group Service Event Silencer & Triad Mention & Reply Guard (Issue #368)
 - **Telegram Service Message Silencer (`handlers.go`)**:
   - Implemented `isServiceMessage(msg *tgbotapi.Message) bool` detecting all Telegram system and service events (`GroupChatCreated`, `SuperGroupChatCreated`, `ChannelChatCreated`, `NewChatMembers`, `LeftChatMember`, `PinnedMessage`, `MigrateToChatID`, `MigrateFromChatID`, `NewChatTitle`, `NewChatPhoto`, `DeleteChatPhoto`, `MessageAutoDeleteTimerChanged`, `ProximityAlertTriggered`, `VoiceChatScheduled`, `VoiceChatStarted`, `VoiceChatEnded`, `VoiceChatParticipantsInvited`, `SuccessfulPayment`).

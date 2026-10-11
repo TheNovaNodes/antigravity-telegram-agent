@@ -428,6 +428,16 @@ flowchart TD
 - **Comprehensive UI Event Ingestion**: Explicitly registers `message`, `edited_message`, `channel_post`, `edited_channel_post`, and `callback_query`.
 - **Responsive Interactive Menus**: Guarantees that interactive inline button clicks (`cmd:stop`, `cmd:retry`, account switching keyboards) are never dropped by the Telegram gateway.
 
+### 4. Thundering Herd Prevention & Exponential Backoff with Full Jitter (#370):
+- **Problem Statement (Transit Degradation & Stampede)**: During transit link packet loss or ISP network timeouts, all bots in a multi-bot cluster polling Telegram concurrently could fail simultaneously. A fixed retry timer (e.g. 3s) caused synchronized bursts of parallel HTTP POST requests ("Thundering Herd") from the same host, exhausting HTTP client connection pools and starving interactive streaming edits (`editMessageText`).
+- **AWS Decorrelated Full Jitter**: Replaced static retry timers with thread-safe exponential backoff and Full Jitter (`calculateJitterBackoff` via `math/rand/v2` in [`webhook_guard.go`](../webhook_guard.go)):
+  $$\text{sleep} = \text{rand}\Big(0, \min\big(\text{cap}, \text{base} \cdot 2^{\text{consecutiveFailures}}\big)\Big)$$
+  where $\text{base} = 1\text{s}$, $\text{cap} = 30\text{s}$.
+- **Automatic Failure Reset**: Counter resets to 0 immediately upon any successful update batch receipt (`err == nil`) or webhook conflict resolution.
+- **Headroom Calibration & Startup Staggering**:
+  - `bot.Client.Timeout = 75s` paired with `u.Timeout = 50s`, guaranteeing a resilient 25s headroom for network latency, DNS resolution, TLS handshakes, and jitter.
+  - Startup staggering: sequential bot initialization loop introduces a randomized 100–300ms offset between instances to desynchronize polling phases across the cluster.
+
 ---
 
 ## 12. Memory-Aware Autonomous GC & OOM Prevention Architecture
