@@ -462,6 +462,27 @@ func (p *AccountPool) GetAccount(id string) (*Account, error) {
 	return &cp, nil
 }
 
+// CountHealthyAccounts returns the count of accounts eligible for turns (Active or InUse and not quota-exhausted).
+func (p *AccountPool) CountHealthyAccounts() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	now := time.Now()
+	count := 0
+	for _, acc := range p.accounts {
+		if acc.State == StateFrozen || acc.State == StateCooldown {
+			continue
+		}
+		if acc.State == StateActive || acc.State == StateInUse {
+			isDisabled := !acc.Quota.LastFetchedAt.IsZero() && (acc.Quota.Gemini5h.Disabled || acc.Quota.GeminiWeekly.Disabled) && (acc.Quota.GeminiWeekly.ResetTime.IsZero() || now.Before(acc.Quota.GeminiWeekly.ResetTime))
+			if !isDisabled {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 func poolChatKey(chatID int64, botNames ...string) string {
 	if len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
 		return fmt.Sprintf("%s:%d", strings.TrimSpace(botNames[0]), chatID)
@@ -670,6 +691,13 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 		disJ := !candidates[j].Quota.LastFetchedAt.IsZero() && (candidates[j].Quota.Gemini5h.Disabled || candidates[j].Quota.GeminiWeekly.Disabled)
 		if disI != disJ {
 			return !disI
+		}
+
+		// Strict priority for completely free accounts (ActiveTurns == 0) over busy ones (ActiveTurns > 0) (#371)
+		freeI := candidates[i].ActiveTurns == 0
+		freeJ := candidates[j].ActiveTurns == 0
+		if freeI != freeJ {
+			return freeI
 		}
 
 		// Least active turns first

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1574,9 +1575,15 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 						currentAccID := s.AccountID
 						s.mu.Unlock()
 
-						const maxTurnFailovers = 1
+						maxTurnFailovers := 3
+						if GlobalAccountPool != nil {
+							healthyCount := GlobalAccountPool.CountHealthyAccounts()
+							if healthyCount > 0 && healthyCount < maxTurnFailovers {
+								maxTurnFailovers = healthyCount
+							}
+						}
 
-						// Multi-Account Pool Auto-Failover (#216, #228, #236)
+						// Multi-Account Pool Auto-Failover (#216, #228, #236, #371)
 						rotated := false
 						if turnFailovers < maxTurnFailovers && GlobalAccountPool != nil && currentAccID != "" {
 							cooldownDuration := 1 * time.Minute
@@ -1604,7 +1611,6 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 								if nextAcc, err := GlobalAccountPool.AcquireAccount(chatID, botName); err == nil && nextAcc != nil {
 									log.Printf("[AccountPool] Auto-rotating bot %s chat %d from %s to %s (turn failover %d/%d)",
 										botName, chatID, currentAccID, nextAcc.ID, turnFailovers+1, maxTurnFailovers)
-									rotated = true
 
 									if botAPI != nil && activeID != 0 {
 										rotateNotice := fmt.Sprintf("⚠️ <b>[429 Quota Exceeded]</b> Account <code>%s</code> reached quota limits. Rotating to <code>%s</code> (%s). Session context preserved. Resuming...",
@@ -1634,8 +1640,15 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 									globalSessions[sessKey] = s
 									sessionMu.Unlock()
 
-									time.Sleep(500 * time.Millisecond)
-									if err := s.start(); err == nil {
+									// Decorrelated Jitter before restarting session (#371)
+									jitterDelay := time.Duration(rand.IntN(301)+100) * time.Millisecond
+									time.Sleep(jitterDelay)
+
+									if err := s.start(); err != nil {
+										log.Printf("[AccountPool] Failed to start rotated session on %s: %v", nextAcc.ID, err)
+										GlobalAccountPool.ReleaseAccount(nextAcc.ID)
+									} else {
+										rotated = true
 										resumePrompt := "The previous turn was interrupted by a quota limit on the previous profile. Please resume and complete the task seamlessly."
 										payload := map[string]interface{}{
 											"event": "user",
