@@ -91,56 +91,6 @@ func sanitizeFilename(s string) string {
 	return strings.Trim(string(runes), "_-")
 }
 
-// formatToolCalls formats tool execution steps concisely without dumping raw multiline JSON.
-func formatToolCalls(tcs []interface{}) string {
-	if len(tcs) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for _, tcRaw := range tcs {
-		tc, ok := tcRaw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, _ := tc["name"].(string)
-		if name == "" {
-			continue
-		}
-		summary, _ := tc["toolSummary"].(string)
-		action, _ := tc["toolAction"].(string)
-		detail := strings.TrimSpace(summary)
-		if detail == "" {
-			detail = strings.TrimSpace(action)
-		}
-		if detail == "" {
-			if argJSON, ok := tc["argumentsJson"].(string); ok && len(argJSON) > 0 {
-				clean := strings.ReplaceAll(strings.ReplaceAll(argJSON, "\n", " "), "\r", "")
-				runes := []rune(clean)
-				if len(runes) > 80 {
-					clean = string(runes[:77]) + "..."
-				}
-				detail = clean
-			} else if argsMap, ok := tc["args"].(map[string]interface{}); ok && len(argsMap) > 0 {
-				if b, err := json.Marshal(argsMap); err == nil {
-					clean := string(b)
-					runes := []rune(clean)
-					if len(runes) > 80 {
-						clean = string(runes[:77]) + "..."
-					}
-					detail = clean
-				}
-			}
-		}
-
-		if detail != "" {
-			sb.WriteString(fmt.Sprintf("🛠️ *Tool:* `%s` — %s\n", name, detail))
-		} else {
-			sb.WriteString(fmt.Sprintf("🛠️ *Tool:* `%s`\n", name))
-		}
-	}
-	return sb.String()
-}
-
 const maxQuestionOptions = 100
 
 var (
@@ -526,7 +476,7 @@ func handleHelpCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 }
 
-// handleExportCommand extracts the conversation steps from transcript.jsonl and sends a formatted Markdown file to the chat.
+// handleExportCommand extracts conversation turns from transcript.jsonl and generates a compact Session Handoff Briefing Markdown document.
 func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName string, user User) {
 	if !isValidSessionID(user.SessionID) {
 		if bot != nil && chatID != 0 {
@@ -553,16 +503,47 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 		sessionTitle = string(bytes.TrimSpace(b))
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# 🛸 Agent Session Transcript: %s\n\n", sessionTitle))
-	sb.WriteString(fmt.Sprintf("- **Agent:** `@%s`\n", botName))
-	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", user.SessionID))
-	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", user.Model))
-	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", user.Workspace))
-	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n\n", time.Now().UTC().Format(time.RFC3339)))
-	sb.WriteString("---\n\n")
+	exportDir := filepath.Join(getAgentsDir(), botName, "scratch", "exports")
+	_ = os.MkdirAll(exportDir, 0700)
+	safeFilename := fmt.Sprintf("session_%s.md", safePrefix(user.SessionID, 8))
+	zipFilename := fmt.Sprintf("artifacts_%s.zip", safePrefix(user.SessionID, 8))
+	if slug := sanitizeFilename(sessionTitle); slug != "" {
+		safeFilename = fmt.Sprintf("session_%s_%s.md", slug, safePrefix(user.SessionID, 8))
+		zipFilename = fmt.Sprintf("artifacts_%s_%s.zip", slug, safePrefix(user.SessionID, 8))
+	}
+	exportPath := filepath.Join(exportDir, safeFilename)
+
+	// Harvest Markdown engineering artifacts if any exist (#247, #373)
+	var artifactZipPath string
+	var artifactBreakdown string
+	var artifactCount int
+	harvestReport, hErr := harvester.HarvestSession(user.SessionID)
+	if hErr == nil && harvestReport != nil && len(harvestReport.Artifacts) > 0 {
+		harvester.RecordReport(harvestReport)
+		artifactCount = len(harvestReport.Artifacts)
+		artifactBreakdown = harvester.FormatBreakdown(harvestReport.Artifacts)
+
+		if zPath, zErr := harvester.CreateArtifactsBundleInDir(exportDir, zipFilename, harvestReport.Artifacts); zErr == nil {
+			artifactZipPath = zPath
+		}
+	}
+
+	type dialogueTurn struct {
+		UserText      string
+		UserTime      time.Time
+		AssistantText string
+		AssistantTime time.Time
+	}
+
+	var turns []*dialogueTurn
+	var firstUserPrompt string
+	var modifiedFiles []string
+	seenModified := make(map[string]bool)
 
 	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 4*1024*1024)
+
 	stepNum := 0
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -570,52 +551,104 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 			continue
 		}
 		var step map[string]interface{}
-		if json.Unmarshal([]byte(line), &step) == nil {
-			source, _ := step["source"].(string)
-			stepType, _ := step["type"].(string)
+		if err := json.Unmarshal([]byte(line), &step); err != nil {
+			continue
+		}
 
-			// Filter out raw tool output dumps (GENERIC/TOOL_OUTPUT) to prevent log bloat
-			if (source == "MODEL" && stepType == "GENERIC") || source == "TOOL" || stepType == "TOOL_OUTPUT" {
-				continue
-			}
+		source, _ := step["source"].(string)
+		stepType, _ := step["type"].(string)
 
-			stepNum++
-			createdAt, _ := step["created_at"].(string)
-			content, _ := step["content"].(string)
+		// Filter out raw tool output dumps and tool events to prevent log bloat
+		if (source == "MODEL" && stepType == "GENERIC") || source == "TOOL" || stepType == "TOOL_OUTPUT" {
+			continue
+		}
 
-			roleHeader := "### 🤖 Assistant"
-			if source == "USER_EXPLICIT" || stepType == "USER_INPUT" {
-				roleHeader = "### 👤 User"
-				start := strings.Index(content, "<USER_REQUEST>")
-				end := strings.Index(content, "</USER_REQUEST>")
-				if start >= 0 && end > start {
-					content = strings.TrimSpace(content[start+14 : end])
+		stepNum++
+		createdAt, _ := step["created_at"].(string)
+		var stepTime time.Time
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			stepTime = t
+		}
+
+		// Track modified files from tool calls (write_to_file / replace_file_content)
+		if tcs, ok := step["tool_calls"].([]interface{}); ok {
+			for _, tcRaw := range tcs {
+				tc, ok := tcRaw.(map[string]interface{})
+				if !ok {
+					continue
 				}
-			} else if source == "SYSTEM" {
-				roleHeader = "### ⚙️ System"
+				toolName, _ := tc["name"].(string)
+				if toolName == "write_to_file" || toolName == "replace_file_content" {
+					var target string
+					if args, ok := tc["args"].(map[string]interface{}); ok {
+						target, _ = args["TargetFile"].(string)
+						if target == "" {
+							target, _ = args["target_file"].(string)
+						}
+					}
+					if target == "" {
+						if args, ok := tc["arguments"].(map[string]interface{}); ok {
+							target, _ = args["TargetFile"].(string)
+							if target == "" {
+								target, _ = args["target_file"].(string)
+							}
+						}
+					}
+					if target == "" {
+						if argJSON, ok := tc["argumentsJson"].(string); ok && len(argJSON) > 0 {
+							var parsed map[string]interface{}
+							if json.Unmarshal([]byte(argJSON), &parsed) == nil {
+								target, _ = parsed["TargetFile"].(string)
+								if target == "" {
+									target, _ = parsed["target_file"].(string)
+								}
+							}
+						}
+					}
+					target = strings.Trim(strings.TrimSpace(target), "\"")
+					if target != "" && !seenModified[target] {
+						seenModified[target] = true
+						modifiedFiles = append(modifiedFiles, target)
+					}
+				}
+			}
+		}
+
+		content, _ := step["content"].(string)
+
+		// 1. User Turn
+		if source == "USER_EXPLICIT" || stepType == "USER_INPUT" {
+			start := strings.Index(content, "<USER_REQUEST>")
+			end := strings.Index(content, "</USER_REQUEST>")
+			if start >= 0 && end > start {
+				content = strings.TrimSpace(content[start+14 : end])
+			}
+			userText := strings.TrimSpace(content)
+			if firstUserPrompt == "" && userText != "" {
+				firstUserPrompt = userText
 			}
 
-			timeStr := ""
-			if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
-				timeStr = fmt.Sprintf(" (%s)", t.Format("2006-01-02 15:04:05 UTC"))
-			}
+			turns = append(turns, &dialogueTurn{
+				UserText: userText,
+				UserTime: stepTime,
+			})
+			continue
+		}
 
-			toolCallsStr := ""
-			if tcs, ok := step["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
-				toolCallsStr = formatToolCalls(tcs)
-			}
-
-			trimmedContent := strings.TrimSpace(content)
-			if trimmedContent == "" && toolCallsStr == "" {
-				continue
-			}
-
-			sb.WriteString(fmt.Sprintf("%s%s\n\n", roleHeader, timeStr))
-			if trimmedContent != "" {
-				sb.WriteString(trimmedContent + "\n\n")
-			}
-			if toolCallsStr != "" {
-				sb.WriteString(toolCallsStr + "\n")
+		// 2. Assistant Turn (consolidate into a single final response per user turn)
+		if source == "MODEL" || stepType == "PLANNER_RESPONSE" {
+			trimmed := strings.TrimSpace(content)
+			if trimmed != "" {
+				if len(turns) == 0 {
+					turns = append(turns, &dialogueTurn{
+						AssistantText: trimmed,
+						AssistantTime: stepTime,
+					})
+				} else {
+					curr := turns[len(turns)-1]
+					curr.AssistantText = trimmed
+					curr.AssistantTime = stepTime
+				}
 			}
 		}
 	}
@@ -627,15 +660,91 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 		return
 	}
 
-	exportDir := filepath.Join(getAgentsDir(), botName, "scratch", "exports")
-	_ = os.MkdirAll(exportDir, 0700)
-	safeFilename := fmt.Sprintf("session_%s.md", safePrefix(user.SessionID, 8))
-	zipFilename := fmt.Sprintf("artifacts_%s.zip", safePrefix(user.SessionID, 8))
-	if slug := sanitizeFilename(sessionTitle); slug != "" {
-		safeFilename = fmt.Sprintf("session_%s_%s.md", slug, safePrefix(user.SessionID, 8))
-		zipFilename = fmt.Sprintf("artifacts_%s_%s.zip", slug, safePrefix(user.SessionID, 8))
+	// Build Session Handoff Briefing Markdown (#373)
+	var sb strings.Builder
+
+	// 1. Header & Metadata
+	sb.WriteString(fmt.Sprintf("# 🛸 Session Handoff: %s\n\n", sessionTitle))
+	sb.WriteString(fmt.Sprintf("- **Agent:** @%s\n", botName))
+	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", user.SessionID))
+	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", user.Workspace))
+	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", user.Model))
+	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	sb.WriteString("---\n\n")
+
+	// 2. Executive Summary
+	sb.WriteString("## 🎯 Executive Summary\n\n")
+	executiveSummary := sessionTitle
+	if executiveSummary == "" || executiveSummary == "(untitled session)" {
+		if firstUserPrompt != "" {
+			executiveSummary = firstUserPrompt
+		} else {
+			executiveSummary = "No executive summary available."
+		}
 	}
-	exportPath := filepath.Join(exportDir, safeFilename)
+	sb.WriteString(executiveSummary + "\n\n")
+	sb.WriteString("---\n\n")
+
+	// 3. Key Deliverables & Modified Files
+	sb.WriteString("## 📦 Key Deliverables & Modified Files\n\n")
+	hasDeliverables := false
+	if harvestReport != nil && len(harvestReport.Artifacts) > 0 {
+		hasDeliverables = true
+		sb.WriteString(fmt.Sprintf("### Artifacts (%d)\n", len(harvestReport.Artifacts)))
+		for _, art := range harvestReport.Artifacts {
+			kind := string(art.Kind)
+			if kind == "" {
+				kind = "DOC"
+			}
+			title := art.Title
+			if title == "" {
+				title = filepath.Base(art.Path)
+			}
+			sb.WriteString(fmt.Sprintf("- **[%s] %s** (`%s`)\n", kind, title, art.Path))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(modifiedFiles) > 0 {
+		hasDeliverables = true
+		sb.WriteString(fmt.Sprintf("### Modified Files (%d)\n", len(modifiedFiles)))
+		for _, f := range modifiedFiles {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", f))
+		}
+		sb.WriteString("\n")
+	}
+
+	if !hasDeliverables {
+		sb.WriteString("_No artifacts or modified files recorded in this session._\n\n")
+	}
+	sb.WriteString("---\n\n")
+
+	// 4. Dialogue Turn Digest
+	sb.WriteString("## 💬 Dialogue Turn Digest\n\n")
+	turnCount := 0
+	for _, turn := range turns {
+		if turn.UserText == "" && turn.AssistantText == "" {
+			continue
+		}
+		turnCount++
+		if turn.UserText != "" {
+			timeStr := ""
+			if !turn.UserTime.IsZero() {
+				timeStr = fmt.Sprintf(" (%s)", turn.UserTime.Format("2006-01-02 15:04:05 UTC"))
+			}
+			sb.WriteString(fmt.Sprintf("### 👤 User%s\n\n%s\n\n", timeStr, turn.UserText))
+		}
+		if turn.AssistantText != "" {
+			timeStr := ""
+			if !turn.AssistantTime.IsZero() {
+				timeStr = fmt.Sprintf(" (%s)", turn.AssistantTime.Format("2006-01-02 15:04:05 UTC"))
+			}
+			sb.WriteString(fmt.Sprintf("### 🤖 Assistant%s\n\n%s\n\n", timeStr, turn.AssistantText))
+		}
+	}
+	if turnCount == 0 {
+		sb.WriteString("_No dialogue turns recorded in this session._\n\n")
+	}
 
 	if err := os.WriteFile(exportPath, []byte(sb.String()), 0600); err != nil {
 		if bot != nil && chatID != 0 {
@@ -644,28 +753,13 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID, userID int64, botName str
 		return
 	}
 
-	// Harvest Markdown engineering artifacts if any exist (#247)
-	var artifactZipPath string
-	var artifactBreakdown string
-	var artifactCount int
-
-	if report, err := harvester.HarvestSession(user.SessionID); err == nil && report != nil && len(report.Artifacts) > 0 {
-		harvester.RecordReport(report)
-		artifactCount = len(report.Artifacts)
-		artifactBreakdown = harvester.FormatBreakdown(report.Artifacts)
-
-		if zPath, zErr := harvester.CreateArtifactsBundleInDir(exportDir, zipFilename, report.Artifacts); zErr == nil {
-			artifactZipPath = zPath
-		}
-	}
-
 	if bot != nil && chatID != 0 {
 		escapedTitle := escapeMarkdown(sessionTitle)
 		doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(exportPath))
 		if artifactCount > 0 {
-			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d\n📦 *Extracted Artifacts:* %d (%s)", escapedTitle, stepNum, artifactCount, artifactBreakdown)
+			doc.Caption = fmt.Sprintf("📄 *Session Handoff Briefing*\n🏷 *Title:* %s\n👣 *Steps:* %d\n📦 *Extracted Artifacts:* %d (%s)", escapedTitle, stepNum, artifactCount, artifactBreakdown)
 		} else {
-			doc.Caption = fmt.Sprintf("📄 *Session Transcript Export*\n🏷 *Title:* %s\n👣 *Steps:* %d", escapedTitle, stepNum)
+			doc.Caption = fmt.Sprintf("📄 *Session Handoff Briefing*\n🏷 *Title:* %s\n👣 *Steps:* %d", escapedTitle, stepNum)
 		}
 		doc.ParseMode = "Markdown"
 		bot.Send(doc)
