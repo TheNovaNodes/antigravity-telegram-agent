@@ -2474,62 +2474,6 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
-func TestFormatToolCalls(t *testing.T) {
-	// 1. Empty calls
-	if got := formatToolCalls(nil); got != "" {
-		t.Errorf("Expected empty string for nil tool calls, got %q", got)
-	}
-
-	// 2. Summary present
-	tcs1 := []interface{}{
-		map[string]interface{}{
-			"name":        "view_file",
-			"toolSummary": "Inspect main configuration",
-		},
-	}
-	got1 := formatToolCalls(tcs1)
-	if !strings.Contains(got1, "🛠️ *Tool:* `view_file` — Inspect main configuration") {
-		t.Errorf("Unexpected format with summary: %s", got1)
-	}
-
-	// 3. Action fallback
-	tcs2 := []interface{}{
-		map[string]interface{}{
-			"name":       "run_command",
-			"toolAction": "Running go test",
-		},
-	}
-	got2 := formatToolCalls(tcs2)
-	if !strings.Contains(got2, "🛠️ *Tool:* `run_command` — Running go test") {
-		t.Errorf("Unexpected format with action: %s", got2)
-	}
-
-	// 4. Args fallback
-	tcs3 := []interface{}{
-		map[string]interface{}{
-			"name": "list_dir",
-			"args": map[string]interface{}{"path": "/root"},
-		},
-	}
-	got3 := formatToolCalls(tcs3)
-	if !strings.Contains(got3, "🛠️ *Tool:* `list_dir` —") {
-		t.Errorf("Unexpected format with args: %s", got3)
-	}
-
-	// 5. Huge argumentsJson truncated
-	hugeJSON := fmt.Sprintf(`{"code":"%s"}`, strings.Repeat("A", 200))
-	tcs4 := []interface{}{
-		map[string]interface{}{
-			"name":          "write_to_file",
-			"argumentsJson": hugeJSON,
-		},
-	}
-	got4 := formatToolCalls(tcs4)
-	if !strings.Contains(got4, "...") || len(got4) > 150 {
-		t.Errorf("Expected truncation for huge argumentsJson, got length %d: %s", len(got4), got4)
-	}
-}
-
 func TestHandleExportCommand_CleanFormattingAndFilename(t *testing.T) {
 	tempDir := t.TempDir()
 	mockAgents := filepath.Join(tempDir, "agents")
@@ -2544,10 +2488,10 @@ func TestHandleExportCommand_CleanFormattingAndFilename(t *testing.T) {
 	sessionID := "export-clean-12345"
 	sessionDir := filepath.Join(mockBrain, sessionID)
 	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
-	os.MkdirAll(logsDir, 0755)
+	_ = os.MkdirAll(logsDir, 0755)
 
 	// Set session title
-	os.WriteFile(filepath.Join(sessionDir, ".title"), []byte("Refactor Engine Logic"), 0644)
+	_ = os.WriteFile(filepath.Join(sessionDir, ".title"), []byte("Refactor Engine Logic"), 0644)
 
 	// Create transcript with mixed events
 	fullJSONL := `{"step":1,"created_at":"2026-09-05T10:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nImplement clean export\n</USER_REQUEST>"}
@@ -2555,7 +2499,7 @@ func TestHandleExportCommand_CleanFormattingAndFilename(t *testing.T) {
 {"step":3,"created_at":"2026-09-05T10:00:10Z","source":"MODEL","type":"GENERIC","content":"MASSIVE_RAW_TOOL_DUMP_OUTPUT_SHOULD_BE_FILTERED"}
 {"step":4,"created_at":"2026-09-05T10:00:15Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Export refactoring completed successfully."}
 `
-	os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(fullJSONL), 0644)
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(fullJSONL), 0644)
 
 	user := User{
 		ID:        999,
@@ -2580,12 +2524,139 @@ func TestHandleExportCommand_CleanFormattingAndFilename(t *testing.T) {
 		t.Errorf("Export file contained raw GENERIC tool output dump!")
 	}
 
-	if !strings.Contains(content, "🛠️ *Tool:* `replace_file_content` — Apply clean export format") {
-		t.Errorf("Export file missing cleanly formatted tool call, got: %s", content)
+	if strings.Contains(content, "🛠️ *Tool:*") {
+		t.Errorf("Export file contained tool call string, expected clean handoff without tool noise: %s", content)
+	}
+
+	if strings.Contains(content, "Starting implementation...") {
+		t.Errorf("Export file contained intermediate assistant step, expected only final response")
 	}
 
 	if !strings.Contains(content, "Implement clean export") || !strings.Contains(content, "Export refactoring completed successfully.") {
 		t.Errorf("Export file missing user request or assistant response, got: %s", content)
+	}
+
+	if !strings.Contains(content, "# 🛸 Session Handoff: Refactor Engine Logic") {
+		t.Errorf("Export file missing Session Handoff header, got: %s", content)
+	}
+
+	if !strings.Contains(content, "## 🎯 Executive Summary") || !strings.Contains(content, "## 📦 Key Deliverables & Modified Files") || !strings.Contains(content, "## 💬 Dialogue Turn Digest") {
+		t.Errorf("Export file missing handoff briefing sections, got: %s", content)
+	}
+}
+
+func TestHandleExportCommand_CompactHandoff(t *testing.T) {
+	tempDir := t.TempDir()
+	mockAgents := filepath.Join(tempDir, "agents")
+	mockBrain := filepath.Join(tempDir, "brain")
+	t.Setenv("AGENTS_DIR", mockAgents)
+	t.Setenv("BRAIN_DIR", mockBrain)
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	sessionID := "compact-handoff-789"
+	sessionDir := filepath.Join(mockBrain, sessionID)
+	logsDir := filepath.Join(sessionDir, ".system_generated", "logs")
+	_ = os.MkdirAll(logsDir, 0755)
+
+	// Set session title
+	_ = os.WriteFile(filepath.Join(sessionDir, ".title"), []byte("Compact Handoff Architecture"), 0644)
+
+	// Build a 12-step realistic session with lots of tool calls and intermediate steps
+	steps := []string{
+		`{"step":1,"created_at":"2026-10-11T12:00:00Z","source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nRefactor export to compact handoff\n</USER_REQUEST>"}`,
+		`{"step":2,"created_at":"2026-10-11T12:00:05Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Inspecting handlers.go...","tool_calls":[{"name":"view_file","args":{"path":"handlers.go"}}]}`,
+		`{"step":3,"created_at":"2026-10-11T12:00:10Z","source":"TOOL","type":"TOOL_OUTPUT","content":"handlers.go file content line 1 to 2000"}`,
+		`{"step":4,"created_at":"2026-10-11T12:00:15Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Checking git status...","tool_calls":[{"name":"run_command","args":{"command":"git status"}}]}`,
+		`{"step":5,"created_at":"2026-10-11T12:00:20Z","source":"TOOL","type":"TOOL_OUTPUT","content":"On branch master, nothing to commit"}`,
+		`{"step":6,"created_at":"2026-10-11T12:00:25Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Applying code modifications...","tool_calls":[{"name":"replace_file_content","args":{"TargetFile":"/root/projects/TheNovaNodes/antigravity-telegram-agent/handlers.go"}}]}`,
+		`{"step":7,"created_at":"2026-10-11T12:00:30Z","source":"TOOL","type":"TOOL_OUTPUT","content":"Changes applied successfully"}`,
+		`{"step":8,"created_at":"2026-10-11T12:00:35Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Writing test suite...","tool_calls":[{"name":"write_to_file","args":{"TargetFile":"/root/projects/TheNovaNodes/antigravity-telegram-agent/handlers_test.go"}}]}`,
+		`{"step":9,"created_at":"2026-10-11T12:00:40Z","source":"TOOL","type":"TOOL_OUTPUT","content":"Tests written"}`,
+		`{"step":10,"created_at":"2026-10-11T12:00:45Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Running go test verification...","tool_calls":[{"name":"run_command","args":{"command":"go test -v -race ./..."}}]}`,
+		`{"step":11,"created_at":"2026-10-11T12:00:50Z","source":"TOOL","type":"TOOL_OUTPUT","content":"PASS ok"}`,
+		`{"step":12,"created_at":"2026-10-11T12:00:55Z","source":"MODEL","type":"PLANNER_RESPONSE","content":"Refactoring completed: export has been transformed into a compact Session Handoff Briefing with zero tool noise."}`,
+	}
+
+	fullJSONL := strings.Join(steps, "\n") + "\n"
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(fullJSONL), 0644)
+
+	user := User{
+		ID:        777,
+		Workspace: tempDir,
+		Model:     "gemini-3.8-flash-high",
+		SessionID: sessionID,
+	}
+
+	handleExportCommand(bot, 12345, 777, "TestBot", user)
+
+	expectedFilename := fmt.Sprintf("session_Compact_Handoff_Architecture_%s.md", safePrefix(sessionID, 8))
+	exportPath := filepath.Join(mockAgents, "TestBot", "scratch", "exports", expectedFilename)
+
+	contentBytes, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("Failed to read export file at %s: %v", exportPath, err)
+	}
+	content := string(contentBytes)
+
+	// 1. Noise sanitation: no tool call strings
+	if strings.Contains(content, "🛠️ *Tool:*") {
+		t.Errorf("Export contained tool call string 🛠️ *Tool:*")
+	}
+	if strings.Contains(content, "view_file") || strings.Contains(content, "run_command") {
+		t.Errorf("Export contained tool execution names!")
+	}
+
+	// 2. Turn consolidation: only 1 User and 1 Assistant in Dialogue Turn Digest
+	userCount := strings.Count(content, "### 👤 User")
+	assistantCount := strings.Count(content, "### 🤖 Assistant")
+	if userCount != 1 {
+		t.Errorf("Expected exactly 1 User block, got %d", userCount)
+	}
+	if assistantCount != 1 {
+		t.Errorf("Expected exactly 1 Assistant block, got %d", assistantCount)
+	}
+
+	// 3. Intermediate steps filtered, only final response present
+	if strings.Contains(content, "Inspecting handlers.go...") || strings.Contains(content, "Running go test verification...") {
+		t.Errorf("Export contained intermediate assistant steps!")
+	}
+	if !strings.Contains(content, "Refactoring completed: export has been transformed into a compact Session Handoff Briefing with zero tool noise.") {
+		t.Errorf("Export missing final assistant response!")
+	}
+
+	// 4. Verification of Sections
+	if !strings.Contains(content, "# 🛸 Session Handoff: Compact Handoff Architecture") {
+		t.Errorf("Export missing Session Handoff header!")
+	}
+	if !strings.Contains(content, "## 🎯 Executive Summary") || !strings.Contains(content, "Compact Handoff Architecture") {
+		t.Errorf("Export missing Executive Summary!")
+	}
+	if !strings.Contains(content, "## 📦 Key Deliverables & Modified Files") {
+		t.Errorf("Export missing Key Deliverables section!")
+	}
+	if !strings.Contains(content, "handlers.go") || !strings.Contains(content, "handlers_test.go") {
+		t.Errorf("Export missing modified files list!")
+	}
+	if !strings.Contains(content, "## 💬 Dialogue Turn Digest") {
+		t.Errorf("Export missing Dialogue Turn Digest section!")
+	}
+
+	// 5. Size reduction DoD: calculate hypothetical uncompressed dump size vs handoff
+	var rawDumpBuilder strings.Builder
+	for _, stepStr := range steps {
+		rawDumpBuilder.WriteString(stepStr)
+		rawDumpBuilder.WriteString("\n🛠️ *Tool:* `sample_tool` — sample tool execution detail string for step\n")
+	}
+	rawDumpSize := rawDumpBuilder.Len()
+	handoffSize := len(content)
+
+	reductionPercent := (1.0 - float64(handoffSize)/float64(rawDumpSize)) * 100.0
+	t.Logf("Raw dump size: %d bytes, Handoff size: %d bytes, Reduction: %.1f%%", rawDumpSize, handoffSize, reductionPercent)
+	if reductionPercent < 60.0 {
+		t.Errorf("Expected >= 60%% size reduction on 10+ steps session, got %.1f%%", reductionPercent)
 	}
 }
 
