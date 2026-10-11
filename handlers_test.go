@@ -3970,3 +3970,112 @@ func TestGroupMentionAndReplyGuard(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractInboundPayload_ReplyEnvelope_WithNilFrom(t *testing.T) {
+	// Case 1: Quoting a channel post (From is nil, SenderChat has Title)
+	msgChannelQuoted := &tgbotapi.Message{
+		MessageID:  501,
+		Chat:       &tgbotapi.Chat{ID: -1001234567},
+		SenderChat: &tgbotapi.Chat{ID: -1001234567, Title: "Official Announcements"},
+		Text:       "Breaking: Infrastructure upgraded to v2.5",
+	}
+
+	msgReply := &tgbotapi.Message{
+		MessageID:      502,
+		Chat:           &tgbotapi.Chat{ID: -1001234567},
+		From:           &tgbotapi.User{ID: 777, UserName: "ops_lead"},
+		Text:           "Verify service status",
+		ReplyToMessage: msgChannelQuoted,
+	}
+
+	p := extractInboundPayload(msgReply)
+	expectedHeader := "[Context: In reply to Official Announcements (MessageID: 501)]:"
+	if !strings.Contains(p.Text, expectedHeader) {
+		t.Errorf("Expected payload to contain %q, got: %q", expectedHeader, p.Text)
+	}
+	if !strings.Contains(p.Text, "> Breaking: Infrastructure upgraded to v2.5") {
+		t.Errorf("Expected payload to contain blockquoted snippet, got: %q", p.Text)
+	}
+	if !strings.HasSuffix(p.Text, "Verify service status") {
+		t.Errorf("Expected payload to end with user command, got: %q", p.Text)
+	}
+
+	// Case 2: Quoting an anonymous admin post (From is nil, SenderChat is nil -> "unknown")
+	msgAnonQuoted := &tgbotapi.Message{
+		MessageID: 503,
+		Chat:      &tgbotapi.Chat{ID: -1001234567},
+		Text:      "Secret incident notes",
+	}
+	msgAnonReply := &tgbotapi.Message{
+		MessageID:      504,
+		Chat:           &tgbotapi.Chat{ID: -1001234567},
+		From:           &tgbotapi.User{ID: 888, UserName: "sec_engineer"},
+		Text:           "Investigate this incident",
+		ReplyToMessage: msgAnonQuoted,
+	}
+
+	pAnon := extractInboundPayload(msgAnonReply)
+	expectedAnonHeader := "[Context: In reply to unknown (MessageID: 503)]:"
+	if !strings.Contains(pAnon.Text, expectedAnonHeader) {
+		t.Errorf("Expected payload to contain %q, got: %q", expectedAnonHeader, pAnon.Text)
+	}
+}
+
+func TestExtractInboundPayload_ReplyEnvelope_RuneTruncationAndMentions(t *testing.T) {
+	// 1. Quoted text exceeding 1000 runes is truncated safely without UTF-8 damage
+	longQuotedText := strings.Repeat("Кот 🐱 и Заяц 🐰 ", 120) // ~1920 runes
+	msgLongQuoted := &tgbotapi.Message{
+		MessageID: 601,
+		Chat:      &tgbotapi.Chat{ID: 1234},
+		From:      &tgbotapi.User{ID: 999, UserName: "author_user"},
+		Text:      longQuotedText,
+	}
+
+	msgUserReply := &tgbotapi.Message{
+		MessageID:      602,
+		Chat:           &tgbotapi.Chat{ID: 1234},
+		From:           &tgbotapi.User{ID: 1000, UserName: "requester"},
+		Text:           "@TestBot summarize this tale",
+		ReplyToMessage: msgLongQuoted,
+	}
+
+	p := extractInboundPayload(msgUserReply, "TestBot")
+	if !strings.Contains(p.Text, "... [truncated]") {
+		t.Errorf("Expected payload to contain truncated suffix, got: %q", p.Text)
+	}
+	if !strings.Contains(p.Text, "[Context: In reply to @author_user (MessageID: 601)]:") {
+		t.Errorf("Expected author header in payload, got: %q", p.Text)
+	}
+	// Verify user text had @TestBot stripped
+	if strings.Contains(p.Text, "@TestBot summarize") {
+		t.Errorf("Expected @TestBot to be stripped from user text in envelope, got: %q", p.Text)
+	}
+	if !strings.HasSuffix(p.Text, "summarize this tale") {
+		t.Errorf("Expected payload to end with clean user text, got: %q", p.Text)
+	}
+
+	// 2. User replies to @TestBot itself with @TestBot mention
+	msgBotQuoted := &tgbotapi.Message{
+		MessageID: 701,
+		Chat:      &tgbotapi.Chat{ID: 1234},
+		From:      &tgbotapi.User{ID: 42, UserName: "TestBot"},
+		Text:      "Do you want me to execute the plan?",
+	}
+	msgReplyToBot := &tgbotapi.Message{
+		MessageID:      702,
+		Chat:           &tgbotapi.Chat{ID: 1234},
+		From:           &tgbotapi.User{ID: 1000, UserName: "requester"},
+		Text:           "@TestBot yes proceed",
+		ReplyToMessage: msgBotQuoted,
+	}
+
+	pBotReply := extractInboundPayload(msgReplyToBot, "TestBot")
+	// Envelope header MUST retain @TestBot
+	if !strings.Contains(pBotReply.Text, "[Context: In reply to @TestBot (MessageID: 701)]:") {
+		t.Errorf("Expected envelope header to retain @TestBot, got: %q", pBotReply.Text)
+	}
+	// User text must have @TestBot stripped
+	if !strings.HasSuffix(pBotReply.Text, "yes proceed") {
+		t.Errorf("Expected payload to end with 'yes proceed', got: %q", pBotReply.Text)
+	}
+}

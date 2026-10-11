@@ -1584,27 +1584,80 @@ type InboundPayload struct {
 
 // extractInboundPayload polymorphically extracts text, captions, and media attachments
 // from a Telegram message into a normalized InboundPayload.
-func extractInboundPayload(msg *tgbotapi.Message) InboundPayload {
+func extractInboundPayload(msg *tgbotapi.Message, botNames ...string) InboundPayload {
 	if msg == nil {
 		return InboundPayload{}
 	}
 
-	text := msg.Text
-	if text == "" {
+	userText := msg.Text
+	if userText == "" {
 		if rich, ok := GetAttachedRichMessage(msg); ok && rich != "" {
-			text = rich
+			userText = rich
 		}
 	}
-	if text == "" && msg.ForwardFrom != nil {
+	if userText == "" && msg.ForwardFrom != nil {
 		if rich, ok := GetAttachedRichMessage(msg); ok && rich != "" {
-			text = rich
+			userText = rich
 		}
 	}
-	if text == "" && msg.ReplyToMessage != nil {
+
+	var botToStrip string
+	if len(botNames) > 0 && strings.TrimSpace(botNames[0]) != "" {
+		botToStrip = strings.TrimSpace(botNames[0])
+	}
+
+	// If user text has bot mention, strip it before synthesizing reply context envelope (#374)
+	if userText != "" && botToStrip != "" {
+		userText = stripBotMention(userText, botToStrip)
+	}
+
+	text := userText
+
+	// Causal Context Envelope for ReplyToMessage (#374)
+	if msg.ReplyToMessage != nil {
+		var quotedText string
 		if rich, ok := GetAttachedRichMessage(msg.ReplyToMessage); ok && rich != "" {
-			text = rich
+			quotedText = rich
 		} else if msg.ReplyToMessage.Text != "" {
-			text = msg.ReplyToMessage.Text
+			quotedText = msg.ReplyToMessage.Text
+		} else if msg.ReplyToMessage.Caption != "" {
+			quotedText = msg.ReplyToMessage.Caption
+		}
+
+		if userText == "" {
+			// Backward compatibility: If user provided no text, fall back to quoted text directly
+			text = quotedText
+		} else if quotedText != "" {
+			// Extract author with nil safety guard (#374)
+			author := "unknown"
+			if msg.ReplyToMessage.From != nil {
+				if msg.ReplyToMessage.From.UserName != "" {
+					author = "@" + msg.ReplyToMessage.From.UserName
+				} else {
+					name := strings.TrimSpace(msg.ReplyToMessage.From.FirstName + " " + msg.ReplyToMessage.From.LastName)
+					if name != "" {
+						author = name
+					}
+				}
+			} else if msg.ReplyToMessage.SenderChat != nil && msg.ReplyToMessage.SenderChat.Title != "" {
+				author = msg.ReplyToMessage.SenderChat.Title
+			}
+
+			// Truncate quoted text strictly by Unicode runes (1000 runes limit) (#374)
+			runes := []rune(quotedText)
+			if len(runes) > 1000 {
+				quotedText = string(runes[:1000]) + " ... [truncated]"
+			}
+
+			// Format blockquote
+			quotedLines := strings.Split(quotedText, "\n")
+			for i, l := range quotedLines {
+				quotedLines[i] = "> " + l
+			}
+			formattedQuote := strings.Join(quotedLines, "\n")
+
+			text = fmt.Sprintf("[Context: In reply to %s (MessageID: %d)]:\n%s\n\n%s",
+				author, msg.ReplyToMessage.MessageID, formattedQuote, userText)
 		}
 	}
 
@@ -1882,11 +1935,17 @@ func handleUpdate(bot *tgbotapi.BotAPI, update tgbotapi.Update, db *sql.DB) {
 		userID = msg.SenderChat.ID
 	}
 
-	payload := extractInboundPayload(msg)
+	botToStrip := ""
+	if isGroup {
+		botToStrip = botName
+	}
+	payload := extractInboundPayload(msg, botToStrip)
 
 	// Clean bot mention token from payload text and caption in group chats
 	if isGroup {
-		payload.Text = stripBotMention(payload.Text, botName)
+		if msg.ReplyToMessage == nil {
+			payload.Text = stripBotMention(payload.Text, botName)
+		}
 		payload.Caption = stripBotMention(payload.Caption, botName)
 	}
 

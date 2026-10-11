@@ -1663,3 +1663,66 @@ func TestParseMessageFromJSON_BlocksAST(t *testing.T) {
 		t.Errorf("expected msg.Text %q, got %q", expected, msg.Text)
 	}
 }
+
+func TestRichMessage_CompositeKeyAcrossUpdates(t *testing.T) {
+	// Simulate Update 1 where a rich message is received and attached
+	msgUpdate1 := &tgbotapi.Message{
+		MessageID: 8001,
+		Chat:      &tgbotapi.Chat{ID: 999001},
+		Text:      "Preview snippet",
+	}
+	AttachRichMessage(msgUpdate1, "# Full Markdown Report\n| Metric | Value |\n|---|---|\n| Latency | 2ms |")
+
+	// Simulate Update 2 where user replies to message 8001.
+	// Telegram bot API deserializes a fresh tgbotapi.Message pointer for ReplyToMessage.
+	msgReplyInUpdate2 := &tgbotapi.Message{
+		MessageID: 8001,
+		Chat:      &tgbotapi.Chat{ID: 999001},
+		Text:      "Preview snippet",
+	}
+
+	// Verify distinct pointer allocations
+	if msgUpdate1 == msgReplyInUpdate2 {
+		t.Fatalf("expected distinct pointer allocations across updates")
+	}
+
+	// Verification 1: Composite key resolves attached rich message across pointers
+	retrieved, ok := GetAttachedRichMessage(msgReplyInUpdate2)
+	if !ok {
+		t.Fatalf("expected GetAttachedRichMessage to find rich message by composite key (ChatID, MessageID)")
+	}
+	if !strings.Contains(retrieved, "# Full Markdown Report") {
+		t.Errorf("expected retrieved content to match attached rich markdown, got: %q", retrieved)
+	}
+
+	// Verification 2: Chat isolation - different ChatID with same MessageID must NOT collide
+	msgOtherChat := &tgbotapi.Message{
+		MessageID: 8001,
+		Chat:      &tgbotapi.Chat{ID: 888002},
+	}
+	otherVal, otherOk := GetAttachedRichMessage(msgOtherChat)
+	if otherOk {
+		t.Errorf("expected other chat with same MessageID to NOT retrieve rich message, got %q", otherVal)
+	}
+
+	// Verification 3: extractInboundPayload uses the resolved rich message for reply envelope
+	replyUserMsg := &tgbotapi.Message{
+		MessageID:      8002,
+		Chat:           &tgbotapi.Chat{ID: 999001},
+		From:           &tgbotapi.User{ID: 42, UserName: "alice"},
+		Text:           "analyze these numbers",
+		ReplyToMessage: msgReplyInUpdate2,
+	}
+
+	payload := extractInboundPayload(replyUserMsg)
+	expectedHeader := "[Context: In reply to unknown (MessageID: 8001)]:"
+	if !strings.Contains(payload.Text, expectedHeader) {
+		t.Errorf("expected reply envelope header %q, got: %q", expectedHeader, payload.Text)
+	}
+	if !strings.Contains(payload.Text, "> # Full Markdown Report") {
+		t.Errorf("expected blockquoted rich message in envelope, got: %q", payload.Text)
+	}
+	if !strings.HasSuffix(payload.Text, "analyze these numbers") {
+		t.Errorf("expected payload to end with user command, got: %q", payload.Text)
+	}
+}

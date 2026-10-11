@@ -156,7 +156,7 @@ The monolithic message processing loop has been refactored into modular, testabl
 | `handleStopCommand` | Gracefully interrupts active turn without clearing conversation context. | Mutex-decoupled state extraction, `s.Kill()` process group termination, output buffer salvaging, and artifact delivery. |
 | `handleCommand` | Centralized strict command token router (`switch cmd`). | Strips `@botName` and matches exact command tokens, eliminating prefix collisions (`/workspacex`, etc.). Translates Telegram-safe underscore aliases (`/grill_me` -> `/grill-me`, `/teamwork_preview` -> `/teamwork-preview`), which are registered as bot commands in `main.go` and normalized in `handlers.go`. Routes `/stop` and `/cancel`. |
 | `handleCallbackQuery` | Routes inline button actions (`model:*` [Hot Model Swap], `resume:*`, `ans_id:*`, `cmd:*` including `cmd:stop` [Turn Interruption] and `cmd:retry` [Stream Recovery]). | Broken Object Level Authorization (BOLA) guard (`isSessionOwnedByUser`), safe UTF-8 byte truncation (`truncateUTF8Bytes`), safe prefix slicing, and expired callback query feedback. |
-| `extractInboundPayload` | Polymorphic adapter extracting text, command aliases, media attachments, multimodal stickers (.webp/.tgs/.webm), validated geolocation coordinates, and inbound/forwarded `rich_message` content. | Eliminates cyclomatic bloat in `handleUpdate`. Resolves rich messages from raw JSON updates or message attachments, forwards them as first-class prompt text, sanitizes contact rejection (strictly checking `msg.Contact != nil`), and returns informative diagnostics (`⚠️ Unsupported message format`) for unknown formats. Video notes are extracted as `.mp4`, stickers are downloaded (`.webp`, `.tgs`, or `.webm`) into `scratch/downloads/` for multimodal vision as clean attachments (`[Attached File: file://...]`) without semantic hijacking from emoji text strings, and GPS locations are validated (`-90 <= Lat <= 90`, `-180 <= Lon <= 180`) and formatted into structured markers with privacy protection. |
+| `extractInboundPayload` | Polymorphic adapter extracting text, command aliases, media attachments, multimodal stickers (.webp/.tgs/.webm), validated geolocation coordinates, inbound/forwarded `rich_message` content, and synthesizing Causal Reply Context Envelopes. | Eliminates cyclomatic bloat in `handleUpdate`. Resolves rich messages from raw JSON updates or message attachments, forwards them as first-class prompt text, sanitizes contact rejection (strictly checking `msg.Contact != nil`), and returns informative diagnostics (`⚠️ Unsupported message format`) for unknown formats. Synthesizes structured Causal Reply Envelopes for `ReplyToMessage` (with rune-safe 1000-rune truncation, nil-safe author resolution, and pre-stripped bot mentions). Video notes are extracted as `.mp4`, stickers are downloaded (`.webp`, `.tgs`, or `.webm`) into `scratch/downloads/` for multimodal vision as clean attachments (`[Attached File: file://...]`) without semantic hijacking from emoji text strings, and GPS locations are validated (`-90 <= Lat <= 90`, `-180 <= Lon <= 180`) and formatted into structured markers with privacy protection. |
 | `isServiceMessage` | Pure Go validator identifying Telegram system and service events (chat created, user joins/leaves, pins, migrations, title/photo updates). | Executed at the start of `handleUpdate`; drops service events silently without sending diagnostic warnings to chat. |
 | `isGroupMessageAddressed` | Mention & Reply Guard evaluating whether group messages are targeted to this bot via command, direct reply, or `@botName` mention. | Scoped to groups/supergroups; filters out cross-bot chatter and prevents multi-agent ping-pong loops in Triads. |
 | `stripBotMention` | Prompt sanitizer extracting and excising `@botName` mention prefixes and trailing punctuation from user prompts. | Provides clean prompts to the LLM agent while preserving mentions of other bots and email addresses. |
@@ -619,6 +619,56 @@ flowchart TD
 - In group chats, any `@botName` token (including trailing commas, colons, or punctuation: `@botName, привет` -> `привет`) is cleanly excised from `payload.Text` and `payload.Caption`.
 - Other bots' mentions (e.g. `@kairos_brobot and @MataHari_gobot`) and email addresses (`user@botName.com`) remain intact.
 - If a user sends only `@botName` without any prompt or attachments in a group, the engine drops the message silently instead of triggering an unsupported format error.
+
+---
+
+## 16. Causal Reply Context Envelope & Persistent Composite Key (Issue #374)
+
+In multi-agent collaborative workflows and threaded discussions, users frequently reply to previous bot responses or messages with brief context-dependent instructions (e.g. replying to an incident report with *"Verify service status"* or *"summarize this"*). Previously, the engine treated replies with user text as standalone prompts, discarding the referenced message context, or if the user provided no text, overwriting the prompt with raw quoted text.
+
+```mermaid
+flowchart TD
+    Inbound[Telegram Message msg] --> HasReply{msg.ReplyToMessage != nil?}
+    HasReply -->|No| NormalExtract[Extract Text / Rich Message]
+    HasReply -->|Yes| ResolveQuoted[Resolve Quoted Text: Rich Cache -> Text -> Caption]
+    ResolveQuoted --> CheckUserText{userText == empty?}
+    CheckUserText -->|Yes: Empty user prompt| BwCompat[Backward Compatibility: Return quotedText directly]
+    CheckUserText -->|No: User text provided| Synthesize[Synthesize Causal Reply Context Envelope]
+    Synthesize --> ResolveAuthor[Nil-Safe Author Resolution: UserName / First+Last / SenderChat.Title / unknown]
+    ResolveAuthor --> Truncate[UTF-8 Rune Truncation: <= 1000 runes + ' ... [truncated]']
+    Truncate --> FormatQuote[Blockquote Markdown formatting: '> ' lines]
+    FormatQuote --> PreStrip[Pre-strip @botName from userText]
+    PreStrip --> AssembleEnvelope["[Context: In reply to @author (MessageID: id)]:\n> quote\n\nuserText"]
+    AssembleEnvelope --> GuardGroup[Skip redundant stripBotMention in handleUpdate to preserve header]
+```
+
+### 1. Causal Context Envelope Specification:
+When `msg.ReplyToMessage != nil` and `userText != ""`, `extractInboundPayload` formats a structured Markdown context envelope:
+```markdown
+[Context: In reply to @<author> (MessageID: <id>)]:
+> <quoted_snippet_up_to_1000_runes>
+
+<user_text_without_bot_mention>
+```
+
+- **Backward Compatibility**: If the user submits an empty message on reply, `extractInboundPayload` preserves legacy behavior by returning `quotedText` directly.
+- **Nil-Safe Author Resolution**: In Telegram channel posts and anonymous administrator messages, `msg.ReplyToMessage.From` is `nil`. The engine safely traverses `From.UserName` $\to$ `From.FirstName + LastName` $\to$ `msg.ReplyToMessage.SenderChat.Title` $\to$ `"unknown"`, preventing nil pointer panics.
+- **UTF-8 Rune-Safe Truncation**: Quoted snippets exceeding 1000 Unicode runes are truncated strictly via `[]rune` slicing, appending `" ... [truncated]"`. This prevents prompt injection bloating, context explosion, and multibyte UTF-8 byte boundary corruption.
+- **Bot Mention Sanitization Guard**: If the user addresses the bot in a group reply (e.g. `@botName analyze this`), the mention is pre-stripped from `userText` before synthesizing the envelope. In `handleUpdate`, post-extraction mention stripping on `payload.Text` is skipped for replies (`if msg.ReplyToMessage == nil`), preventing corruption of the envelope header when replying to `@botName`.
+
+### 2. Persistent Composite Key for Inbound Rich Messages (`rich_message.go`):
+- **Root Cause**: Previously, `AttachRichMessage` cached rich content in `attachedRich` using message memory pointers (`*tgbotapi.Message`). When subsequent updates arrived referencing an earlier message (e.g. `msg.ReplyToMessage`), the Telegram Bot API client deserialized a distinct struct pointer in a new memory allocation, resulting in cache misses (`GetAttachedRichMessage` returned `false`).
+- **Composite Key Structure**:
+  ```go
+  type chatMsgKey struct {
+      ChatID    int64
+      MessageID int
+  }
+  ```
+- **Cross-Update Persistence**: Keying by `(ChatID, MessageID)` allows any subsequent update in the same chat referencing `MessageID` to resolve the full original rich message Markdown.
+- **Nil Chat Test Guard**: In synthetic unit tests where `msg.Chat` may be uninitialized, the engine defaults `ChatID = 0`, ensuring 100% test compatibility and eliminating nil pointer panics.
+- **Bounded Eviction**: Retains the 2048-entry FIFO bounded cache (`attachedRichKeys []chatMsgKey`), ensuring zero memory leaks over long daemon runtimes.
+
 
 
 
