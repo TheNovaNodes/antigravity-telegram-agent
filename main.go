@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,7 +34,7 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 		log.Printf("Failed to init bot: %v", err)
 		return
 	}
-	bot.Client = &http.Client{Timeout: 65 * time.Second}
+	bot.Client = &http.Client{Timeout: 75 * time.Second}
 
 	activeBotsMu.Lock()
 	activeBots = append(activeBots, bot)
@@ -47,9 +48,9 @@ func startBotPolling(botToken string, allowedAdmins map[int64]bool, wg *sync.Wai
 	// Layer 1: Defensive startup deleteWebhook guard (#295)
 	_ = clearWebhookOnStartup(bot)
 
-	// Layer 2: Explicit AllowedUpdates with callback_query (#295)
+	// Layer 2: Explicit AllowedUpdates with callback_query (#295, #370 calibrated delta)
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	u.Timeout = 50
 	u.AllowedUpdates = DefaultAllowedUpdates
 
 	// Layer 3 & 4: GetUpdates with 409 Conflict auto-recovery & admin alerts (#295)
@@ -162,6 +163,8 @@ func main() {
 		if t != "" {
 			wg.Add(1)
 			go startBotPolling(t, allowedAdmins, &wg, stopPollingChan)
+			// Startup Staggering: introduce randomized jitter delay between bot startups to desynchronize polling phases (#370)
+			time.Sleep(time.Duration(rand.IntN(200)+100) * time.Millisecond)
 		}
 	}
 
