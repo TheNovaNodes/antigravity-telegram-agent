@@ -2381,3 +2381,110 @@ func TestHandleAccountCallbackQuery_FreezeUnfreezeDelete(t *testing.T) {
 		t.Errorf("expected h2 storage to be purged")
 	}
 }
+
+func TestAccountPool_CountHealthyAccounts(t *testing.T) {
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	now := time.Now()
+	// 1. Healthy Active
+	pool.accounts["acc-healthy-act"] = &Account{
+		ID:    "acc-healthy-act",
+		State: StateActive,
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			Gemini5h:      ModelQuota{RemainingFraction: 0.8},
+		},
+	}
+	// 2. Healthy InUse
+	pool.accounts["acc-healthy-use"] = &Account{
+		ID:          "acc-healthy-use",
+		State:       StateInUse,
+		ActiveTurns: 1,
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			Gemini5h:      ModelQuota{RemainingFraction: 0.6},
+		},
+	}
+	// 3. Cooldown
+	pool.accounts["acc-cooldown"] = &Account{
+		ID:            "acc-cooldown",
+		State:         StateCooldown,
+		CooldownUntil: now.Add(10 * time.Minute),
+	}
+	// 4. Frozen
+	pool.accounts["acc-frozen"] = &Account{
+		ID:    "acc-frozen",
+		State: StateFrozen,
+	}
+	// 5. Active but GeminiWeekly Disabled with ResetTime in future (#298)
+	pool.accounts["acc-disabled-weekly"] = &Account{
+		ID:    "acc-disabled-weekly",
+		State: StateActive,
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			GeminiWeekly: ModelQuota{
+				Disabled:  true,
+				ResetTime: now.Add(24 * time.Hour),
+			},
+		},
+	}
+	// 6. Active but Gemini5h Disabled with ResetTime in future
+	pool.accounts["acc-disabled-5h"] = &Account{
+		ID:    "acc-disabled-5h",
+		State: StateActive,
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			Gemini5h: ModelQuota{
+				Disabled:  true,
+				ResetTime: now.Add(2 * time.Hour),
+			},
+		},
+	}
+
+	count := pool.CountHealthyAccounts()
+	if count != 2 {
+		t.Fatalf("expected 2 healthy accounts, got %d", count)
+	}
+}
+
+func TestAccountPool_AcquireAccount_StrictFreePriority(t *testing.T) {
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	now := time.Now()
+	// acc-busy has 1 active turn, but higher quota (90%) and was used longer ago (older LastUsed)
+	pool.accounts["acc-busy"] = &Account{
+		ID:          "acc-busy",
+		Email:       "busy@example.com",
+		State:       StateInUse,
+		ActiveTurns: 1,
+		LastUsed:    now.Add(-2 * time.Hour), // Older LastUsed
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			Gemini5h:      ModelQuota{RemainingFraction: 0.90},
+		},
+	}
+
+	// acc-free has 0 active turns, but lower quota (40%) and was used recently
+	pool.accounts["acc-free"] = &Account{
+		ID:          "acc-free",
+		Email:       "free@example.com",
+		State:       StateActive,
+		ActiveTurns: 0,
+		LastUsed:    now.Add(-5 * time.Minute), // More recent
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			Gemini5h:      ModelQuota{RemainingFraction: 0.40},
+		},
+	}
+
+	// AcquireAccount for a new chat should strictly pick acc-free because ActiveTurns == 0 (#371)
+	acc, err := pool.AcquireAccount(99988)
+	if err != nil {
+		t.Fatalf("unexpected error acquiring account: %v", err)
+	}
+	if acc.ID != "acc-free" {
+		t.Fatalf("expected acc-free to be prioritized over acc-busy, got %s", acc.ID)
+	}
+}

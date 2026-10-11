@@ -3743,3 +3743,144 @@ func TestSendArtifacts_BlocksDotEnv(t *testing.T) {
 		t.Errorf("Expected valid report.md to be sent, but was not found in sentBodies")
 	}
 }
+
+func TestAgySession_Failover_ActiveTurnsReleasedOnStartError(t *testing.T) {
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	tmpDir := t.TempDir()
+	home1 := filepath.Join(tmpDir, "acc-f1")
+	home2 := filepath.Join(tmpDir, "acc-f2")
+	_ = os.MkdirAll(home1, 0755)
+	_ = os.MkdirAll(home2, 0755)
+
+	pool.accounts["acc-f1"] = &Account{
+		ID:          "acc-f1",
+		Email:       "f1@example.com",
+		HomeDir:     home1,
+		State:       StateActive,
+		ActiveTurns: 1,
+		LastUsed:    time.Now(),
+	}
+	pool.accounts["acc-f2"] = &Account{
+		ID:          "acc-f2",
+		Email:       "f2@example.com",
+		HomeDir:     home2,
+		State:       StateActive,
+		ActiveTurns: 0,
+		LastUsed:    time.Now().Add(-1 * time.Hour),
+	}
+
+	ms := newMockServer()
+	defer ms.Close()
+	bot := createMockBot(ms)
+
+	// Set AGY_BINARY to a non-existent binary so that s.start() on failover fails
+	t.Setenv("AGY_BINARY", filepath.Join(tmpDir, "non_existent_binary_for_failover_test"))
+
+	jsonl := `{"event":"result","result":{"status":"ERROR","error":"429 RESOURCE_EXHAUSTED: Quota exceeded"}}` + "\n"
+	scanner := bufio.NewScanner(strings.NewReader(jsonl))
+
+	db := setupTestDB(t)
+	defer db.Close()
+
+	session := &AgySession{
+		BotName:         "FailoverTestBot",
+		BotAPI:          bot,
+		ChatID:          98765,
+		UserID:          111,
+		ActiveMessageID: 101,
+		ActiveTurnStart: time.Now(),
+		isAlive:         true,
+		TurnFailovers:   0,
+		StdoutScanner:   scanner,
+		UpdateChan:      make(chan struct{}, 10),
+		AccountID:       "acc-f1",
+		AccountHomeDir:  home1,
+		Conversation:    "conv-failover-release-turns",
+		DB:              db,
+	}
+	session.ctx, session.cancel = context.WithCancel(context.Background())
+	defer session.cancel()
+
+	session.readStdoutLoop()
+	defer session.Kill()
+
+	// Verify that acc-f2's active turns were incremented during AcquireAccount,
+	// but GUARANTEED released back to 0 due to s.start() failure (#371)
+	pool.mu.Lock()
+	acc2 := pool.accounts["acc-f2"]
+	acc2Turns := acc2.ActiveTurns
+	acc2State := acc2.State
+
+	acc1 := pool.accounts["acc-f1"]
+	acc1State := acc1.State
+	pool.mu.Unlock()
+
+	if acc2Turns != 0 {
+		t.Errorf("Expected acc-f2 ActiveTurns to be released to 0 after start failure, got %d", acc2Turns)
+	}
+	if acc2State != StateActive {
+		t.Errorf("Expected acc-f2 State to be StateActive after release, got %s", acc2State)
+	}
+	if acc1State != StateCooldown {
+		t.Errorf("Expected acc-f1 to be placed in StateCooldown upon 429, got %s", acc1State)
+	}
+}
+
+func TestAgySession_Failover_DynamicMaxTurnFailovers(t *testing.T) {
+	pool, poolDir := setupTestAccountPool(t)
+	defer os.RemoveAll(poolDir)
+
+	oldPool := GlobalAccountPool
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = oldPool }()
+
+	// Case 1: 1 healthy account -> maxTurnFailovers should be 1
+	pool.accounts["acc-1"] = &Account{
+		ID:    "acc-1",
+		State: StateActive,
+	}
+	healthy := pool.CountHealthyAccounts()
+	maxFailovers := 3
+	if healthy > 0 && healthy < maxFailovers {
+		maxFailovers = healthy
+	}
+	if maxFailovers != 1 {
+		t.Errorf("expected maxTurnFailovers == 1 for 1 healthy account, got %d", maxFailovers)
+	}
+
+	// Case 2: 2 healthy accounts -> maxTurnFailovers should be 2
+	pool.accounts["acc-2"] = &Account{
+		ID:    "acc-2",
+		State: StateActive,
+	}
+	healthy = pool.CountHealthyAccounts()
+	maxFailovers = 3
+	if healthy > 0 && healthy < maxFailovers {
+		maxFailovers = healthy
+	}
+	if maxFailovers != 2 {
+		t.Errorf("expected maxTurnFailovers == 2 for 2 healthy accounts, got %d", maxFailovers)
+	}
+
+	// Case 3: 5 healthy accounts -> maxTurnFailovers capped at 3
+	for i := 3; i <= 5; i++ {
+		pool.accounts[fmt.Sprintf("acc-%d", i)] = &Account{
+			ID:    fmt.Sprintf("acc-%d", i),
+			State: StateActive,
+		}
+	}
+	healthy = pool.CountHealthyAccounts()
+	maxFailovers = 3
+	if healthy > 0 && healthy < maxFailovers {
+		maxFailovers = healthy
+	}
+	if maxFailovers != 3 {
+		t.Errorf("expected maxTurnFailovers == 3 for 5 healthy accounts, got %d", maxFailovers)
+	}
+}

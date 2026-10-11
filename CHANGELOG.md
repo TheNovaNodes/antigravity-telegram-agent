@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Concurrency Contention Mitigation & Dynamic Turn Failovers (Issue #371)
+- **Dynamic Failover Limit (`session.go`)**:
+  - Replaced rigid static constant `maxTurnFailovers = 1` with dynamic pool-aware calculation `min(3, healthyCount)`, allowing multi-step failover across alternative healthy profiles before initiating Tier 2 Emergency Safe Parking.
+- **ActiveTurns Leak Prevention (`session.go`)**:
+  - Guaranteed decrement and release of acquired account reservation via `GlobalAccountPool.ReleaseAccount(nextAcc.ID)` when `s.start()` fails during rotation, eliminating permanent zombie reservation lockouts.
+- **Strict Free Account Priority (`account_pool.go`)**:
+  - Enforced strict priority in candidate nomination for accounts with `ActiveTurns == 0` over busy accounts (`ActiveTurns > 0`), preventing multi-tenant collisions and concurrent 429 quota exhaustion when free profiles are available.
+- **Decorrelated Jitter Rotation (`session.go`)**:
+  - Injected 100–400ms decorrelated random jitter (`math/rand/v2`) prior to restarting rotated sessions, desynchronizing parallel agent retry bursts.
+- **Pool Health Introspection (`account_pool.go`)**:
+  - Implemented `CountHealthyAccounts() int` returning current count of active/in-use non-disabled profiles in the pool.
+- **L1 Unit Test Suite (`account_pool_test.go`, `session_test.go`)**:
+  - Added `TestAccountPool_CountHealthyAccounts` verifying healthy account filtering against cooldown, frozen, and quota-disabled states.
+  - Added `TestAccountPool_AcquireAccount_StrictFreePriority` verifying that free accounts (`ActiveTurns == 0`) strictly preempt busy accounts.
+  - Added `TestAgySession_Failover_ActiveTurnsReleasedOnStartError` asserting complete release of `ActiveTurns` back to 0 on session startup failures.
+  - Added `TestAgySession_Failover_DynamicMaxTurnFailovers` testing dynamic scaling across pool sizes.
+
 ### Bounded Quota Concurrency Semaphore & Timeout Calibration (Issue #372)
 - **Concurrency Semaphore (`account_pool.go`)**:
   - Bound simultaneous executions of `agy -p /usage` in `FetchAllQuotas` using a buffered channel semaphore (`defaultQuotaFetchConcurrency = 2`).

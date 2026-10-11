@@ -378,6 +378,12 @@ flowchart TD
    - **Context Timeout Calibration**: Increases command execution context timeout in `FetchAccountQuotas` from `15s` to `30s` (`defaultAccountQuotaTimeout`), eliminating false `signal: killed` aborts during heavy disk I/O or background cron pressure.
    - **Empty Pool Guard**: Short-circuits immediately without allocating semaphores or goroutines when the account pool is empty.
 
+11. **Concurrency Contention Mitigation & Dynamic Turn Failovers (#371)**:
+   - **Strict Free Priority (`AcquireAccount`)**: Prioritizes accounts with `ActiveTurns == 0` over busy accounts (`ActiveTurns > 0`), preventing multi-tenant contention and concurrent 429 quota collisions when free healthy profiles exist.
+   - **Dynamic `maxTurnFailovers` Calibration**: Dynamically bounds rotation attempts per turn to `min(3, healthyCount)` instead of a rigid static limit of 1.
+   - **ActiveTurns Leak Prevention**: Releases acquired account reservations via `ReleaseAccount` if session initialization fails during failover, preventing permanent zombie occupation.
+   - **Decorrelated Jitter Rotation**: Injects 100–400ms decorrelated random sleep prior to starting the rotated session, preventing synchronized upstream surges.
+
 ---
 
 ## 10. Child Process Isolation & Teardown Lifecycle Hardening
