@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bounded Quota Concurrency Semaphore & Timeout Calibration (Issue #372)
+- **Concurrency Semaphore (`account_pool.go`)**:
+  - Bound simultaneous executions of `agy -p /usage` in `FetchAllQuotas` using a buffered channel semaphore (`defaultQuotaFetchConcurrency = 2`).
+  - Guaranteed semaphore slot release via `defer func() { <-sem }()` within each worker goroutine.
+  - Added empty pool guard (`if len(ids) == 0 { return }`) preventing extraneous allocations when no accounts exist in the pool.
+- **Context Timeout Calibration (`account_pool.go`)**:
+  - Increased command execution context timeout in `FetchAccountQuotas` from `15s` to `30s` (`defaultAccountQuotaTimeout`), eliminating false `signal: killed` aborts during heavy disk I/O and process scheduling contention.
+- **Test Baseline Sanitization (`tts_test.go`)**:
+  - Converted hard failure in `TestSynthesizeVoice_HybridExecution` to `t.Skipf` when remote upstream endpoint (`edge-tts`) is unreachable due to network/handshake degradation.
+- **L1 Unit Test Suite (`account_pool_test.go`)**:
+  - Added `TestFetchAllQuotas_ConcurrencyLimit` with mock HTTP server and atomic counters, verifying observed concurrent executions remain strictly $\le 2$ when processing multi-account batches.
+  - Added `TestFetchAllQuotas_EmptyPool` verifying safe no-op on empty pools.
+  - Added `TestFetchAccountQuotas_TimeoutAndConcurrencyDefaults` verifying constant values.
+
 ### Webhook Guard Exponential Backoff with Full Jitter & Polling Headroom Calibration (Issue #370)
 - **Thundering Herd Elimination & Exponential Backoff (`webhook_guard.go`)**:
   - Replaced static 3-second retry timer in `getUpdatesWithRecovery` with AWS Full Jitter exponential backoff (`calculateJitterBackoff`).

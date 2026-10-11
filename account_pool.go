@@ -33,6 +33,13 @@ const (
 	StateFrozen
 )
 
+const (
+	// defaultQuotaFetchConcurrency limits simultaneous agy CLI processes during bulk quota refreshes (#372).
+	defaultQuotaFetchConcurrency = 2
+	// defaultAccountQuotaTimeout specifies the deadline for a single agy /usage CLI invocation (#372).
+	defaultAccountQuotaTimeout = 30 * time.Second
+)
+
 func (s AccountState) String() string {
 	switch s {
 	case StateActive:
@@ -991,7 +998,7 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 	}
 
 	agyPath := getAgyPath()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultAccountQuotaTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, agyPath, "-p", "/usage", "--output-format", "json")
@@ -1049,6 +1056,7 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 }
 
 // FetchAllQuotas updates quota metrics for all accounts in the pool concurrently (#228).
+// Concurrency is bounded by a semaphore to eliminate process storming and timeouts (#372).
 func (p *AccountPool) FetchAllQuotas() {
 	p.mu.RLock()
 	ids := make([]string, 0, len(p.accounts))
@@ -1057,11 +1065,20 @@ func (p *AccountPool) FetchAllQuotas() {
 	}
 	p.mu.RUnlock()
 
+	if len(ids) == 0 {
+		return
+	}
+
+	sem := make(chan struct{}, defaultQuotaFetchConcurrency)
 	var wg sync.WaitGroup
+
 	for _, id := range ids {
 		wg.Add(1)
 		go func(accID string) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
 			if _, err := p.FetchAccountQuotas(accID); err != nil {
 				log.Printf("[AccountPool] Warning: failed to fetch quotas for %s: %v", accID, err)
 			}

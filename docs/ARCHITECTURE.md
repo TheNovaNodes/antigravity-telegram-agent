@@ -373,6 +373,10 @@ flowchart TD
    - **Zero Footgun & Nil-Safety Guarantee**: Destructive actions (`Delete`, `Freeze`) are strictly quarantined inside the detail card away from everyday account switching. Missing or deleted accounts are intercepted with callback notification alerts and automatic dashboard refreshes without nil pointer dereference.
    - **Context-Aware Deletion Navigation**: Inline confirmation dialogs preserve context via `acc:del_cancel:<id>`, seamlessly returning focus to the specific account card upon cancellation.
    - **Telegram API Tolerance**: Softly suppresses harmless `Bad Request: message is not modified` API errors across in-place view transitions.
+10. **Bounded Quota Concurrency Semaphore & Timeout Calibration (#372)**:
+   - **Process Storm & Throttling Elimination**: In `FetchAllQuotas`, limits concurrent executions of `agy -p /usage` with a semaphore (`chan struct{}` of capacity `defaultQuotaFetchConcurrency = 2`). Eliminates spikes in CPU, disk I/O, and load average degradation when bulk-refreshing quotas across multi-account pools.
+   - **Context Timeout Calibration**: Increases command execution context timeout in `FetchAccountQuotas` from `15s` to `30s` (`defaultAccountQuotaTimeout`), eliminating false `signal: killed` aborts during heavy disk I/O or background cron pressure.
+   - **Empty Pool Guard**: Short-circuits immediately without allocating semaphores or goroutines when the account pool is empty.
 
 ---
 
