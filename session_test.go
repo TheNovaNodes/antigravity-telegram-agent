@@ -3917,4 +3917,3 @@ func TestAgySession_KillReleasesAccountWhenAccountAcquired(t *testing.T) {
 		t.Fatalf("expected State to be StateActive after Kill, got %s", acc.State)
 	}
 }
-

@@ -2518,4 +2518,3 @@ func TestAcquireAccount_PinnedExhaustedQuotaDefense(t *testing.T) {
 		t.Fatalf("expected ErrAccountInCooldown when acquiring exhausted pinned account, got %v", err)
 	}
 }
-
