@@ -64,6 +64,7 @@ type AgySession struct {
 	isAlive         bool
 	AccountID       string
 	AccountHomeDir  string
+	accountAcquired bool
 }
 
 // getTurnTimeout returns the maximum duration of complete inactivity allowed before the turn watchdog triggers.
@@ -360,10 +361,12 @@ func (s *AgySession) Kill() {
 	accHome := s.AccountHomeDir
 	accID := s.AccountID
 	convID := s.Conversation
+	acq := s.accountAcquired
+	s.accountAcquired = false
 	s.mu.Unlock()
 
 	cleanPresenceLock(accHome, convID)
-	if GlobalAccountPool != nil && accID != "" && hadActiveTurn {
+	if GlobalAccountPool != nil && accID != "" && (hadActiveTurn || acq) {
 		GlobalAccountPool.ReleaseAccount(accID)
 	}
 
@@ -795,6 +798,7 @@ func (s *AgySession) start() error {
 				s.mu.Lock()
 				s.AccountID = acc.ID
 				s.AccountHomeDir = acc.HomeDir
+				s.accountAcquired = true
 				s.mu.Unlock()
 			}
 		} else {
@@ -809,6 +813,7 @@ func (s *AgySession) start() error {
 					s.mu.Lock()
 					s.AccountID = freshAcc.ID
 					s.AccountHomeDir = freshAcc.HomeDir
+					s.accountAcquired = true
 					s.mu.Unlock()
 				} else {
 					s.mu.Lock()
@@ -1508,6 +1513,9 @@ func (s *AgySession) readStdout(scanner *bufio.Scanner, ctx context.Context) err
 									}
 									s.mu.Unlock()
 									return nil
+								} else {
+									log.Printf("[StreamRecovery] Failed to start rotated session on %s: %v", nextAcc.ID, err)
+									GlobalAccountPool.ReleaseAccount(nextAcc.ID)
 								}
 							}
 						}
@@ -1959,9 +1967,11 @@ func (s *AgySession) finalizeTurn() {
 	botAPI := s.BotAPI
 	targetChatID := s.ChatID
 	accountID := s.AccountID
+	acq := s.accountAcquired
+	s.accountAcquired = false
 	s.mu.Unlock()
 
-	if GlobalAccountPool != nil && accountID != "" {
+	if GlobalAccountPool != nil && accountID != "" && acq {
 		GlobalAccountPool.ReleaseAccount(accountID)
 	}
 

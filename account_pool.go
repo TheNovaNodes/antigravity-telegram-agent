@@ -629,6 +629,10 @@ func (p *AccountPool) AcquireAccount(chatID int64, botNames ...string) (*Account
 				return nil, fmt.Errorf("%w: pinned account %s is resting until %s",
 					ErrAccountInCooldown, pinnedID, acc.CooldownUntil.Format(time.Kitchen))
 			}
+			isDisabled := !acc.Quota.LastFetchedAt.IsZero() && (acc.Quota.Gemini5h.Disabled || acc.Quota.GeminiWeekly.Disabled) && (acc.Quota.GeminiWeekly.ResetTime.IsZero() || now.Before(acc.Quota.GeminiWeekly.ResetTime))
+			if isDisabled {
+				return nil, fmt.Errorf("%w: pinned account %s has exhausted quotas", ErrAccountInCooldown, pinnedID)
+			}
 			acc.ActiveTurns++
 			acc.LastUsed = now
 			acc.State = StateInUse
@@ -1020,6 +1024,10 @@ func ParseUsageJSON(raw []byte) (*AccountQuota, error) {
 func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error) {
 	p.mu.RLock()
 	acc, ok := p.accounts[accountID]
+	var homeDir string
+	if ok && acc != nil {
+		homeDir = acc.HomeDir
+	}
 	p.mu.RUnlock()
 	if !ok {
 		return nil, ErrAccountNotFound
@@ -1031,7 +1039,7 @@ func (p *AccountPool) FetchAccountQuotas(accountID string) (*AccountQuota, error
 
 	cmd := exec.CommandContext(ctx, agyPath, "-p", "/usage", "--output-format", "json")
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Env = buildChildEnv(acc.HomeDir)
+	cmd.Env = buildChildEnv(homeDir)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute usage command: %w", err)

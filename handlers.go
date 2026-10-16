@@ -1554,6 +1554,20 @@ func handleMessagePayload(bot *tgbotapi.BotAPI, chatID, userID int64, text, botN
 		bot.Send(tgbotapi.NewChatAction(chatID, action))
 	}
 
+	session.mu.Lock()
+	needAcquire := !session.accountAcquired && session.AccountID != ""
+	session.mu.Unlock()
+
+	if needAcquire && GlobalAccountPool != nil {
+		if acc, err := GlobalAccountPool.AcquireAccount(chatID, botName); err == nil && acc != nil {
+			session.mu.Lock()
+			session.AccountID = acc.ID
+			session.AccountHomeDir = acc.HomeDir
+			session.accountAcquired = true
+			session.mu.Unlock()
+		}
+	}
+
 	payload := map[string]interface{}{
 		"event": "user",
 		"message": map[string]string{
