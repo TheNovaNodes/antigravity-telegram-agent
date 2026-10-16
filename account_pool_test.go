@@ -2488,3 +2488,33 @@ func TestAccountPool_AcquireAccount_StrictFreePriority(t *testing.T) {
 		t.Fatalf("expected acc-free to be prioritized over acc-busy, got %s", acc.ID)
 	}
 }
+
+func TestAcquireAccount_PinnedExhaustedQuotaDefense(t *testing.T) {
+	pool, err := NewAccountPool(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	now := time.Now()
+
+	pool.accounts["acc-pinned-exhausted"] = &Account{
+		ID:          "acc-pinned-exhausted",
+		Email:       "pinned-exhausted@example.com",
+		State:       StateActive,
+		ActiveTurns: 0,
+		LastUsed:    now,
+		Quota: AccountQuota{
+			LastFetchedAt: now,
+			GeminiWeekly: ModelQuota{
+				Disabled:  true,
+				ResetTime: now.Add(24 * time.Hour),
+			},
+		},
+	}
+
+	pool.pinnedChat["555"] = "acc-pinned-exhausted"
+
+	_, err = pool.AcquireAccount(555)
+	if err == nil || !errors.Is(err, ErrAccountInCooldown) {
+		t.Fatalf("expected ErrAccountInCooldown when acquiring exhausted pinned account, got %v", err)
+	}
+}

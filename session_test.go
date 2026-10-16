@@ -3884,3 +3884,36 @@ func TestAgySession_Failover_DynamicMaxTurnFailovers(t *testing.T) {
 		t.Errorf("expected maxTurnFailovers == 3 for 5 healthy accounts, got %d", maxFailovers)
 	}
 }
+
+func TestAgySession_KillReleasesAccountWhenAccountAcquired(t *testing.T) {
+	pool, err := NewAccountPool(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	GlobalAccountPool = pool
+	defer func() { GlobalAccountPool = nil }()
+
+	acc := &Account{
+		ID:          "acc-idle-test",
+		State:       StateInUse,
+		ActiveTurns: 1,
+	}
+	pool.accounts[acc.ID] = acc
+
+	s := &AgySession{
+		AccountID:       acc.ID,
+		accountAcquired: true,
+		// ActiveTurnStart is zero (idle session start e.g. /model, /workspace)
+	}
+
+	s.Kill()
+
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if acc.ActiveTurns != 0 {
+		t.Fatalf("expected ActiveTurns to be 0 after Kill on acquired session, got %d", acc.ActiveTurns)
+	}
+	if acc.State != StateActive {
+		t.Fatalf("expected State to be StateActive after Kill, got %s", acc.State)
+	}
+}
